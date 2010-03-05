@@ -84,13 +84,20 @@ static struct linux_binfmt elf_format = {
 
 #define BAD_ADDR(x) ((unsigned long)(x) >= TASK_SIZE)
 
-static int set_brk(unsigned long start, unsigned long end)
+static int set_brk(unsigned long start, unsigned long end, int prot)
 {
 	start = ELF_PAGEALIGN(start);
 	end = ELF_PAGEALIGN(end);
 	if (end > start) {
 		unsigned long addr;
-		addr = vm_brk(start, end - start);
+		/* Map the non-file portion of the last load header. If the
+		   header is requesting these pages to be executeable then
+		   we have to honour that, otherwise assume they are bss. */
+		if (prot & PROT_EXEC)
+			addr = vm_mmap(0, start, end - start, prot,
+				MAP_PRIVATE | MAP_FIXED, 0);
+		else
+			addr = vm_brk(start, end - start);
 		if (BAD_ADDR(addr))
 			return addr;
 	}
@@ -396,6 +403,7 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 	unsigned long load_addr = 0;
 	int load_addr_set = 0;
 	unsigned long last_bss = 0, elf_bss = 0;
+	int bss_prot = 0;
 	unsigned long error = ~0UL;
 	unsigned long total_size;
 	int retval, i, size;
@@ -504,8 +512,10 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 			 * elf_bss and last_bss is the bss section.
 			 */
 			k = load_addr + eppnt->p_memsz + eppnt->p_vaddr;
-			if (k > last_bss)
+			if (k > last_bss) {
 				last_bss = k;
+				bss_prot = elf_prot;
+			}
 		}
 	}
 
@@ -524,8 +534,19 @@ static unsigned long load_elf_interp(struct elfhdr *interp_elf_ex,
 		/* What we have mapped so far */
 		elf_bss = ELF_PAGESTART(elf_bss + ELF_MIN_ALIGN - 1);
 
-		/* Map the last of the bss segment */
-		error = vm_brk(elf_bss, last_bss - elf_bss);
+		if (last_bss > elf_bss) {
+			/* Map the non-file portion of the last load
+			   header. If the header is requesting these pages to
+			   be executeable then we have to honour that,
+			   otherwise assume they are bss. */
+			if ((bss_prot & PROT_EXEC) && last_bss > elf_bss)
+				error = vm_mmap(0, elf_bss,
+					ELF_PAGEALIGN(last_bss - elf_bss),
+					bss_prot, MAP_PRIVATE | MAP_FIXED, 0);
+			else
+				error = vm_brk(elf_bss, last_bss - elf_bss);
+		}
+
 		if (BAD_ADDR(error))
 			goto out_close;
 	}
@@ -575,6 +596,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	unsigned long error;
 	struct elf_phdr *elf_ppnt, *elf_phdata;
 	unsigned long elf_bss, elf_brk;
+	int bss_prot = 0;
 	int retval, i;
 	unsigned int size;
 	unsigned long elf_entry;
@@ -764,7 +786,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
 			   before this one. Map anonymous pages, if needed,
 			   and clear the area.  */
 			retval = set_brk(elf_bss + load_bias,
-					 elf_brk + load_bias);
+					 elf_brk + load_bias,
+					 bss_prot);
 			if (retval) {
 				send_sig(SIGKILL, current, 0);
 				goto out_free_dentry;
@@ -867,8 +890,10 @@ static int load_elf_binary(struct linux_binprm *bprm)
 		if (end_data < k)
 			end_data = k;
 		k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
-		if (k > elf_brk)
+		if (k > elf_brk) {
+			bss_prot = elf_prot;
 			elf_brk = k;
+		}
 	}
 
 	loc->elf_ex.e_entry += load_bias;
@@ -884,7 +909,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	 * mapping in the interpreter, to make sure it doesn't wind
 	 * up getting placed where the bss needs to go.
 	 */
-	retval = set_brk(elf_bss, elf_brk);
+	retval = set_brk(elf_bss, elf_brk, bss_prot);
 	if (retval) {
 		send_sig(SIGKILL, current, 0);
 		goto out_free_dentry;

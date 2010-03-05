@@ -143,10 +143,6 @@ do {						\
 
 #endif /* !CONFIG_HUGETLB_PAGE */
 
-#define VM_DATA_DEFAULT_FLAGS \
-	(is_32bit_task() ? \
-	 VM_DATA_DEFAULT_FLAGS32 : VM_DATA_DEFAULT_FLAGS64)
-
 /*
  * This is the default if a program doesn't have a PT_GNU_STACK
  * program header entry. The PPC64 ELF ABI has a non executable stack
