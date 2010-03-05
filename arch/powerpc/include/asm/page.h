@@ -215,15 +215,7 @@ extern long long virt_phys_offset;
 #define __pa(x) ((unsigned long)(x) - PAGE_OFFSET + MEMORY_START)
 #endif
 
-/*
- * Unfortunately the PLT is in the BSS in the PPC32 ELF ABI,
- * and needs to be executable.  This means the whole heap ends
- * up being executable.
- */
-#define VM_DATA_DEFAULT_FLAGS32	(VM_READ | VM_WRITE | VM_EXEC | \
-				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
-
-#define VM_DATA_DEFAULT_FLAGS64	(VM_READ | VM_WRITE | \
+#define VM_DATA_DEFAULT_FLAGS	(VM_READ | VM_WRITE | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #ifdef __powerpc64__
