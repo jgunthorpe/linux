@@ -30,7 +30,6 @@
 
 enum tpm_const {
 	TPM_MINOR = 224,	/* officially assigned */
-	TPM_BUFSIZE = 4096,
 	TPM_NUM_DEVICES = 256,
 };
 
@@ -113,16 +112,6 @@ struct tpm_chip {
 	struct device *dev;	/* Device stuff */
 
 	int dev_num;		/* /dev/tpm# */
-	unsigned long is_open;	/* only one allowed */
-	int time_expired;
-
-	/* Data passed to and from the tpm via the read/write calls */
-	u8 *data_buffer;
-	atomic_t data_pending;
-	struct mutex buffer_mutex;
-
-	struct timer_list user_read_timer;	/* user needs to claim result */
-	struct work_struct work;
 	struct mutex tpm_mutex;	/* tpm is processing */
 
 	struct tpm_vendor_specific vendor;
@@ -139,6 +128,19 @@ static inline void tpm_chip_put(struct tpm_chip *chip)
 {
 	module_put(chip->dev->driver->owner);
 }
+/* Private data structure for struct file */
+struct tpm_file {
+	struct tpm_chip *chip;
+
+	/* Data passed to and from the tpm via the read/write calls */
+	atomic_t data_pending;
+	struct mutex buffer_mutex;
+
+	struct timer_list user_read_timer;	/* user needs to claim result */
+	struct work_struct work;
+
+	u8 data_bufferx[4096];
+};
 
 static inline int tpm_read_index(int base, int index)
 {
