@@ -14,6 +14,7 @@
 #include <linux/init.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/mv643xx_eth.h>
 #include <linux/kexec.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -35,6 +36,10 @@ struct of_dev_auxdata kirkwood_auxdata_lookup[] __initdata = {
 	OF_DEV_AUXDATA("marvell,orion-wdt", 0xf1020300, "orion_wdt", NULL),
 	OF_DEV_AUXDATA("marvell,orion-sata", 0xf1080000, "sata_mv.0", NULL),
 	OF_DEV_AUXDATA("marvell,orion-nand", 0xf4000000, "orion_nand", NULL),
+	OF_DEV_AUXDATA("marvell,mv643xx", 0xf1072000, "mv643xx_eth_port.0",
+			NULL),
+	OF_DEV_AUXDATA("marvell,mv643xx", 0xf1076000, "mv643xx_eth_port.1",
+			NULL),
 	{},
 };
 
@@ -89,6 +94,8 @@ static void __init kirkwood_dt_init(void)
 
 	of_platform_populate(NULL, kirkwood_dt_match_table,
 			     kirkwood_auxdata_lookup, NULL);
+
+	kirkwood_eth_clock_fixup();
 }
 
 static const char *kirkwood_dt_board_compat[] = {

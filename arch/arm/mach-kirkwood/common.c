@@ -18,6 +18,7 @@
 #include <linux/clk-provider.h>
 #include <linux/spinlock.h>
 #include <linux/mv643xx_i2c.h>
+#include <linux/of.h>
 #include <net/dsa.h>
 #include <asm/page.h>
 #include <asm/timex.h>
@@ -294,6 +295,27 @@ void __init kirkwood_ehci_init(void)
 	orion_ehci_init(USB_PHYS_BASE, IRQ_KIRKWOOD_USB, EHCI_PHY_NA);
 }
 
+/* Fixup ethernet clocks for DT based kirkwood platforms.
+ * This is required because if the clock is not kept running, the
+ * Interface will forget its MAC address.
+ */
+#ifdef CONFIG_OF
+void __init kirkwood_eth_clock_fixup(void)
+{
+	struct device_node *np;
+
+	np = of_find_node_by_name(NULL, "egiga0");
+	if (np && of_device_is_available(np))
+		clk_prepare_enable(ge0);
+	of_node_put(np);
+
+	np = of_find_node_by_name(NULL, "egiga1");
+	if (np && of_device_is_available(np))
+		clk_prepare_enable(ge1);
+	of_node_put(np);
+
+}
+#endif
 
 /*****************************************************************************
  * GE00
