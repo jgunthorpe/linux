@@ -1,0 +1,75 @@
+mv643xx related nodes.
+
+marvell,mdio-mv643xx:
+
+Required properties:
+
+ - interrupts : <a> where a is the SMI interrupt number.
+ - reg : the base address and size of the controllers register space.
+
+Optional properties:
+ - shared_smi : on some chips, the second PHY is "shared", meaning it is
+	really accessed via the first SMI controller. It is passed in this
+	way due to the present structure of the driver, which requires the
+	base address for the MAC to be passed in via the SMI controllers
+	platform data.
+ - tx_csum_limit : on some devices, this option is required for proper
+	operation wrt. jumbo frames.
+
+
+Example:
+
+smi0: mdio@72000 {
+	compatible = "marvell,mdio-mv643xx";
+	reg = <0x72000 0x4000>;
+	interrupts = <46>;
+	tx_csum_limit = <1600>;
+	status = "disabled";
+};
+
+smi1: mdio@76000 {
+	compatible = "marvell,mdio-mv643xx";
+	reg = <0x76000 0x4000>;
+	interrupts = <47>;
+	shared_smi = <&smi0>;
+	tx_csum_limit = <1600>;
+	status = "disabled";
+};
+
+
+
+marvell,mv643xx-eth:
+
+Required properties:
+ - interrupts : the port interrupt number.
+ - mdio : phandle of the smi device as drescribed above
+
+Optional properties:
+ - port_number : the port number on this bus.
+ - phy_addr : the PHY address.
+ - reg : should match the mdio reg this device is attached to.
+	this is a required hack for now due to the way the
+	driver is constructed. This allows the device clock to be
+	kept running so that the MAC is not lost after boot.
+
+
+Example:
+
+egiga0 {
+	compatible = "marvell,mv643xx-eth";
+	reg = <0x72000 0x4000>;
+	mdio = <&smi0>;
+	port_number = <0>;
+	phy_addr = <0x80>;
+	interrupts = <11>;
+};
+
+egiga1 {
+	compatible = "marvell,mv643xx-eth";
+	reg = <0x76000 0x4000>;
+	mdio = <&smi1>;
+	port_number = <0>;
+	phy_addr = <0x81>;
+	interrupts = <15>;
+};
+
