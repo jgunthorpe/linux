@@ -56,4 +56,9 @@ Makefile:;
 
 %/: all
 	@:
+
+CROSS_COMPILE?=${CROSS_COMPILE:-}
+${CROSS_COMPILE:+export CROSS_COMPILE}
+ARCH?=${ARCH:-}
+${ARCH:+export ARCH}
 EOF
