@@ -283,7 +283,7 @@ static inline __deprecated void *bus_to_virt(unsigned long x)
 #define arch_is_coherent()		0
 #endif
 
-#endif
+#endif /* __ASSEMBLY__ */
 
 #include <asm-generic/memory_model.h>
 
