@@ -207,7 +207,8 @@ __ioremap_caller(phys_addr_t addr, unsigned long size, unsigned long flags,
 	 * mem_init() sets high_memory so only do the check after that.
 	 */
 	if (mem_init_done && (p < virt_to_phys(high_memory)) &&
-	    !(__allow_ioremap_reserved && memblock_is_region_reserved(p, size))) {
+	    !(__allow_ioremap_reserved && memblock_is_region_reserved(p, size)) &&
+		p >= memstart_addr) {
 		printk("__ioremap(): phys addr 0x%llx is RAM lr %pf\n",
 		       (unsigned long long)p, __builtin_return_address(0));
 		return NULL;

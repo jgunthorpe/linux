@@ -83,11 +83,11 @@ void __init MMU_init_hw(void)
 
         /*
 	 * Cache instruction and data space where the exception
-	 * vectors and the kernel live in real-mode.
+	 * vectors and the kernel live in real-mode. 2G of allocation
+	 * starting at memstart_addr (which should be suitably aligned).
 	 */
-
-        mtspr(SPRN_DCCR, 0xFFFF0000);	/* 2GByte of data space at 0x0. */
-        mtspr(SPRN_ICCR, 0xFFFF0000);	/* 2GByte of instr. space at 0x0. */
+	mtspr(SPRN_DCCR, 0xFFFF0000 >> (memstart_addr/0x8000000));
+	mtspr(SPRN_ICCR, 0xFFFF0000 >> (memstart_addr/0x8000000));
 }
 
 #define LARGE_PAGE_SIZE_16M	(1<<24)
@@ -99,7 +99,7 @@ unsigned long __init mmu_mapin_ram(unsigned long top)
 	phys_addr_t p;
 
 	v = KERNELBASE;
-	p = 0;
+	p = memstart_addr;
 	s = total_lowmem;
 
 	if (__map_without_ltlbs)
@@ -141,7 +141,7 @@ unsigned long __init mmu_mapin_ram(unsigned long top)
 	 * coverage with normal-sized pages (or other reasons) do not
 	 * attempt to allocate outside the allowed range.
 	 */
-	memblock_set_current_limit(mapped);
+	memblock_set_current_limit(memstart_addr + mapped);
 
 	return mapped;
 }
@@ -149,11 +149,7 @@ unsigned long __init mmu_mapin_ram(unsigned long top)
 void setup_initial_memory_limit(phys_addr_t first_memblock_base,
 				phys_addr_t first_memblock_size)
 {
-	/* We don't currently support the first MEMBLOCK not mapping 0
-	 * physical on those processors
-	 */
-	BUG_ON(first_memblock_base != 0);
-
 	/* 40x can only access 16MB at the moment (see head_40x.S) */
-	memblock_set_current_limit(min_t(u64, first_memblock_size, 0x00800000));
+	memblock_set_current_limit(min_t(u64, first_memblock_size,
+					 0x00800000 + memstart_addr));
 }

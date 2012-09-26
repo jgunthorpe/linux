@@ -782,10 +782,15 @@ tlb_4xx_index:
 finish_tlb_load:
 	/* load the next available TLB index.
 	*/
+#ifdef NON_ZERO_PPC_MEMSTART
+	mftb    r9
+	andi.   r9, r9, (PPC40X_TLB_SIZE-1)
+#else
 	lwz	r9, tlb_4xx_index@l(0)
 	addi	r9, r9, 1
 	andi.	r9, r9, (PPC40X_TLB_SIZE-1)
 	stw	r9, tlb_4xx_index@l(0)
+#endif
 
 6:
 	/*
@@ -872,6 +877,7 @@ start_here:
 	tlbia
 	isync			/* Flush shadow TLBs */
 
+#ifndef NON_ZERO_PPC_MEMSTART
 	/* set up the PTE pointers for the Abatron bdiGDB.
 	*/
 	lis	r6, swapper_pg_dir@h
@@ -881,6 +887,7 @@ start_here:
 	stw	r5, 0xf0(r0)	/* Must match your Abatron config file */
 	tophys(r5,r5)
 	stw	r6, 0(r5)
+#endif
 
 /* Now turn on the MMU for real! */
 	lis	r4,MSR_KERNEL@h
