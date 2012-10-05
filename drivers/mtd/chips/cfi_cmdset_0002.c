@@ -1235,10 +1235,10 @@ static int __xipram do_write_oneword(struct map_info *map, struct flchip *chip, 
 	 * use the maximum timeout value given by the chip at probe time
 	 * instead.  Unfortunately, struct flchip does have a field for
 	 * maximum timeout, only for typical which can be far too short
-	 * depending of the conditions.	 The ' + 1' is to avoid having a
-	 * timeout of 0 jiffies if HZ is smaller than 1000.
+	 * depending of the conditions.	 The ' + 2' is to ensure we get
+	 * *at least* 1000us of timeout.
 	 */
-	unsigned long uWriteTimeout = ( HZ / 1000 ) + 1;
+	unsigned long uWriteTimeout = (HZ / 1000) + 2;
 	int ret = 0;
 	map_word oldd;
 	int retry_cnt = 0;
@@ -1467,8 +1467,11 @@ static int __xipram do_write_buffer(struct map_info *map, struct flchip *chip,
 {
 	struct cfi_private *cfi = map->fldrv_priv;
 	unsigned long timeo = jiffies + HZ;
-	/* see comments in do_write_oneword() regarding uWriteTimeo. */
-	unsigned long uWriteTimeout = ( HZ / 1000 ) + 1;
+	/* see comments in do_write_oneword() regarding uWriteTimeo.
+	   Note: write_buffer commands take longer so we use a higher
+	   time. The AMD 29LV256M for instance has a datasheet max
+	   of 1.2ms for page and 600us for byte */
+	unsigned long uWriteTimeout = (HZ / 1500) + 2;
 	int ret = -EIO;
 	unsigned long cmd_adr;
 	int z, words;
