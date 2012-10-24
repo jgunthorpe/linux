@@ -246,13 +246,9 @@ static struct hw_pci kirkwood_pci __initdata = {
 
 static void __init add_pcie_port(int index, void __iomem *base)
 {
-	printk(KERN_INFO "Kirkwood PCIe port %d: ", index);
-
-	if (orion_pcie_link_up(base)) {
-		printk(KERN_INFO "link up\n");
-		pcie_port_map[num_pcie_ports++] = index;
-	} else
-		printk(KERN_INFO "link down, ignoring\n");
+	pcie_port_map[num_pcie_ports++] = index;
+	pr_info("Kirkwood PCIe port %d: link %s\n", index,
+		orion_pcie_link_up(base) ? "up" : "down");
 }
 
 void __init kirkwood_pcie_init(unsigned int portmask)
