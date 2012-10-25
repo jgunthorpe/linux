@@ -105,6 +105,8 @@ void of_device_make_bus_id(struct device *dev)
 	 * For MMIO, get the physical address
 	 */
 	reg = of_get_property(node, "reg", NULL);
+	if (!reg)
+		reg = of_get_property(node, "assigned-addresses", NULL);
 	if (reg) {
 		if (of_can_translate_address(node)) {
 			addr = of_translate_address(node, reg);
