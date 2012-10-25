@@ -27,6 +27,7 @@ struct platform_device {
 	u32		num_resources;
 	struct resource	*resource;
 
+	struct bin_attribute **res_attr;
 	const struct platform_device_id	*id_entry;
 
 	/* MFD cell pointer */

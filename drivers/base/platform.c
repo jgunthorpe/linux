@@ -34,6 +34,97 @@ struct device platform_bus = {
 };
 EXPORT_SYMBOL_GPL(platform_bus);
 
+static int mmap_resource_uc(struct file *filp, struct kobject *kobj,
+			    struct bin_attribute *attr,
+			    struct vm_area_struct *vma)
+{
+	struct resource *res = (struct resource *)attr->private;
+	unsigned long res_pages = ((resource_size(res) - 1) >> PAGE_SHIFT) + 1;
+	unsigned long pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+
+	if (vma->vm_pgoff >= res_pages ||
+	    vma->vm_pgoff + pages > res_pages)
+		return -EINVAL;
+
+	if (iomem_is_exclusive(res->start))
+		return -EINVAL;
+
+	vma->vm_pgoff += res->start >> PAGE_SHIFT;
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+			       vma->vm_end - vma->vm_start, vma->vm_page_prot);
+}
+
+static int create_resource_attr(struct platform_device *pdev, int num)
+{
+	/* allocate attribute structure, piggyback attribute name */
+	struct bin_attribute *res_attr;
+	int retval;
+
+	res_attr = kzalloc(sizeof(*res_attr) + 10, GFP_ATOMIC);
+	if (res_attr) {
+		char *res_attr_name = (char *)(res_attr + 1);
+
+		sysfs_bin_attr_init(res_attr);
+		pdev->res_attr[num] = res_attr;
+		sprintf(res_attr_name, "resource%d", num);
+		res_attr->mmap = mmap_resource_uc;
+		res_attr->attr.name = res_attr_name;
+		res_attr->attr.mode = S_IRUSR | S_IWUSR;
+		res_attr->size = resource_size(&pdev->resource[num]);
+		res_attr->private = &pdev->resource[num];
+		retval = sysfs_create_bin_file(&pdev->dev.kobj, res_attr);
+	} else
+		retval = -ENOMEM;
+
+	return retval;
+}
+
+static void remove_resource_files(struct platform_device *pdev)
+{
+	int i;
+
+	if (!pdev->res_attr)
+		return;
+
+	for (i = 0; i < pdev->num_resources; i++) {
+		struct bin_attribute *res_attr;
+
+		res_attr = pdev->res_attr[i];
+		if (res_attr) {
+			sysfs_remove_bin_file(&pdev->dev.kobj, res_attr);
+			kfree(res_attr);
+		}
+	}
+
+	kfree(pdev->res_attr);
+	pdev->res_attr = 0;
+}
+
+static int create_resource_files(struct platform_device *pdev)
+{
+	int i;
+	int retval;
+
+	pdev->res_attr = kzalloc(sizeof(*pdev->res_attr)*pdev->num_resources,
+				 GFP_ATOMIC);
+
+	for (i = 0; i < pdev->num_resources; i++) {
+		const struct resource *res = &pdev->resource[i];
+		if (!resource_size(res) ||
+		    resource_type(res) != IORESOURCE_MEM)
+			continue;
+
+		retval = create_resource_attr(pdev, i);
+		if (retval) {
+			remove_resource_files(pdev);
+			return retval;
+		}
+	}
+	return 0;
+}
+
 /**
  * arch_setup_pdev_archdata - Allow manipulation of archdata before its used
  * @pdev: platform device
@@ -333,8 +424,11 @@ int platform_device_add(struct platform_device *pdev)
 		 dev_name(&pdev->dev), dev_name(pdev->dev.parent));
 
 	ret = device_add(&pdev->dev);
-	if (ret == 0)
-		return ret;
+	if (ret)
+		goto failed;
+
+	create_resource_files(pdev);
+	return 0;
 
  failed:
 	if (pdev->id_auto) {
@@ -368,6 +462,7 @@ void platform_device_del(struct platform_device *pdev)
 	int i;
 
 	if (pdev) {
+		remove_resource_files(pdev);
 		device_del(&pdev->dev);
 
 		if (pdev->id_auto) {
