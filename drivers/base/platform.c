@@ -674,8 +674,29 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *a,
 }
 static DEVICE_ATTR_RO(modalias);
 
+/* A resources file similar to PCI, shows what memory ranges and other resources
+   are attached to the device. */
+static ssize_t resources_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	char * str = buf;
+	int i;
+
+	for (i = 0; i < pdev->num_resources; i++) {
+		struct resource *res = &pdev->resource[i];
+		str += sprintf(str,"0x%016llx 0x%016llx 0x%016llx\n",
+			       (unsigned long long)res->start,
+			       (unsigned long long)res->end,
+			       (unsigned long long)res->flags);
+	}
+	return (str - buf);
+}
+static DEVICE_ATTR_RO(resources);
+
 static struct attribute *platform_dev_attrs[] = {
 	&dev_attr_modalias.attr,
+	&dev_attr_resources.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(platform_dev);
