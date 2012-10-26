@@ -492,6 +492,7 @@ static int bgpio_pdev_probe(struct platform_device *pdev)
 	int err;
 	struct bgpio_chip *bgc;
 	struct bgpio_pdata *pdata = dev_get_platdata(dev);
+	const char *name;
 
 	r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dat");
 	if (!r)
@@ -519,7 +520,13 @@ static int bgpio_pdev_probe(struct platform_device *pdev)
 	if (err)
 		return err;
 
-	if (!strcmp(platform_get_device_id(pdev)->name, "basic-mmio-gpio-be"))
+	name = platform_get_device_id(pdev)->name;
+	if (name && !strcmp(name, "basic-mmio-gpio-be"))
+		flags |= BGPIOF_BIG_ENDIAN;
+
+	if (pdev->dev.of_node &&
+	    of_device_is_compatible(pdev->dev.of_node,
+				    "linux,basic-mmio-gpio-be"))
 		flags |= BGPIOF_BIG_ENDIAN;
 
 	bgc = devm_kzalloc(&pdev->dev, sizeof(*bgc), GFP_KERNEL);
@@ -555,9 +562,18 @@ static const struct platform_device_id bgpio_id_table[] = {
 };
 MODULE_DEVICE_TABLE(platform, bgpio_id_table);
 
+static const struct of_device_id bgpio_ofid_table[] = {
+	{.compatible = "linux,basic-mmio-gpio"},
+	{.compatible = "linux,basic-mmio-gpio-be"},
+	{},
+};
+MODULE_DEVICE_TABLE(of, bgpio_ofid_table);
+
 static struct platform_driver bgpio_driver = {
 	.driver = {
 		.name = "basic-mmio-gpio",
+		.owner = THIS_MODULE,
+		.of_match_table = of_match_ptr(bgpio_ofid_table),
 	},
 	.id_table = bgpio_id_table,
 	.probe = bgpio_pdev_probe,
