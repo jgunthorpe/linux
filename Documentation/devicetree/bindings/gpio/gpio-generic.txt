@@ -1,0 +1,28 @@
+* General purpose MMIO GPIO controller
+
+Required properties:
+- compatible: "linux,basic-mmio-gpio" or "linux,basic-mmio-gpio-be",
+  the choice determines which bit is considered GPIO #0
+- reg and reg-names: An array of named register ranges describing the windows,
+  in one of these combinations:
+   * 'dat' - Single input/output data register.
+   * 'dat', 'set' and 'clr' - 'dat' is the input and drive 1 writes high to 'set'
+                              and drive 0 writes high to 'clr'
+   * 'dat' and 'set' - 'dat' is the input and drive 1 write high to 'set' and
+                       drive 0 writes low to set
+  Additionally one of these may be specified:
+   * dirout - Write 1 to set as output, 0 to set as input
+   * dirin - Write 1 to set as input, 0 to set as output
+
+  The size of the registers should be 1, 4 or 8.
+- #gpio-cells: Should be two.
+- gpio-controller: Marks the device node as a GPIO controller.
+
+Example:
+	gpio0: gpio@8 {
+	        #gpio-cells = <2>;
+		compatible = "linux,basic-mmio-gpio";
+		gpio-controller;
+		reg-names = "dat", "set", "dirin";
+		reg = <0x8 4>, <0xc 4>, <0x10 4>;
+	};
