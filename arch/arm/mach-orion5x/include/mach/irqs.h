@@ -49,9 +49,16 @@
 #define IRQ_ORION5X_XOR1		31
 
 /*
+ * Bridge Interrupt Controller
+ */
+#define IRQ_ORION5X_BRIDGE_START   32
+#define IRQ_ORION5X_BRIDGE_TIMER1  (IRQ_ORION5X_BRIDGE_START + 2)
+#define NR_BRIDGE_IRQS          6
+
+/*
  * Orion General Purpose Pins
  */
-#define IRQ_ORION5X_GPIO_START	32
+#define IRQ_ORION5X_GPIO_START	(IRQ_ORION5X_BRIDGE_START + NR_BRIDGE_IRQS)
 #define NR_GPIO_IRQS		32
 
 #define NR_IRQS			(IRQ_ORION5X_GPIO_START + NR_GPIO_IRQS)

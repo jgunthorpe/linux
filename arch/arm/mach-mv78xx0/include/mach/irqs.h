@@ -83,9 +83,16 @@
 #define IRQ_MV78XX0_GE_ERR	70
 
 /*
+ * Bridge Interrupt Controller
+ */
+#define IRQ_MV78XX0_BRIDGE_START   96
+#define IRQ_MV78XX0_BRIDGE_TIMER1  (IRQ_MV78XX0_BRIDGE_START + 2)
+#define NR_BRIDGE_IRQS             6
+
+/*
  * MV78XX0 General Purpose Pins
  */
-#define IRQ_MV78XX0_GPIO_START	96
+#define IRQ_MV78XX0_GPIO_START	(IRQ_MV78XX0_BRIDGE_START + NR_BRIDGE_IRQS)
 #define NR_GPIO_IRQS		32
 
 #define NR_IRQS			(IRQ_MV78XX0_GPIO_START + NR_GPIO_IRQS)

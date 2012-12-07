@@ -35,6 +35,7 @@
 #include <plat/time.h>
 #include <plat/common.h>
 #include <plat/addr-map.h>
+#include <plat/irq.h>
 #include "common.h"
 
 /*****************************************************************************
@@ -221,8 +222,9 @@ static void __init orion5x_timer_init(void)
 {
 	orion5x_tclk = orion5x_find_tclk();
 
-	orion_time_init(ORION5X_BRIDGE_VIRT_BASE, BRIDGE_INT_TIMER1_CLR,
-			IRQ_ORION5X_BRIDGE, orion5x_tclk);
+	orion_bridge_irq_init(IRQ_ORION5X_BRIDGE, IRQ_ORION5X_BRIDGE_START,
+			      BRIDGE_CAUSE);
+	orion_time_init(IRQ_ORION5X_BRIDGE_TIMER1, orion5x_tclk);
 }
 
 struct sys_timer orion5x_timer = {

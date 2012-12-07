@@ -17,15 +17,8 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <asm/sched_clock.h>
-
-/*
- * MBus bridge block registers.
- */
-#define BRIDGE_CAUSE_OFF	0x0110
-#define BRIDGE_MASK_OFF		0x0114
-#define  BRIDGE_INT_TIMER0	 0x0002
-#define  BRIDGE_INT_TIMER1	 0x0004
-
+#include <linux/sched.h>
+#include <plat/time.h>
 
 /*
  * Timer block registers.
@@ -44,9 +37,8 @@
 /*
  * SoC-specific data.
  */
-static void __iomem *bridge_base;
-static u32 bridge_timer1_clr_mask;
 static void __iomem *timer_base;
+static unsigned int timer_irq;
 
 
 /*
@@ -82,11 +74,7 @@ orion_clkevt_next_event(unsigned long delta, struct clock_event_device *dev)
 	/*
 	 * Clear and enable clockevent timer interrupt.
 	 */
-	writel(bridge_timer1_clr_mask, bridge_base + BRIDGE_CAUSE_OFF);
-
-	u = readl(bridge_base + BRIDGE_MASK_OFF);
-	u |= BRIDGE_INT_TIMER1;
-	writel(u, bridge_base + BRIDGE_MASK_OFF);
+	enable_irq(timer_irq);
 
 	/*
 	 * Setup new clockevent timer value.
@@ -122,8 +110,7 @@ orion_clkevt_mode(enum clock_event_mode mode, struct clock_event_device *dev)
 		/*
 		 * Enable timer interrupt.
 		 */
-		u = readl(bridge_base + BRIDGE_MASK_OFF);
-		writel(u | BRIDGE_INT_TIMER1, bridge_base + BRIDGE_MASK_OFF);
+		enable_irq(timer_irq);
 
 		/*
 		 * Enable timer.
@@ -141,14 +128,7 @@ orion_clkevt_mode(enum clock_event_mode mode, struct clock_event_device *dev)
 		/*
 		 * Disable timer interrupt.
 		 */
-		u = readl(bridge_base + BRIDGE_MASK_OFF);
-		writel(u & ~BRIDGE_INT_TIMER1, bridge_base + BRIDGE_MASK_OFF);
-
-		/*
-		 * ACK pending timer interrupt.
-		 */
-		writel(bridge_timer1_clr_mask, bridge_base + BRIDGE_CAUSE_OFF);
-
+		disable_irq(timer_irq);
 	}
 	local_irq_restore(flags);
 }
@@ -164,10 +144,6 @@ static struct clock_event_device orion_clkevt = {
 
 static irqreturn_t orion_timer_interrupt(int irq, void *dev_id)
 {
-	/*
-	 * ACK timer interrupt and call event handler.
-	 */
-	writel(bridge_timer1_clr_mask, bridge_base + BRIDGE_CAUSE_OFF);
 	orion_clkevt.event_handler(&orion_clkevt);
 
 	return IRQ_HANDLED;
@@ -186,16 +162,14 @@ orion_time_set_base(void __iomem *_timer_base)
 }
 
 void __init
-orion_time_init(void __iomem *_bridge_base, u32 _bridge_timer1_clr_mask,
-		unsigned int irq, unsigned int tclk)
+orion_time_init(unsigned int irq, unsigned int tclk)
 {
 	u32 u;
 
 	/*
 	 * Set SoC-specific data.
 	 */
-	bridge_base = _bridge_base;
-	bridge_timer1_clr_mask = _bridge_timer1_clr_mask;
+	timer_irq = irq;
 
 	ticks_per_jiffy = (tclk + HZ/2) / HZ;
 
@@ -210,8 +184,6 @@ orion_time_init(void __iomem *_bridge_base, u32 _bridge_timer1_clr_mask,
 	 */
 	writel(0xffffffff, timer_base + TIMER0_VAL_OFF);
 	writel(0xffffffff, timer_base + TIMER0_RELOAD_OFF);
-	u = readl(bridge_base + BRIDGE_MASK_OFF);
-	writel(u & ~BRIDGE_INT_TIMER0, bridge_base + BRIDGE_MASK_OFF);
 	u = readl(timer_base + TIMER_CTRL_OFF);
 	writel(u | TIMER0_EN | TIMER0_RELOAD_EN, timer_base + TIMER_CTRL_OFF);
 	clocksource_mmio_init(timer_base + TIMER0_VAL_OFF, "orion_clocksource",
@@ -220,7 +192,7 @@ orion_time_init(void __iomem *_bridge_base, u32 _bridge_timer1_clr_mask,
 	/*
 	 * Setup clockevent timer (interrupt-driven).
 	 */
-	setup_irq(irq, &orion_timer_irq);
+	setup_irq(timer_irq, &orion_timer_irq);
 	orion_clkevt.mult = div_sc(tclk, NSEC_PER_SEC, orion_clkevt.shift);
 	orion_clkevt.max_delta_ns = clockevent_delta2ns(0xfffffffe, &orion_clkevt);
 	orion_clkevt.min_delta_ns = clockevent_delta2ns(1, &orion_clkevt);

@@ -25,6 +25,7 @@
 #include <plat/time.h>
 #include <plat/common.h>
 #include <plat/addr-map.h>
+#include <plat/irq.h>
 #include "common.h"
 
 static int get_tclk(void);
@@ -338,8 +339,11 @@ void __init mv78xx0_init_early(void)
 
 static void __init_refok mv78xx0_timer_init(void)
 {
-	orion_time_init(BRIDGE_VIRT_BASE, BRIDGE_INT_TIMER1_CLR,
-			IRQ_MV78XX0_TIMER_1, get_tclk());
+	/* FIXME: MV78XX0 may not have a bridge cause register, in which case
+	 * the timer should run directly from IRQ_MV78XX0_TIMER_1 */
+	orion_bridge_irq_init(IRQ_MV78XX0_TIMER_1, IRQ_MV78XX0_BRIDGE_START,
+			      BRIDGE_CAUSE);
+	orion_time_init(IRQ_MV78XX0_BRIDGE_TIMER1, get_tclk());
 }
 
 struct sys_timer mv78xx0_timer = {

@@ -78,9 +78,16 @@
 #define IRQ_DOVE_SATA		62
 
 /*
+ * Bridge Interrupt Controller
+ */
+#define IRQ_DOVE_BRIDGE_START   64
+#define IRQ_DOVE_BRIDGE_TIMER1  (IRQ_DOVE_BRIDGE_START + 2)
+#define NR_BRIDGE_IRQS          6
+
+/*
  * DOVE General Purpose Pins
  */
-#define IRQ_DOVE_GPIO_START	64
+#define IRQ_DOVE_GPIO_START	(IRQ_DOVE_BRIDGE_START + NR_BRIDGE_IRQS)
 #define NR_GPIO_IRQS		64
 
 /*

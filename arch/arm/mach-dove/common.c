@@ -243,8 +243,9 @@ static int __init dove_find_tclk(void)
 static void __init dove_timer_init(void)
 {
 	dove_tclk = dove_find_tclk();
-	orion_time_init(BRIDGE_VIRT_BASE, BRIDGE_INT_TIMER1_CLR,
-			IRQ_DOVE_BRIDGE, dove_tclk);
+	orion_bridge_irq_init(IRQ_DOVE_BRIDGE, IRQ_DOVE_BRIDGE_START,
+			      BRIDGE_CAUSE);
+	orion_time_init(IRQ_DOVE_BRIDGE_TIMER1, dove_tclk);
 }
 
 struct sys_timer dove_timer = {
