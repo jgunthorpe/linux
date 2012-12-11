@@ -8,11 +8,19 @@ Required Properties:
 Optional properties:
 
 - timeout-sec	: Contains the watchdog timeout in seconds
+- interrupts : The interrupt that will trigger when the watchdog expires. If
+               this is set then the kernel will call panic when the interrupt
+               asserts, which may produce a result depending on how the
+               platform's reset logic works.  Use interrupt-parent to specify
+               the interrupt controller if the interrupt is not routed to the
+               default conteroller.
 
 Example:
 
 	wdt@20300 {
 		compatible = "marvell,orion-wdt";
+		interrupt-parent = <&bridge_intc>;
+		interrupts = <3>;
 		reg = <0x20300 0x28>;
 		timeout-sec = <10>;
 		status = "okay";

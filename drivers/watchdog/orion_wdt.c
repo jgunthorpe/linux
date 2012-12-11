@@ -25,6 +25,9 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/of.h>
+#include <linux/irq.h>
+#include <linux/interrupt.h>
+#include <linux/sched.h>
 #include <mach/bridge-regs.h>
 
 /*
@@ -48,6 +51,15 @@ static struct clk *clk;
 static unsigned int wdt_tclk;
 static void __iomem *wdt_reg;
 static DEFINE_SPINLOCK(wdt_lock);
+
+static irqreturn_t orion_wdt_handler(int irq, void *arg)
+{
+	console_verbose();
+	pr_crit("Oops: Watchdog Timeout");
+	show_regs(get_irq_regs());
+	panic("Watchdog Timeout");
+	return IRQ_HANDLED;
+}
 
 static int orion_wdt_ping(struct watchdog_device *wdt_dev)
 {
@@ -148,6 +160,7 @@ static int orion_wdt_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	int ret;
+	int irq;
 
 	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
@@ -163,6 +176,14 @@ static int orion_wdt_probe(struct platform_device *pdev)
 	wdt_reg = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (!wdt_reg)
 		return -ENOMEM;
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq >= 0) {
+		ret = devm_request_irq(&pdev->dev, irq, orion_wdt_handler,
+				       0, dev_driver_string(&pdev->dev), &orion_wdt);
+		if (ret)
+			return ret;
+	}
 
 	wdt_max_duration = WDT_MAX_CYCLE_COUNT / wdt_tclk;
 
