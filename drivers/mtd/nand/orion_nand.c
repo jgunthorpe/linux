@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_mtd.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/nand.h>
 #include <linux/mtd/partitions.h>
@@ -82,6 +83,7 @@ static int __init orion_nand_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct clk *clk;
 	void __iomem *io_base;
+	int ecc_mode = -1;
 	int ret = 0;
 	u32 val = 0;
 
@@ -130,6 +132,8 @@ static int __init orion_nand_probe(struct platform_device *pdev)
 		if (!of_property_read_u32(pdev->dev.of_node,
 						"chip-delay", &val))
 			board->chip_delay = (u8)val;
+
+		ecc_mode = of_get_nand_ecc_mode(pdev->dev.of_node);
 	} else {
 		board = dev_get_platdata(&pdev->dev);
 	}
@@ -141,7 +145,7 @@ static int __init orion_nand_probe(struct platform_device *pdev)
 	nc->IO_ADDR_R = nc->IO_ADDR_W = io_base;
 	nc->cmd_ctrl = orion_nand_cmd_ctrl;
 	nc->read_buf = orion_nand_read_buf;
-	nc->ecc.mode = NAND_ECC_SOFT;
+	nc->ecc.mode = (ecc_mode < 0) ? NAND_ECC_SOFT : ecc_mode;
 
 	if (board->chip_delay)
 		nc->chip_delay = board->chip_delay;
