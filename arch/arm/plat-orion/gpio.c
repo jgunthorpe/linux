@@ -361,7 +361,7 @@ static int gpio_irq_set_type(struct irq_data *d, u32 type)
 	int pin;
 	u32 u;
 
-	pin = d->hwirq - ochip->secondary_irq_base;
+	pin = d->hwirq;
 
 	u = readl(GPIO_IO_CONF(ochip)) & (1 << pin);
 	if (!u) {
@@ -588,7 +588,7 @@ void __init orion_gpio_init(struct device_node *np,
 	ochip->domain = irq_domain_add_legacy(np,
 					      ochip->chip.ngpio,
 					      ochip->secondary_irq_base,
-					      ochip->secondary_irq_base,
+					      0,
 					      &irq_domain_simple_ops,
 					      ochip);
 	if (!ochip->domain)
