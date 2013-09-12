@@ -81,7 +81,12 @@ int of_mdiobus_register(struct mii_bus *mdio, struct device_node *np)
 
 		is_c45 = of_device_is_compatible(child,
 						 "ethernet-phy-ieee802.3-c45");
-		phy = get_phy_device(mdio, addr, is_c45);
+		paddr = of_get_property(child, "phy-id", &len);
+		if (paddr && len <= sizeof(*paddr) && !is_c45)
+			phy = phy_device_create(mdio, addr, be32_to_cpup(paddr),
+						0, NULL);
+		else
+			phy = get_phy_device(mdio, addr, is_c45);
 
 		if (!phy || IS_ERR(phy)) {
 			dev_err(&mdio->dev,
