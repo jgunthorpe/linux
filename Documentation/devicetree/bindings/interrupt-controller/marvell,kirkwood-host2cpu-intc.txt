@@ -1,0 +1,18 @@
+Marvell Kirkwood SoC Host2CPU doorbell interrupt controller
+
+
+Required properties:
+- compatible: shall be "marvell,kirkwood-host2cpu-intc"
+- reg: base address of host2cpu interrupt registers starting with CAUSE register
+- interrupts: bridge interrupt of the main interrupt controller
+- interrupt-controller: identifies the node as an interrupt controller
+- #interrupt-cells: number of cells to encode an interrupt source, shall be 1
+
+Example:
+		msi_intc: interrupt-controller@20400 {
+			compatible = "marvell,kirkwood-host2cpu-intc";
+			#interrupt-cells = <1>;
+			interrupt-controller;
+			interrupts = <2>;
+			reg = <0x20400 0x08>;
+		};
