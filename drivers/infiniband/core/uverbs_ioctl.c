@@ -30,6 +30,7 @@
  * SOFTWARE.
  */
 
+#include <linux/uaccess.h>
 #include <rdma/rdma_user_ioctl.h>
 #include <rdma/uverbs_ioctl.h>
 #include "rdma_core.h"
@@ -44,6 +45,15 @@ static bool uverbs_is_attr_cleared(const struct ib_uverbs_attr *uattr,
 
 	return !memchr_inv((const void *)&uattr->data + len,
 			   0, uattr->len - len);
+}
+
+static void uverbs_clear_attr(const struct ib_uverbs_attr *uattr, size_t len)
+{
+	u8 __user *ptr = u64_to_user_ptr(uattr->data) + len;
+	u8 __user *end = ptr + uattr->len - len;
+
+	for (; ptr != end; ptr++)
+		put_user(0, ptr);
 }
 
 static int uverbs_process_attr(struct ib_device *ibdev,
@@ -97,22 +107,46 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 
 	switch (val_spec->type) {
 	case UVERBS_ATTR_TYPE_PTR_IN:
-		/* Ensure that any data provided by userspace beyond the known
-		 * struct is zero. Userspace that knows how to use some future
-		 * longer struct will fail here if used with an old kernel and
-		 * non-zero content, making ABI compat/discovery simpler.
-		 */
-		if (uattr->len > val_spec->ptr.len &&
-		    val_spec->flags & UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO &&
-		    !uverbs_is_attr_cleared(uattr, val_spec->ptr.len))
-			return -EOPNOTSUPP;
+		if (uattr->len != val_spec->ptr.len) {
+			if (!(val_spec->flags &
+			      UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
+				return -EINVAL;
+			if (uattr->len < val_spec->ptr.min_len)
+				return -EINVAL;
 
-	/* fall through */
+			/*
+			 * Ensure that any data provided by userspace beyond
+			 * the known struct is zero. Userspace that knows how
+			 * to use some future longer struct will fail here if
+			 * used with an old kernel and non-zero content,
+			 * making ABI compat/discovery simpler.
+			 */
+			if (uattr->len > val_spec->ptr.len)
+				if (!uverbs_is_attr_cleared(uattr,
+							    val_spec->ptr.len))
+					return -EOPNOTSUPP;
+		}
+		e->ptr_attr.data = uattr->data;
+		e->ptr_attr.len = uattr->len;
+		e->ptr_attr.flags = uattr->flags;
+		break;
+
 	case UVERBS_ATTR_TYPE_PTR_OUT:
-		if (uattr->len < val_spec->ptr.min_len ||
-		    (!(val_spec->flags & UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO) &&
-		     uattr->len > val_spec->ptr.len))
-			return -EINVAL;
+		if (uattr->len != val_spec->ptr.len) {
+			if (!(val_spec->flags &
+			      UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
+				return -EINVAL;
+			if (uattr->len < val_spec->ptr.min_len)
+				return -EINVAL;
+
+			/*
+			 * Ensure any trailing space provided by userspace is
+			 * zero filled. The method is always expected to fill
+			 * all of val_spec->ptr.len.
+			 */
+			if (uattr->len > val_spec->ptr.len)
+				uverbs_clear_attr(uattr, val_spec->ptr.len);
+		}
 
 		e->ptr_attr.data = uattr->data;
 		e->ptr_attr.len = uattr->len;
