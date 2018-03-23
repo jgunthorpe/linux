@@ -193,6 +193,13 @@ static struct ib_uobject *lookup_get_idr_uobject(const struct uverbs_obj_type *t
 {
 	struct ib_uobject *uobj;
 
+	/*
+	 * id comes from userspace, be careful that nothing strange happens
+	 * when we cast it to unsigned long.
+	 */
+	if (id < 0 || id > ULONG_MAX)
+		return ERR_PTR(-ENOENT);
+
 	rcu_read_lock();
 	/* object won't be released as we're protected in rcu */
 	uobj = idr_find(&ucontext->ufile->idr, id);

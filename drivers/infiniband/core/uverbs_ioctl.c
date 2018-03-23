@@ -154,20 +154,28 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 		break;
 
 	case UVERBS_ATTR_TYPE_IDR:
-		if (uattr->data >> 32)
-			return -EINVAL;
-	/* fall through */
 	case UVERBS_ATTR_TYPE_FD:
-		if (uattr->len != 0 || !ucontext || uattr->data > INT_MAX)
+		if (uattr->len != 0 || !ucontext)
 			return -EINVAL;
 
+		/*
+		 * NOTE: The user API here is a s64 for both FD and a u64 for
+		 * IDR.  However, in the kernel we don't support IDR values
+		 * beyond int, so for now we use this simple check for
+		 * truncation. The underlying uverbs_get_uobject_from_context
+		 * further validates the passed int is acceptable, by checking
+		 * that the IDR number is positive, for instance.
+		 */
 		o_attr = &e->obj_attr;
+		o_attr->id = uattr->data_s64;
+		if (o_attr->id != uattr->data_s64)
+			return -EINVAL;
+
 		object = uverbs_get_object(ibdev, val_spec->obj.obj_type);
 		if (!object)
 			return -EINVAL;
 		o_attr->type = object->type_attrs;
 
-		o_attr->id = (int)uattr->data;
 		o_attr->uobject = uverbs_get_uobject_from_context(
 					o_attr->type,
 					ucontext,
