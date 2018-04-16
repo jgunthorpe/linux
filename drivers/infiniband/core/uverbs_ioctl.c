@@ -72,12 +72,10 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 		return -EINVAL;
 
 	spec = &attr_spec_bucket->attrs[attr_id];
-	val_spec = spec;
 	e = &elements[attr_id];
 	e->uattr = uattr_ptr;
 
-	switch (spec->type) {
-	case UVERBS_ATTR_TYPE_ENUM_IN:
+	if (spec->type == UVERBS_ATTR_TYPE_ENUM_IN) {
 		if (uattr->attr_data.enum_data.elem_id >= spec->enum_def.num_elems)
 			return -EOPNOTSUPP;
 
@@ -91,7 +89,13 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 			return -EOPNOTSUPP;
 
 		e->ptr_attr.enum_id = uattr->attr_data.enum_data.elem_id;
-	/* fall through */
+	} else {
+		val_spec = spec;
+		if (uattr->attr_data.reserved)
+			return -EINVAL;
+	}
+
+	switch (val_spec->type) {
 	case UVERBS_ATTR_TYPE_PTR_IN:
 		/* Ensure that any data provided by userspace beyond the known
 		 * struct is zero. Userspace that knows how to use some future
@@ -110,10 +114,6 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 		     uattr->len > val_spec->ptr.len))
 			return -EINVAL;
 
-		if (spec->type != UVERBS_ATTR_TYPE_ENUM_IN &&
-		    uattr->attr_data.reserved)
-			return -EINVAL;
-
 		e->ptr_attr.data = uattr->data;
 		e->ptr_attr.len = uattr->len;
 		e->ptr_attr.flags = uattr->flags;
@@ -124,14 +124,11 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 			return -EINVAL;
 	/* fall through */
 	case UVERBS_ATTR_TYPE_FD:
-		if (uattr->attr_data.reserved)
-			return -EINVAL;
-
 		if (uattr->len != 0 || !ucontext || uattr->data > INT_MAX)
 			return -EINVAL;
 
 		o_attr = &e->obj_attr;
-		object = uverbs_get_object(ibdev, spec->obj.obj_type);
+		object = uverbs_get_object(ibdev, val_spec->obj.obj_type);
 		if (!object)
 			return -EINVAL;
 		o_attr->type = object->type_attrs;
@@ -140,13 +137,13 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 		o_attr->uobject = uverbs_get_uobject_from_context(
 					o_attr->type,
 					ucontext,
-					spec->obj.access,
+					val_spec->obj.access,
 					o_attr->id);
 
 		if (IS_ERR(o_attr->uobject))
 			return PTR_ERR(o_attr->uobject);
 
-		if (spec->obj.access == UVERBS_ACCESS_NEW) {
+		if (val_spec->obj.access == UVERBS_ACCESS_NEW) {
 			u64 id = o_attr->uobject->id;
 
 			/* Copy the allocated id to the user-space */
