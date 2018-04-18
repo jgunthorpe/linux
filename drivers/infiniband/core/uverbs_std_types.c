@@ -194,13 +194,6 @@ int UVERBS_FREE_HANDLER(UVERBS_OBJECT_COMP_CHANNEL)(
 	return 0;
 };
 
-int uverbs_destroy_def_handler(struct ib_device *ib_dev,
-			       struct ib_uverbs_file *file,
-			       struct uverbs_attr_bundle *attrs)
-{
-	return 0;
-}
-
 void create_udata(struct uverbs_attr_bundle *ctx, struct ib_udata *udata)
 {
 	/*
@@ -231,68 +224,4 @@ void create_udata(struct uverbs_attr_bundle *ctx, struct ib_udata *udata)
 		udata->outbuf = NULL;
 		udata->outlen = 0;
 	}
-}
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_COMP_CHANNEL,
-			    &UVERBS_TYPE_ALLOC_FD(0,
-						  sizeof(struct ib_uverbs_completion_event_file),
-						  UVERBS_FREE_HANDLER(UVERBS_OBJECT_COMP_CHANNEL),
-						  &UVERBS_FD_FOPS(UVERBS_OBJECT_COMP_CHANNEL),
-						  "[infinibandevent]", O_RDONLY));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_QP,
-			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uqp_object), 0,
-						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_QP)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_MW,
-			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_MW)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_SRQ,
-			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_usrq_object), 0,
-						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_SRQ)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_AH,
-			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_AH)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_FLOW,
-			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uflow_object),
-						      0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_FLOW)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_WQ,
-			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uwq_object), 0,
-						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_WQ)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_RWQ_IND_TBL,
-			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_RWQ_IND_TBL)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_XRCD,
-			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uxrcd_object), 0,
-						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_XRCD)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_PD,
-			    /* 2 is used in order to free the PD after MRs */
-			    &UVERBS_TYPE_ALLOC_IDR(2, UVERBS_FREE_HANDLER(UVERBS_OBJECT_PD)));
-
-DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_DEVICE, NULL);
-
-DECLARE_UVERBS_OBJECT_TREE(uverbs_default_objects,
-			   &UVERBS_OBJECT(UVERBS_OBJECT_DEVICE),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_PD),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_MR),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_COMP_CHANNEL),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_CQ),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_QP),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_AH),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_MW),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_SRQ),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_FLOW),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_WQ),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_RWQ_IND_TBL),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_XRCD),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_FLOW_ACTION),
-			   &UVERBS_OBJECT(UVERBS_OBJECT_DM));
-
-const struct uverbs_object_tree_def *uverbs_default_get_objects(void)
-{
-	return &uverbs_default_objects;
 }

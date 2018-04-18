@@ -46,6 +46,14 @@
 #define UVERBS_HANDLER(method_id) _uverbs_handler_##method_id
 /* The name of the C function that implements an objects free function */
 #define UVERBS_FREE_HANDLER(object_id) _uverbs_free_handler_##object_id
+/* The name of the struct uverbs_attr_def array for the method */
+#define UVERBS_METHOD_ATTRS(method_id) _uverbs_attrs_##method_id
+/* The name of the struct uverbs_method_def for the method */
+#define UVERBS_METHOD(method_id) _uverbs_method_def_##method_id
+/* The name of the struct uverbs_method_def array for the object */
+#define UVERBS_OBJECT_METHODS(object_id) _uverbs_methods_##object_id
+/* The name of the struct uverbs_obj_*_type for the object */
+#define UVERBS_OBJECT_TYPE(object_id) _uverbs_type_##object_id
 /* The name of the struct file_operations for a FD object */
 #define UVERBS_FD_FOPS(object_id) _uverbs_fops_##object_id
 /* The name of the struct uverbs_object_def for the object */
@@ -60,6 +68,8 @@
 
 /* The name of the C function that implements UVERBS_UDRV_OBJECT_OPTIONAL */
 #define UVERBS_UDRV_SUPPORTED(_id) _UDRV_NAME(_id, _udrv_supported)
+/* The name of the struct uverbs_method_def array for the object */
+#define UVERBS_UDRV_OBJECT_METHODS(object_id) _UDRV_NAME(object_id, _udrv_methods)
 /* The name of the struct uverbs_object_def for the driver's ADD object */
 #define UVERBS_UDRV_OBJECT(object_id) _UDRV_NAME(object_id, _udrv_object_def)
 

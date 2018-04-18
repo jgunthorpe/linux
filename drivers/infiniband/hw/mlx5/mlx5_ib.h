@@ -1084,6 +1084,7 @@ int mlx5_ib_dealloc_dm(struct ib_dm *ibdm);
 struct ib_mr *mlx5_ib_reg_dm_mr(struct ib_pd *pd, struct ib_dm *dm,
 				struct ib_dm_mr_attr *attr,
 				struct uverbs_attr_bundle *attrs);
+const struct uverbs_object_tree_def *mlx5_get_objects(void);
 
 #ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
 void mlx5_ib_internal_fill_odp_caps(struct mlx5_ib_dev *dev);

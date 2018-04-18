@@ -65,7 +65,6 @@
 #include <linux/mlx5/fs_helpers.h>
 #include <linux/mlx5/accel.h>
 #include <rdma/uverbs_std_types.h>
-#include <rdma/uverbs_named_ioctl.h>
 
 #define DRIVER_NAME "mlx5_ib"
 #define DRIVER_VERSION "5.0-0"
@@ -4973,27 +4972,6 @@ bool UVERBS_UDRV_SUPPORTED(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE)(
 	       MLX5_ACCEL_IPSEC_CAP_DEVICE;
 }
 
-ADD_UVERBS_ATTRIBUTES_SIMPLE(mlx5_ib_dm, UVERBS_OBJECT_DM,
-			     UVERBS_METHOD_DM_ALLOC,
-			     UVERBS_UDRV_METHOD_OPTIONAL(UVERBS_METHOD_DM_ALLOC),
-			     UVERBS_ATTR_PTR_OUT(MLX5_IB_ATTR_ALLOC_DM_RESP_START_OFFSET,
-						 UVERBS_ATTR_TYPE(u64),
-						 UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)),
-			     UVERBS_ATTR_PTR_OUT(MLX5_IB_ATTR_ALLOC_DM_RESP_PAGE_INDEX,
-						 UVERBS_ATTR_TYPE(u16),
-						 UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)));
-
-ADD_UVERBS_ATTRIBUTES_SIMPLE(mlx5_ib_flow_action, UVERBS_OBJECT_FLOW_ACTION,
-			     UVERBS_METHOD_FLOW_ACTION_ESP_CREATE,
-			     UVERBS_UDRV_METHOD_OPTIONAL(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE),
-			     UVERBS_ATTR_PTR_IN(MLX5_IB_ATTR_CREATE_FLOW_ACTION_FLAGS,
-						UVERBS_ATTR_TYPE(u64),
-						UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)));
-
-DECLARE_UVERBS_OBJECT_TREE(mlx5_uverbs_tree,
-			   &mlx5_ib_dm,
-			   &mlx5_ib_flow_action);
-
 void mlx5_ib_stage_init_cleanup(struct mlx5_ib_dev *dev)
 {
 	mlx5_ib_cleanup_multiport_master(dev);
@@ -5712,7 +5690,7 @@ static void *mlx5_ib_add(struct mlx5_core_dev *mdev)
 	if (!dev)
 		return NULL;
 
-	dev->ib_dev.driver_tree = &mlx5_uverbs_tree;
+	dev->ib_dev.driver_tree = mlx5_get_objects();
 	dev->mdev = mdev;
 	dev->num_ports = max(MLX5_CAP_GEN(mdev, num_ports),
 			     MLX5_CAP_GEN(mdev, num_vhca_ports));

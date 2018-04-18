@@ -150,32 +150,38 @@ struct uverbs_obj_fd_type {
 extern const struct uverbs_obj_type_class uverbs_idr_class;
 extern const struct uverbs_obj_type_class uverbs_fd_class;
 
-#define UVERBS_BUILD_BUG_ON(cond) (sizeof(char[1 - 2 * !!(cond)]) -	\
-				   sizeof(char))
-#define UVERBS_TYPE_ALLOC_FD(_order, _obj_size, _context_closed, _fops, _name, _flags)\
-	((&((const struct uverbs_obj_fd_type)				\
-	 {.type = {							\
-		.destroy_order = _order,				\
-		.type_class = &uverbs_fd_class,				\
-		.obj_size = (_obj_size) +				\
-			UVERBS_BUILD_BUG_ON((_obj_size) < sizeof(struct ib_uobject_file)), \
-	 },								\
-	 .context_closed = _context_closed,				\
-	 .fops = _fops,							\
-	 .name = _name,							\
-	 .flags = _flags}))->type)
-#define UVERBS_TYPE_ALLOC_IDR_SZ(_size, _order, _destroy_object)	\
-	((&((const struct uverbs_obj_idr_type)				\
-	 {.type = {							\
-		.destroy_order = _order,				\
-		.type_class = &uverbs_idr_class,			\
-		.obj_size = (_size) +					\
-			UVERBS_BUILD_BUG_ON((_size) <			\
-					    sizeof(struct ib_uobject))	\
-	 },								\
-	 .destroy_object = _destroy_object,}))->type)
-#define UVERBS_TYPE_ALLOC_IDR(_order, _destroy_object)			\
-	 UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uobject), _order,	\
-				  _destroy_object)
+#define _UVERBS_OTYPE_SIZEOF(storage_type, min_type)                           \
+	(sizeof(storage_type) +                                                \
+	 BUILD_BUG_ON_ZERO(sizeof(storage_type) < sizeof(min_type)))
+
+#define DECLARE_IDR_OBJECT_TYPE(object_id, storage_type, _destroy_order)       \
+	static const struct uverbs_obj_idr_type UVERBS_OBJECT_TYPE(            \
+		object_id) = {                                                 \
+		.type =                                                        \
+			{                                                      \
+				.type_class = &uverbs_idr_class,               \
+				.obj_size = _UVERBS_OTYPE_SIZEOF(              \
+					storage_type, struct ib_uobject),      \
+				.destroy_order = _destroy_order,               \
+			},                                                     \
+		.destroy_object = UVERBS_FREE_HANDLER(object_id),              \
+	}
+
+#define DECLARE_FD_OBJECT_TYPE(object_id, storage_type, _name, _flags,         \
+			       _destroy_order)                                 \
+	static const struct uverbs_obj_fd_type UVERBS_OBJECT_TYPE(             \
+		object_id) = {                                                 \
+		.type =                                                        \
+			{                                                      \
+				.type_class = &uverbs_fd_class,                \
+				.obj_size = _UVERBS_OTYPE_SIZEOF(              \
+					storage_type, struct ib_uobject_file), \
+				.destroy_order = _destroy_order,               \
+			},                                                     \
+		.context_closed = UVERBS_FREE_HANDLER(object_id),              \
+		.fops = &UVERBS_FD_FOPS(object_id),                            \
+		.name = _name,                                                 \
+		.flags = _flags,                                               \
+	}
 
 #endif

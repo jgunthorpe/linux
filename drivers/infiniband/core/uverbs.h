@@ -48,9 +48,6 @@
 #include <rdma/ib_user_verbs.h>
 #include <rdma/uverbs_std_types.h>
 
-#define UVERBS_MODULE_NAME ib_uverbs
-#include <rdma/uverbs_named_ioctl.h>
-
 static inline void
 ib_uverbs_init_udata(struct ib_udata *udata,
 		     const void __user *ibuf,
@@ -238,9 +235,6 @@ void ib_uverbs_detach_umcast(struct ib_qp *qp,
 
 void create_udata(struct uverbs_attr_bundle *ctx, struct ib_udata *udata);
 long ib_uverbs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
-int uverbs_destroy_def_handler(struct ib_device *ib_dev,
-			       struct ib_uverbs_file *file,
-			       struct uverbs_attr_bundle *attrs);
 
 struct ib_uverbs_flow_spec {
 	union {

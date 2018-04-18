@@ -30,55 +30,18 @@
  * SOFTWARE.
  */
 
-#include "uverbs.h"
-#include <rdma/uverbs_std_types.h>
+#include <rdma/mlx5_user_ioctl_cmds.h>
+#include "mlx5_ib.h"
 
-int UVERBS_FREE_HANDLER(UVERBS_OBJECT_DM)(struct ib_uobject *uobject,
-					  enum rdma_remove_reason why)
+/* The multi-include header will create a bunch of static const data that
+ * creates a struct uverbs_object_tree_def tree that contains everything in
+ * the uapi header.
+ */
+#define UVERBS_TREE_NAME tree
+#define UVERBS_HDR <uapi/rdma/mlx5_user_ioctl_cmds.h>
+#include <rdma/specs/create_data.h>
+
+const struct uverbs_object_tree_def *mlx5_get_objects(void)
 {
-	struct ib_dm *dm = uobject->object;
-
-	if (why == RDMA_REMOVE_DESTROY && atomic_read(&dm->usecnt))
-		return -EBUSY;
-
-	return dm->device->dealloc_dm(dm);
-}
-
-int UVERBS_HANDLER(UVERBS_METHOD_DM_ALLOC)(struct ib_device *ib_dev,
-					   struct ib_uverbs_file *file,
-					   struct uverbs_attr_bundle *attrs)
-{
-	struct ib_ucontext *ucontext = file->ucontext;
-	struct ib_dm_alloc_attr attr = {};
-	struct ib_uobject *uobj;
-	struct ib_dm *dm;
-	int ret;
-
-	if (!ib_dev->alloc_dm)
-		return -EOPNOTSUPP;
-
-	ret = uverbs_copy_from(&attr.length, attrs,
-			       UVERBS_ATTR_ALLOC_DM_LENGTH);
-	if (ret)
-		return ret;
-
-	ret = uverbs_copy_from(&attr.alignment, attrs,
-			       UVERBS_ATTR_ALLOC_DM_ALIGNMENT);
-	if (ret)
-		return ret;
-
-	uobj = uverbs_attr_get(attrs, UVERBS_ATTR_ALLOC_DM_HANDLE)->obj_attr.uobject;
-
-	dm = ib_dev->alloc_dm(ib_dev, ucontext, &attr, attrs);
-	if (IS_ERR(dm))
-		return PTR_ERR(dm);
-
-	dm->device  = ib_dev;
-	dm->length  = attr.length;
-	dm->uobject = uobj;
-	atomic_set(&dm->usecnt, 0);
-
-	uobj->object = dm;
-
-	return 0;
+	return &tree;
 }
