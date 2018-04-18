@@ -48,11 +48,19 @@ static inline const struct uverbs_object_tree_def *uverbs_default_get_objects(vo
 }
 #endif
 
+/*
+ * These APIs should only be used with the legacy uAPI to access object
+ * IDs. The legacy API consistently uses a u32 for the object handle.
+ */
 static inline struct ib_uobject *__uobj_get(const struct uverbs_obj_type *type,
 					    bool write,
 					    struct ib_ucontext *ucontext,
-					    int id)
+					    u32 id)
 {
+	/* id did not fit into an int so it must be invalid */
+	if (id > INT_MAX)
+		return ERR_PTR(-EINVAL);
+
 	return rdma_lookup_get_uobject(type, ucontext, id, write);
 }
 

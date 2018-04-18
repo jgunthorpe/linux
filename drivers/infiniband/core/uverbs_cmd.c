@@ -48,11 +48,14 @@
 #include "core_priv.h"
 
 static struct ib_uverbs_completion_event_file *
-ib_uverbs_lookup_comp_file(int fd, struct ib_ucontext *context)
+ib_uverbs_lookup_comp_file(s32 fd, struct ib_ucontext *context)
 {
 	struct ib_uobject *uobj = uobj_get_read(UVERBS_OBJECT_COMP_CHANNEL,
 						fd, context);
 	struct ib_uobject_file *uobj_file;
+
+	/* Assuming no truncation going to int from the ABI s32 */
+	BUILD_BUG_ON(sizeof(int) != sizeof(s32));
 
 	if (IS_ERR(uobj))
 		return (void *)uobj;
