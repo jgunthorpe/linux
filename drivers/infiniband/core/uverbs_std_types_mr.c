@@ -33,15 +33,15 @@
 #include "uverbs.h"
 #include <rdma/uverbs_std_types.h>
 
-static int uverbs_free_mr(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_MR)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	return ib_dereg_mr((struct ib_mr *)uobject->object);
 }
 
-static int UVERBS_HANDLER(UVERBS_METHOD_DM_MR_REG)(struct ib_device *ib_dev,
-						   struct ib_uverbs_file *file,
-						   struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_DM_MR_REG)(struct ib_device *ib_dev,
+					    struct ib_uverbs_file *file,
+					    struct uverbs_attr_bundle *attrs)
 {
 	struct ib_dm_mr_attr attr = {};
 	struct ib_uobject *uobj;
@@ -143,5 +143,5 @@ DECLARE_UVERBS_NAMED_METHOD(UVERBS_METHOD_DM_MR_REG,
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_MR,
 			    /* 1 is used in order to free the MR after all the MWs */
-			    &UVERBS_TYPE_ALLOC_IDR(1, uverbs_free_mr),
+			    &UVERBS_TYPE_ALLOC_IDR(1, UVERBS_FREE_HANDLER(UVERBS_OBJECT_MR)),
 			    &UVERBS_METHOD(UVERBS_METHOD_DM_MR_REG));

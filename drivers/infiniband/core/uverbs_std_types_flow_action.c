@@ -33,8 +33,8 @@
 #include "uverbs.h"
 #include <rdma/uverbs_std_types.h>
 
-static int uverbs_free_flow_action(struct ib_uobject *uobject,
-				   enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_FLOW_ACTION)(struct ib_uobject *uobject,
+						   enum rdma_remove_reason why)
 {
 	struct ib_flow_action *action = uobject->object;
 
@@ -303,9 +303,9 @@ static int parse_flow_action_esp(struct ib_device *ib_dev,
 	return 0;
 }
 
-static int UVERBS_HANDLER(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE)(struct ib_device *ib_dev,
-								struct ib_uverbs_file *file,
-								struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE)(
+	struct ib_device *ib_dev, struct ib_uverbs_file *file,
+	struct uverbs_attr_bundle *attrs)
 {
 	int				  ret;
 	struct ib_uobject		  *uobj;
@@ -335,9 +335,9 @@ static int UVERBS_HANDLER(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE)(struct ib_device
 	return 0;
 }
 
-static int UVERBS_HANDLER(UVERBS_METHOD_FLOW_ACTION_ESP_MODIFY)(struct ib_device *ib_dev,
-								struct ib_uverbs_file *file,
-								struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_FLOW_ACTION_ESP_MODIFY)(
+	struct ib_device *ib_dev, struct ib_uverbs_file *file,
+	struct uverbs_attr_bundle *attrs)
 {
 	int				  ret;
 	struct ib_uobject		  *uobj;
@@ -429,7 +429,7 @@ DECLARE_UVERBS_NAMED_METHOD_DESTROY(UVERBS_METHOD_FLOW_ACTION_DESTROY,
 			UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_FLOW_ACTION,
-			    &UVERBS_TYPE_ALLOC_IDR(0, uverbs_free_flow_action),
+			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_FLOW_ACTION)),
 			    &UVERBS_METHOD(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE),
 			    &UVERBS_METHOD(UVERBS_METHOD_FLOW_ACTION_DESTROY),
 			    &UVERBS_METHOD(UVERBS_METHOD_FLOW_ACTION_ESP_MODIFY));

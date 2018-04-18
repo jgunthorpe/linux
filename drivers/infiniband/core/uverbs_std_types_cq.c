@@ -34,8 +34,8 @@
 #include "rdma_core.h"
 #include "uverbs.h"
 
-static int uverbs_free_cq(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_CQ)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	struct ib_cq *cq = uobject->object;
 	struct ib_uverbs_event_queue *ev_queue = cq->cq_context;
@@ -53,9 +53,9 @@ static int uverbs_free_cq(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int UVERBS_HANDLER(UVERBS_METHOD_CQ_CREATE)(struct ib_device *ib_dev,
-						   struct ib_uverbs_file *file,
-						   struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_CQ_CREATE)(struct ib_device *ib_dev,
+					    struct ib_uverbs_file *file,
+					    struct uverbs_attr_bundle *attrs)
 {
 	struct ib_ucontext *ucontext = file->ucontext;
 	struct ib_ucq_object           *obj;
@@ -166,9 +166,9 @@ DECLARE_UVERBS_NAMED_METHOD(UVERBS_METHOD_CQ_CREATE,
 			    UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)),
 	UVERBS_ATTR_UHW());
 
-static int UVERBS_HANDLER(UVERBS_METHOD_CQ_DESTROY)(struct ib_device *ib_dev,
-						    struct ib_uverbs_file *file,
-						    struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_CQ_DESTROY)(struct ib_device *ib_dev,
+					     struct ib_uverbs_file *file,
+					     struct uverbs_attr_bundle *attrs)
 {
 	struct ib_uverbs_destroy_cq_resp resp;
 	struct ib_uobject *uobj =
@@ -201,7 +201,7 @@ DECLARE_UVERBS_NAMED_METHOD(UVERBS_METHOD_CQ_DESTROY,
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_CQ,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_ucq_object), 0,
-						      uverbs_free_cq),
+						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_CQ)),
 #if IS_ENABLED(CONFIG_INFINIBAND_EXP_LEGACY_VERBS_NEW_UAPI)
 			    &UVERBS_METHOD(UVERBS_METHOD_CQ_CREATE),
 			    &UVERBS_METHOD(UVERBS_METHOD_CQ_DESTROY)

@@ -33,8 +33,8 @@
 #include "uverbs.h"
 #include <rdma/uverbs_std_types.h>
 
-static int uverbs_free_dm(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_DM)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	struct ib_dm *dm = uobject->object;
 
@@ -44,9 +44,9 @@ static int uverbs_free_dm(struct ib_uobject *uobject,
 	return dm->device->dealloc_dm(dm);
 }
 
-static int UVERBS_HANDLER(UVERBS_METHOD_DM_ALLOC)(struct ib_device *ib_dev,
-						  struct ib_uverbs_file *file,
-						  struct uverbs_attr_bundle *attrs)
+int UVERBS_HANDLER(UVERBS_METHOD_DM_ALLOC)(struct ib_device *ib_dev,
+					   struct ib_uverbs_file *file,
+					   struct uverbs_attr_bundle *attrs)
 {
 	struct ib_ucontext *ucontext = file->ucontext;
 	struct ib_dm_alloc_attr attr = {};
@@ -102,6 +102,6 @@ DECLARE_UVERBS_NAMED_METHOD_DESTROY(UVERBS_METHOD_DM_FREE,
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_DM,
 			    /* 1 is used in order to free the DM after MRs */
-			    &UVERBS_TYPE_ALLOC_IDR(1, uverbs_free_dm),
+			    &UVERBS_TYPE_ALLOC_IDR(1, UVERBS_FREE_HANDLER(UVERBS_OBJECT_DM)),
 			    &UVERBS_METHOD(UVERBS_METHOD_DM_ALLOC),
 			    &UVERBS_METHOD(UVERBS_METHOD_DM_FREE));

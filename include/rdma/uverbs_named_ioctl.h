@@ -39,13 +39,10 @@
 #error "Please #define UVERBS_MODULE_NAME before including rdma/uverbs_named_ioctl.h"
 #endif
 
-#define _UVERBS_PASTE(x, y)	x ## y
-#define _UVERBS_NAME(x, y)	_UVERBS_PASTE(x, y)
+#define _UVERBS_NAME(x, y)	__UVERBS_PASTE(x, y)
 #define UVERBS_METHOD(id)	_UVERBS_NAME(UVERBS_MODULE_NAME, _method_##id)
-#define UVERBS_HANDLER(id)	_UVERBS_NAME(UVERBS_MODULE_NAME, _handler_##id)
 
 /* Can be used with methods or objects */
-#define UVERBS_UDRV_SUPPORTED(_id) _UVERBS_NAME(UVERBS_MODULE_NAME, _supported_##_id)
 #define UVERBS_UDRV_METHOD_OPTIONAL(_id) .object_supported = &UVERBS_UDRV_SUPPORTED(_id)
 
 /* These are static so they do not need to be qualified */

@@ -39,14 +39,14 @@
 #include "rdma_core.h"
 #include "uverbs.h"
 
-static int uverbs_free_ah(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_AH)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	return rdma_destroy_ah((struct ib_ah *)uobject->object);
 }
 
-static int uverbs_free_flow(struct ib_uobject *uobject,
-			    enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_FLOW)(struct ib_uobject *uobject,
+					    enum rdma_remove_reason why)
 {
 	int ret;
 	struct ib_flow *flow = (struct ib_flow *)uobject->object;
@@ -60,14 +60,14 @@ static int uverbs_free_flow(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_mw(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_MW)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	return uverbs_dealloc_mw((struct ib_mw *)uobject->object);
 }
 
-static int uverbs_free_qp(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_QP)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	struct ib_qp *qp = uobject->object;
 	struct ib_uqp_object *uqp =
@@ -92,8 +92,8 @@ static int uverbs_free_qp(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_rwq_ind_tbl(struct ib_uobject *uobject,
-				   enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_RWQ_IND_TBL)(struct ib_uobject *uobject,
+						   enum rdma_remove_reason why)
 {
 	struct ib_rwq_ind_table *rwq_ind_tbl = uobject->object;
 	struct ib_wq **ind_tbl = rwq_ind_tbl->ind_tbl;
@@ -105,8 +105,8 @@ static int uverbs_free_rwq_ind_tbl(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_wq(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_WQ)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	struct ib_wq *wq = uobject->object;
 	struct ib_uwq_object *uwq =
@@ -119,8 +119,8 @@ static int uverbs_free_wq(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_srq(struct ib_uobject *uobject,
-			   enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_SRQ)(struct ib_uobject *uobject,
+					   enum rdma_remove_reason why)
 {
 	struct ib_srq *srq = uobject->object;
 	struct ib_uevent_object *uevent =
@@ -144,8 +144,8 @@ static int uverbs_free_srq(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_xrcd(struct ib_uobject *uobject,
-			    enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_XRCD)(struct ib_uobject *uobject,
+					    enum rdma_remove_reason why)
 {
 	struct ib_xrcd *xrcd = uobject->object;
 	struct ib_uxrcd_object *uxrcd =
@@ -163,8 +163,8 @@ static int uverbs_free_xrcd(struct ib_uobject *uobject,
 	return ret;
 }
 
-static int uverbs_free_pd(struct ib_uobject *uobject,
-			  enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_PD)(struct ib_uobject *uobject,
+					  enum rdma_remove_reason why)
 {
 	struct ib_pd *pd = uobject->object;
 
@@ -175,8 +175,8 @@ static int uverbs_free_pd(struct ib_uobject *uobject,
 	return 0;
 }
 
-static int uverbs_hot_unplug_completion_event_file(struct ib_uobject_file *uobj_file,
-						   enum rdma_remove_reason why)
+int UVERBS_FREE_HANDLER(UVERBS_OBJECT_COMP_CHANNEL)(
+	struct ib_uobject_file *uobj_file, enum rdma_remove_reason why)
 {
 	struct ib_uverbs_completion_event_file *comp_event_file =
 		container_of(uobj_file, struct ib_uverbs_completion_event_file,
@@ -236,42 +236,42 @@ void create_udata(struct uverbs_attr_bundle *ctx, struct ib_udata *udata)
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_COMP_CHANNEL,
 			    &UVERBS_TYPE_ALLOC_FD(0,
 						  sizeof(struct ib_uverbs_completion_event_file),
-						  uverbs_hot_unplug_completion_event_file,
-						  &uverbs_event_fops,
+						  UVERBS_FREE_HANDLER(UVERBS_OBJECT_COMP_CHANNEL),
+						  &UVERBS_FD_FOPS(UVERBS_OBJECT_COMP_CHANNEL),
 						  "[infinibandevent]", O_RDONLY));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_QP,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uqp_object), 0,
-						      uverbs_free_qp));
+						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_QP)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_MW,
-			    &UVERBS_TYPE_ALLOC_IDR(0, uverbs_free_mw));
+			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_MW)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_SRQ,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_usrq_object), 0,
-						      uverbs_free_srq));
+						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_SRQ)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_AH,
-			    &UVERBS_TYPE_ALLOC_IDR(0, uverbs_free_ah));
+			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_AH)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_FLOW,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uflow_object),
-						      0, uverbs_free_flow));
+						      0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_FLOW)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_WQ,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uwq_object), 0,
-						      uverbs_free_wq));
+						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_WQ)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_RWQ_IND_TBL,
-			    &UVERBS_TYPE_ALLOC_IDR(0, uverbs_free_rwq_ind_tbl));
+			    &UVERBS_TYPE_ALLOC_IDR(0, UVERBS_FREE_HANDLER(UVERBS_OBJECT_RWQ_IND_TBL)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_XRCD,
 			    &UVERBS_TYPE_ALLOC_IDR_SZ(sizeof(struct ib_uxrcd_object), 0,
-						      uverbs_free_xrcd));
+						      UVERBS_FREE_HANDLER(UVERBS_OBJECT_XRCD)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_PD,
 			    /* 2 is used in order to free the PD after MRs */
-			    &UVERBS_TYPE_ALLOC_IDR(2, uverbs_free_pd));
+			    &UVERBS_TYPE_ALLOC_IDR(2, UVERBS_FREE_HANDLER(UVERBS_OBJECT_PD)));
 
 DECLARE_UVERBS_NAMED_OBJECT(UVERBS_OBJECT_DEVICE, NULL);
 

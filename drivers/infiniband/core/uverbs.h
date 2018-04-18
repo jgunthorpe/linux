@@ -209,7 +209,6 @@ struct ib_uflow_object {
 	struct ib_uflow_resources	*resources;
 };
 
-extern const struct file_operations uverbs_event_fops;
 void ib_uverbs_init_event_queue(struct ib_uverbs_event_queue *ev_queue);
 struct file *ib_uverbs_alloc_async_event_file(struct ib_uverbs_file *uverbs_file,
 					      struct ib_device *ib_dev);
@@ -275,22 +274,6 @@ struct uverbs_root_spec *
 	uverbs_alloc_spec_tree(unsigned int num_trees,
 			       const struct uverbs_object_tree_def **trees);
 void uverbs_free_spec_tree(struct uverbs_root_spec *root);
-
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_DEVICE);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_PD);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_MR);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_COMP_CHANNEL);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_CQ);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_QP);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_AH);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_MW);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_SRQ);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_FLOW);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_WQ);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_RWQ_IND_TBL);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_XRCD);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_FLOW_ACTION);
-extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_DM);
 
 #define IB_UVERBS_DECLARE_CMD(name)					\
 	ssize_t ib_uverbs_##name(struct ib_uverbs_file *file,		\

@@ -434,7 +434,7 @@ static int ib_uverbs_comp_event_close(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-const struct file_operations uverbs_event_fops = {
+const struct file_operations UVERBS_FD_FOPS(UVERBS_OBJECT_COMP_CHANNEL) = {
 	.owner	 = THIS_MODULE,
 	.read	 = ib_uverbs_comp_event_read,
 	.poll    = ib_uverbs_comp_event_poll,

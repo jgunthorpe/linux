@@ -37,8 +37,6 @@
 #include <rdma/uverbs_ioctl.h>
 #include <rdma/ib_user_ioctl_verbs.h>
 
-#define UVERBS_OBJECT(id)	uverbs_object_##id
-
 /*
  * These APIs should only be used with the legacy uAPI to access object
  * IDs. The legacy API consistently uses a u32 for the object handle.
