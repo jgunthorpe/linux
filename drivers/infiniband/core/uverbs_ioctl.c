@@ -64,8 +64,8 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 			       struct uverbs_attr_bundle_hash *attr_bundle_h,
 			       struct ib_uverbs_attr __user *uattr_ptr)
 {
-	const struct uverbs_attr_spec *spec;
-	const struct uverbs_attr_spec *val_spec;
+	const union uverbs_attr_spec *spec;
+	const union uverbs_attr_spec *val_spec;
 	struct uverbs_attr *e;
 	const struct uverbs_object_spec *object;
 	struct uverbs_obj_attr *o_attr;
@@ -85,7 +85,7 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 	e = &elements[attr_id];
 	e->uattr = uattr_ptr;
 
-	if (spec->type == UVERBS_ATTR_TYPE_ENUM_IN) {
+	if (spec->hdr.type == UVERBS_ATTR_TYPE_ENUM_IN) {
 		if (uattr->attr_data.enum_data.elem_id >= spec->enum_def.num_elems)
 			return -EOPNOTSUPP;
 
@@ -95,7 +95,7 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 		val_spec = &spec->enum_def.ids[uattr->attr_data.enum_data.elem_id];
 
 		/* Currently we only support PTR_IN based enums */
-		if (val_spec->type != UVERBS_ATTR_TYPE_PTR_IN)
+		if (val_spec->hdr.type != UVERBS_ATTR_TYPE_PTR_IN)
 			return -EOPNOTSUPP;
 
 		e->ptr_attr.enum_id = uattr->attr_data.enum_data.elem_id;
@@ -105,10 +105,10 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 			return -EINVAL;
 	}
 
-	switch (val_spec->type) {
+	switch (val_spec->hdr.type) {
 	case UVERBS_ATTR_TYPE_PTR_IN:
 		if (uattr->len != val_spec->ptr.len) {
-			if (!(val_spec->flags &
+			if (!(val_spec->hdr.flags &
 			      UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
 				return -EINVAL;
 			if (uattr->len < val_spec->ptr.min_len)
@@ -133,7 +133,7 @@ static int uverbs_process_attr(struct ib_device *ibdev,
 
 	case UVERBS_ATTR_TYPE_PTR_OUT:
 		if (uattr->len != val_spec->ptr.len) {
-			if (!(val_spec->flags &
+			if (!(val_spec->hdr.flags &
 			      UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
 				return -EINVAL;
 			if (uattr->len < val_spec->ptr.min_len)

@@ -68,53 +68,51 @@ enum {
 };
 
 /* Specification of a single attribute inside the ioctl message */
-struct uverbs_attr_spec {
-	union {
-		/* Header shared by all following union members - to reduce space. */
-		struct {
-			enum uverbs_attr_type		type;
-			/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
-			u8				flags;
-		};
-		struct {
-			enum uverbs_attr_type		type;
-			/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
-			u8				flags;
-			/* Current known size to kernel */
-			u16				len;
-			/* User isn't allowed to provide something < min_len */
-			u16				min_len;
-		} ptr;
-		struct {
-			enum uverbs_attr_type		type;
-			/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
-			u8				flags;
-			/*
-			 * higher bits mean the namespace and lower bits mean
-			 * the type id within the namespace.
-			 */
-			u16			obj_type;
-			u8			access;
-		} obj;
-		struct {
-			enum uverbs_attr_type		type;
-			/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
-			u8				flags;
-			u8				num_elems;
-			/*
-			 * The enum attribute can select one of the attributes
-			 * contained in the ids array. Currently only PTR_IN
-			 * attributes are supported in the ids array.
-			 */
-			const struct uverbs_attr_spec	*ids;
-		} enum_def;
-	};
+union uverbs_attr_spec {
+	/* Header shared by all following union members - to reduce space. */
+	struct {
+		enum uverbs_attr_type type;
+		/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
+		u8 flags;
+	} hdr;
+	struct {
+		enum uverbs_attr_type type;
+		/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
+		u8 flags;
+		/* Current known size to kernel */
+		u16 len;
+		/* User isn't allowed to provide something < min_len */
+		u16 min_len;
+	} ptr;
+	struct {
+		enum uverbs_attr_type type;
+		/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
+		u8 flags;
+		/*
+		 * higher bits mean the namespace and lower bits mean
+		 * the type id within the namespace.
+		 */
+		u16 obj_type;
+		u8 access;
+	} obj;
+	struct {
+		enum uverbs_attr_type type;
+		/* Combination of bits from enum UVERBS_ATTR_SPEC_F_XXXX */
+		u8 flags;
+		u8 num_elems;
+		/*
+		 * The enum attribute can select one of the attributes
+		 * contained in the ids array. Currently only PTR_IN
+		 * attributes are supported in the ids array.
+		 */
+		const union uverbs_attr_spec *ids;
+	} enum_def;
 };
 
 struct uverbs_attr_spec_hash {
 	size_t				num_attrs;
 	unsigned long			*mandatory_attrs_bitmask;
-	struct uverbs_attr_spec		attrs[0];
+	union uverbs_attr_spec		attrs[0];
 };
 
 struct uverbs_attr_bundle;
@@ -167,7 +165,7 @@ struct uverbs_root_spec {
 
 struct uverbs_attr_def {
 	u16                           id;
-	struct uverbs_attr_spec       attr;
+	union uverbs_attr_spec       attr;
 };
 
 struct uverbs_method_def {
@@ -195,13 +193,13 @@ struct uverbs_object_tree_def {
 #define UA_FLAGS(_flags)  .flags = _flags
 #define __UVERBS_ATTR0(_id, _type, _fld, _attr, ...)              \
 	((const struct uverbs_attr_def)				  \
-	 {.id = _id, .attr = {{._fld = {.type = _type, _attr, .flags = 0, } }, } })
+	{.id = _id, .attr = {._fld = {.type = _type, _attr, .flags = 0, } } })
 #define __UVERBS_ATTR1(_id, _type, _fld, _attr, _extra1, ...)      \
 	((const struct uverbs_attr_def)				  \
-	 {.id = _id, .attr = {{._fld = {.type = _type, _attr, _extra1 } },} })
+	{.id = _id, .attr = {._fld = {.type = _type, _attr, _extra1 } } })
 #define __UVERBS_ATTR2(_id, _type, _fld, _attr, _extra1, _extra2)    \
 	((const struct uverbs_attr_def)				  \
-	 {.id = _id, .attr = {{._fld = {.type = _type, _attr, _extra1, _extra2 } },} })
+	{.id = _id, .attr = {._fld = {.type = _type, _attr, _extra1, _extra2 } } })
 #define __UVERBS_ATTR(_id, _type, _fld, _attr, _extra1, _extra2, _n, ...)	\
 	__UVERBS_ATTR##_n(_id, _type, _fld, _attr, _extra1, _extra2)
 
@@ -246,13 +244,13 @@ struct uverbs_object_tree_def {
 #define ___UVERBS_ATTR_OBJ0(_id, _obj_class, _obj_type, _access, ...)\
 	((const struct uverbs_attr_def)					\
 	{.id = _id,							\
-	 .attr = { {.obj = {.type = _obj_class, .obj_type = _obj_type,	\
-			    .access = _access, .flags = 0 } }, } })
+	 .attr = {.obj = {.type = _obj_class, .obj_type = _obj_type,	\
+			  .access = _access, .flags = 0 } } })
 #define ___UVERBS_ATTR_OBJ1(_id, _obj_class, _obj_type, _access, _flags)\
 	((const struct uverbs_attr_def)					\
 	{.id = _id,							\
-	.attr = { {.obj = {.type = _obj_class, .obj_type = _obj_type,	\
-			   .access = _access, _flags} }, } })
+	.attr = {.obj = {.type = _obj_class, .obj_type = _obj_type,	\
+			 .access = _access, _flags} } })
 #define ___UVERBS_ATTR_OBJ(_id, _obj_class, _obj_type, _access, _flags, \
 			   _n, ...)					\
 	___UVERBS_ATTR_OBJ##_n(_id, _obj_class, _obj_type, _access, _flags)
@@ -273,7 +271,7 @@ struct uverbs_object_tree_def {
 
 #define DECLARE_UVERBS_ENUM(_name, ...)					\
 	const struct uverbs_enum_spec _name = {				\
-		.len = ARRAY_SIZE(((struct uverbs_attr_spec[]){__VA_ARGS__})),\
+		.len = ARRAY_SIZE(((union uverbs_attr_spec[]){__VA_ARGS__})),\
 		.ids = {__VA_ARGS__},					\
 	}
 #define _UVERBS_METHOD_ATTRS_SZ(...)					\

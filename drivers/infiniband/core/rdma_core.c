@@ -802,7 +802,7 @@ int uverbs_finalize_objects(struct uverbs_attr_bundle *attrs_bundle,
 
 		for (j = 0; j < curr_bundle->num_attrs; j++) {
 			struct uverbs_attr *attr;
-			const struct uverbs_attr_spec *spec;
+			const union uverbs_attr_spec *spec;
 
 			if (!uverbs_attr_is_valid_in_hash(curr_bundle, j))
 				continue;
@@ -810,8 +810,8 @@ int uverbs_finalize_objects(struct uverbs_attr_bundle *attrs_bundle,
 			attr = &curr_bundle->attrs[j];
 			spec = &curr_spec_bucket->attrs[j];
 
-			if (spec->type == UVERBS_ATTR_TYPE_IDR ||
-			    spec->type == UVERBS_ATTR_TYPE_FD) {
+			if (spec->hdr.type == UVERBS_ATTR_TYPE_IDR ||
+			    spec->hdr.type == UVERBS_ATTR_TYPE_FD) {
 				int current_ret;
 
 				current_ret = uverbs_finalize_object(attr->obj_attr.uobject,

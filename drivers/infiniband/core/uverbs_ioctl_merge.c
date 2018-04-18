@@ -271,8 +271,8 @@ static void free_method(struct uverbs_method_spec *method)
 	kfree(method);
 }
 
-#define IS_ATTR_OBJECT(attr) ((attr)->type == UVERBS_ATTR_TYPE_IDR || \
-			      (attr)->type == UVERBS_ATTR_TYPE_FD)
+#define IS_ATTR_OBJECT(attr) ((attr)->hdr.type == UVERBS_ATTR_TYPE_IDR || \
+			      (attr)->hdr.type == UVERBS_ATTR_TYPE_FD)
 
 /*
  * This function gets array of size @num_method_defs which contains pointers to
@@ -339,7 +339,7 @@ static struct uverbs_method_spec *build_method_with_attrs(const struct uverbs_me
 
 		do {
 			size_t			 num_attr_defs;
-			struct uverbs_attr_spec	*attr;
+			union uverbs_attr_spec	*attr;
 			bool attr_obj_with_special_access;
 
 			num_attr_defs =
@@ -375,18 +375,18 @@ static struct uverbs_method_spec *build_method_with_attrs(const struct uverbs_me
 				 "ib_uverbs: Method contains more than one object attr (%d) with new/destroy access\n",
 				 min_id) ||
 			    WARN(attr_obj_with_special_access &&
-				 !(attr->flags & UVERBS_ATTR_SPEC_F_MANDATORY),
+				 !(attr->hdr.flags & UVERBS_ATTR_SPEC_F_MANDATORY),
 				 "ib_uverbs: Tried to merge attr (%d) but it's an object with new/destroy access but isn't mandatory\n",
 				 min_id) ||
 			    WARN(IS_ATTR_OBJECT(attr) &&
-				 attr->flags & UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO,
+				 attr->hdr.flags & UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO,
 				 "ib_uverbs: Tried to merge attr (%d) but it's an object with min_sz flag\n",
 				 min_id)) {
 				res = -EINVAL;
 				goto free;
 			}
 
-			if (attr->flags & UVERBS_ATTR_SPEC_F_MANDATORY)
+			if (attr->hdr.flags & UVERBS_ATTR_SPEC_F_MANDATORY)
 				set_bit(min_id, hash->mandatory_attrs_bitmask);
 			min_id++;
 
