@@ -270,6 +270,12 @@ int ib_uverbs_kern_spec_to_ib_spec_filter(enum ib_flow_spec_type type,
 					  size_t kern_filter_sz,
 					  union ib_flow_spec *ib_spec);
 
+const struct uverbs_object_tree_def *uverbs_default_get_objects(void);
+struct uverbs_root_spec *
+	uverbs_alloc_spec_tree(unsigned int num_trees,
+			       const struct uverbs_object_tree_def **trees);
+void uverbs_free_spec_tree(struct uverbs_root_spec *root);
+
 extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_DEVICE);
 extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_PD);
 extern const struct uverbs_object_def UVERBS_OBJECT(UVERBS_OBJECT_MR);

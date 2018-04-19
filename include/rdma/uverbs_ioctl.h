@@ -183,6 +183,7 @@ struct uverbs_object_def {
 	const struct uverbs_obj_type	        *type_attrs;
 	size_t				         num_methods;
 	const struct uverbs_method_def * const (*methods)[];
+	bool (*object_supported)(struct ib_device *ib_dev);
 };
 
 struct uverbs_object_tree_def {
@@ -471,56 +472,5 @@ static inline int _uverbs_copy_from_or_zero(void *to,
 
 #define uverbs_copy_from_or_zero(to, attrs_bundle, idx)			      \
 	_uverbs_copy_from_or_zero(to, attrs_bundle, idx, sizeof(*to))
-
-/* =================================================
- *	 Definitions -> Specs infrastructure
- * =================================================
- */
-
-/*
- * uverbs_alloc_spec_tree - Merges different common and driver specific feature
- *	into one parsing tree that every uverbs command will be parsed upon.
- *
- * @num_trees: Number of trees in the array @trees.
- * @trees: Array of pointers to tree root definitions to merge. Each such tree
- *	   possibly contains objects, methods and attributes definitions.
- *
- * Returns:
- *	uverbs_root_spec *: The root of the merged parsing tree.
- *	On error, we return an error code. Error is checked via IS_ERR.
- *
- * The following merges could take place:
- * a. Two trees representing the same method with different handler
- *	-> We take the handler of the tree that its handler != NULL
- *	   and its index in the trees array is greater. The incentive for that
- *	   is that developers are expected to first merge common trees and then
- *	   merge trees that gives specialized the behaviour.
- * b. Two trees representing the same object with different
- *    type_attrs (struct uverbs_obj_type):
- *	-> We take the type_attrs of the tree that its type_attr != NULL
- *	   and its index in the trees array is greater. This could be used
- *	   in order to override the free function, allocation size, etc.
- * c. Two trees representing the same method attribute (same id but possibly
- *    different attributes):
- *	-> ERROR (-ENOENT), we believe that's not the programmer's intent.
- *
- * An object without any methods is considered invalid and will abort the
- * function with -ENOENT error.
- */
-#if IS_ENABLED(CONFIG_INFINIBAND_USER_ACCESS)
-struct uverbs_root_spec *uverbs_alloc_spec_tree(unsigned int num_trees,
-						const struct uverbs_object_tree_def **trees);
-void uverbs_free_spec_tree(struct uverbs_root_spec *root);
-#else
-static inline struct uverbs_root_spec *uverbs_alloc_spec_tree(unsigned int num_trees,
-							      const struct uverbs_object_tree_def **trees)
-{
-	return NULL;
-}
-
-static inline void uverbs_free_spec_tree(struct uverbs_root_spec *root)
-{
-}
-#endif
 
 #endif

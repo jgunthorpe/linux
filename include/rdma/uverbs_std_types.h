@@ -39,15 +39,6 @@
 
 #define UVERBS_OBJECT(id)	uverbs_object_##id
 
-#if IS_ENABLED(CONFIG_INFINIBAND_USER_ACCESS)
-const struct uverbs_object_tree_def *uverbs_default_get_objects(void);
-#else
-static inline const struct uverbs_object_tree_def *uverbs_default_get_objects(void)
-{
-	return NULL;
-}
-#endif
-
 /*
  * These APIs should only be used with the legacy uAPI to access object
  * IDs. The legacy API consistently uses a u32 for the object handle.

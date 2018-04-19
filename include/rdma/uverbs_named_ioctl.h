@@ -44,6 +44,10 @@
 #define UVERBS_METHOD(id)	_UVERBS_NAME(UVERBS_MODULE_NAME, _method_##id)
 #define UVERBS_HANDLER(id)	_UVERBS_NAME(UVERBS_MODULE_NAME, _handler_##id)
 
+/* Can be used with methods or objects */
+#define UVERBS_UDRV_SUPPORTED(_id) _UVERBS_NAME(UVERBS_MODULE_NAME, _supported_##_id)
+#define UVERBS_UDRV_METHOD_OPTIONAL(_id) .object_supported = &UVERBS_UDRV_SUPPORTED(_id)
+
 /* These are static so they do not need to be qualified */
 #define UVERBS_METHOD_ATTRS(method_id) _method_attrs_##method_id
 #define UVERBS_OBJECT_METHODS(object_id) _object_methods_##object_id
@@ -85,7 +89,8 @@
 /* Used by drivers to declare a complete parsing tree for a single method that
  * differs only in having additional driver specific attributes.
  */
-#define ADD_UVERBS_ATTRIBUTES_SIMPLE(_name, _object_id, _method_id, ...)       \
+#define ADD_UVERBS_ATTRIBUTES_SIMPLE(_name, _object_id, _method_id, _optional, \
+				     ...)                                      \
 	static const struct uverbs_attr_def *const UVERBS_METHOD_ATTRS(        \
 		_method_id)[] = { __VA_ARGS__ };                               \
 	static const struct uverbs_method_def UVERBS_METHOD(_method_id) = {    \
@@ -95,17 +100,11 @@
 	};                                                                     \
 	static const struct uverbs_method_def *const UVERBS_OBJECT_METHODS(    \
 		_object_id)[] = { &UVERBS_METHOD(_method_id) };                \
-	static const struct uverbs_object_def _name##_struct = {               \
+	static const struct uverbs_object_def _name = {                        \
 		.id = _object_id,                                              \
 		.num_methods = 1,                                              \
-		.methods = &UVERBS_OBJECT_METHODS(_object_id)                  \
-	};                                                                     \
-	static const struct uverbs_object_def *const _name##_ptrs[] = {        \
-		&_name##_struct,                                               \
-	};                                                                     \
-	static const struct uverbs_object_tree_def _name = {                   \
-		.num_objects = 1,                                              \
-		.objects = &_name##_ptrs,                                      \
+		.methods = &UVERBS_OBJECT_METHODS(_object_id),                 \
+		_optional                                                      \
 	}
 
 #endif

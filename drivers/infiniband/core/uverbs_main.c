@@ -998,6 +998,27 @@ static DEVICE_ATTR(abi_version, S_IRUGO, show_dev_abi_version, NULL);
 static CLASS_ATTR_STRING(abi_version, S_IRUGO,
 			 __stringify(IB_USER_VERBS_ABI_VERSION));
 
+static int ib_uverbs_setup_specs(struct ib_device *device,
+				 struct ib_uverbs_device *uverbs_dev)
+{
+	const struct uverbs_object_tree_def *root[] = {
+		uverbs_default_get_objects(), NULL
+	};
+	struct uverbs_root_spec *specs;
+	unsigned int num = 1;
+
+	if (device->driver_tree)
+		root[num++] = device->driver_tree;
+
+	specs = uverbs_alloc_spec_tree(num, root);
+	if (IS_ERR(specs))
+		return PTR_ERR(specs);
+
+	uverbs_dev->specs_root = specs;
+
+	return 0;
+}
+
 static void ib_uverbs_add_one(struct ib_device *device)
 {
 	int devnum;
@@ -1059,16 +1080,9 @@ static void ib_uverbs_add_one(struct ib_device *device)
 	if (device_create_file(uverbs_dev->dev, &dev_attr_abi_version))
 		goto err_class;
 
-	if (!device->specs_root) {
-		const struct uverbs_object_tree_def *default_root[] = {
-			uverbs_default_get_objects()};
-
-		uverbs_dev->specs_root = uverbs_alloc_spec_tree(1,
-								default_root);
-		if (IS_ERR(uverbs_dev->specs_root))
-			goto err_class;
-	} else
-		uverbs_dev->specs_root = device->specs_root;
+	ret = ib_uverbs_setup_specs(device, uverbs_dev);
+	if (ret)
+		goto err_class;
 
 	ib_set_client_data(device, &uverbs_client, uverbs_dev);
 
@@ -1194,8 +1208,8 @@ static void ib_uverbs_remove_one(struct ib_device *device, void *client_data)
 		ib_uverbs_comp_dev(uverbs_dev);
 	if (wait_clients)
 		wait_for_completion(&uverbs_dev->comp);
-	if (!device->specs_root)
-		uverbs_free_spec_tree(uverbs_dev->specs_root);
+
+	uverbs_free_spec_tree(uverbs_dev->specs_root);
 
 	kobject_put(&uverbs_dev->kobj);
 }

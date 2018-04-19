@@ -2511,7 +2511,7 @@ struct ib_device {
 	const struct cpumask *(*get_vector_affinity)(struct ib_device *ibdev,
 						     int comp_vector);
 
-	struct uverbs_root_spec		*specs_root;
+	const struct uverbs_object_tree_def *driver_tree;
 	enum rdma_driver_id		driver_id;
 };
 

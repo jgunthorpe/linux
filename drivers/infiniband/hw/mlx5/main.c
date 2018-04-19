@@ -4959,8 +4959,25 @@ static void mlx5_ib_cleanup_multiport_master(struct mlx5_ib_dev *dev)
 	mlx5_nic_vport_disable_roce(dev->mdev);
 }
 
+bool UVERBS_UDRV_SUPPORTED(UVERBS_METHOD_DM_ALLOC)(struct ib_device *ib_dev)
+{
+	struct mlx5_ib_dev *dev = to_mdev(ib_dev);
+
+	return MLX5_CAP_DEV_MEM(dev->mdev, memic);
+}
+
+bool UVERBS_UDRV_SUPPORTED(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE)(
+	struct ib_device *ib_dev)
+{
+	struct mlx5_ib_dev *dev = to_mdev(ib_dev);
+
+	return mlx5_accel_ipsec_device_caps(dev->mdev) &
+	       MLX5_ACCEL_IPSEC_CAP_DEVICE;
+}
+
 ADD_UVERBS_ATTRIBUTES_SIMPLE(mlx5_ib_dm, UVERBS_OBJECT_DM,
 			     UVERBS_METHOD_DM_ALLOC,
+			     UVERBS_UDRV_METHOD_OPTIONAL(UVERBS_METHOD_DM_ALLOC),
 			     UVERBS_ATTR_PTR_OUT(MLX5_IB_ATTR_ALLOC_DM_RESP_START_OFFSET,
 						 UVERBS_ATTR_TYPE(u64),
 						 UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)),
@@ -4970,35 +4987,14 @@ ADD_UVERBS_ATTRIBUTES_SIMPLE(mlx5_ib_dm, UVERBS_OBJECT_DM,
 
 ADD_UVERBS_ATTRIBUTES_SIMPLE(mlx5_ib_flow_action, UVERBS_OBJECT_FLOW_ACTION,
 			     UVERBS_METHOD_FLOW_ACTION_ESP_CREATE,
+			     UVERBS_UDRV_METHOD_OPTIONAL(UVERBS_METHOD_FLOW_ACTION_ESP_CREATE),
 			     UVERBS_ATTR_PTR_IN(MLX5_IB_ATTR_CREATE_FLOW_ACTION_FLAGS,
 						UVERBS_ATTR_TYPE(u64),
 						UA_FLAGS(UVERBS_ATTR_SPEC_F_MANDATORY)));
 
-#define NUM_TREES	2
-static int populate_specs_root(struct mlx5_ib_dev *dev)
-{
-	const struct uverbs_object_tree_def *default_root[NUM_TREES + 1] = {
-		uverbs_default_get_objects()};
-	size_t num_trees = 1;
-
-	if (mlx5_accel_ipsec_device_caps(dev->mdev) & MLX5_ACCEL_IPSEC_CAP_DEVICE &&
-	    !WARN_ON(num_trees >= ARRAY_SIZE(default_root)))
-		default_root[num_trees++] = &mlx5_ib_flow_action;
-
-	if (MLX5_CAP_DEV_MEM(dev->mdev, memic) &&
-	    !WARN_ON(num_trees >= ARRAY_SIZE(default_root)))
-		default_root[num_trees++] = &mlx5_ib_dm;
-
-	dev->ib_dev.specs_root =
-		uverbs_alloc_spec_tree(num_trees, default_root);
-
-	return PTR_ERR_OR_ZERO(dev->ib_dev.specs_root);
-}
-
-static void depopulate_specs_root(struct mlx5_ib_dev *dev)
-{
-	uverbs_free_spec_tree(dev->ib_dev.specs_root);
-}
+DECLARE_UVERBS_OBJECT_TREE(mlx5_uverbs_tree,
+			   &mlx5_ib_dm,
+			   &mlx5_ib_flow_action);
 
 void mlx5_ib_stage_init_cleanup(struct mlx5_ib_dev *dev)
 {
@@ -5457,19 +5453,9 @@ void mlx5_ib_stage_bfrag_cleanup(struct mlx5_ib_dev *dev)
 	mlx5_free_bfreg(dev->mdev, &dev->bfreg);
 }
 
-static int mlx5_ib_stage_populate_specs(struct mlx5_ib_dev *dev)
-{
-	return populate_specs_root(dev);
-}
-
 int mlx5_ib_stage_ib_reg_init(struct mlx5_ib_dev *dev)
 {
 	return ib_register_device(&dev->ib_dev, NULL);
-}
-
-static void mlx5_ib_stage_depopulate_specs(struct mlx5_ib_dev *dev)
-{
-	depopulate_specs_root(dev);
 }
 
 void mlx5_ib_stage_pre_ib_reg_umr_cleanup(struct mlx5_ib_dev *dev)
@@ -5606,9 +5592,6 @@ static const struct mlx5_ib_profile pf_profile = {
 	STAGE_CREATE(MLX5_IB_STAGE_PRE_IB_REG_UMR,
 		     NULL,
 		     mlx5_ib_stage_pre_ib_reg_umr_cleanup),
-	STAGE_CREATE(MLX5_IB_STAGE_SPECS,
-		     mlx5_ib_stage_populate_specs,
-		     mlx5_ib_stage_depopulate_specs),
 	STAGE_CREATE(MLX5_IB_STAGE_IB_REG,
 		     mlx5_ib_stage_ib_reg_init,
 		     mlx5_ib_stage_ib_reg_cleanup),
@@ -5654,9 +5637,6 @@ static const struct mlx5_ib_profile nic_rep_profile = {
 	STAGE_CREATE(MLX5_IB_STAGE_PRE_IB_REG_UMR,
 		     NULL,
 		     mlx5_ib_stage_pre_ib_reg_umr_cleanup),
-	STAGE_CREATE(MLX5_IB_STAGE_SPECS,
-		     mlx5_ib_stage_populate_specs,
-		     mlx5_ib_stage_depopulate_specs),
 	STAGE_CREATE(MLX5_IB_STAGE_IB_REG,
 		     mlx5_ib_stage_ib_reg_init,
 		     mlx5_ib_stage_ib_reg_cleanup),
@@ -5734,6 +5714,7 @@ static void *mlx5_ib_add(struct mlx5_core_dev *mdev)
 	if (!dev)
 		return NULL;
 
+	dev->ib_dev.driver_tree = &mlx5_uverbs_tree;
 	dev->mdev = mdev;
 	dev->num_ports = max(MLX5_CAP_GEN(mdev, num_ports),
 			     MLX5_CAP_GEN(mdev, num_vhca_ports));
