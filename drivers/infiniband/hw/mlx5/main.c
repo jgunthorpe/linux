@@ -46,6 +46,8 @@
 #include <linux/sched/mm.h>
 #include <linux/sched/task.h>
 #include <linux/delay.h>
+#include <rdma/mlx5_user_ioctl_verbs.h>
+#include <rdma/mlx5_user_ioctl_cmds.h>
 #include <rdma/ib_user_verbs.h>
 #include <rdma/ib_addr.h>
 #include <rdma/ib_cache.h>
@@ -63,8 +65,6 @@
 #include <linux/mlx5/fs_helpers.h>
 #include <linux/mlx5/accel.h>
 #include <rdma/uverbs_std_types.h>
-#include <rdma/mlx5_user_ioctl_verbs.h>
-#include <rdma/mlx5_user_ioctl_cmds.h>
 
 #define UVERBS_MODULE_NAME mlx5_ib
 #include <rdma/uverbs_named_ioctl.h>
