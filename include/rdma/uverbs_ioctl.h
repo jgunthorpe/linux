@@ -208,7 +208,7 @@ struct uverbs_object_tree_def {
 #define UA_FLAGS(_flags) .flags = _flags
 
 #define UVERBS_ATTR_IDR(_attr_id, _idr_type, _access, ...)                     \
-	((const struct uverbs_attr_def){                                       \
+	(&(const struct uverbs_attr_def){                                      \
 		.id = _attr_id,                                                \
 		.attr = {                                                      \
 			.obj = { .type = UVERBS_ATTR_TYPE_IDR,                 \
@@ -218,7 +218,7 @@ struct uverbs_object_tree_def {
 		} })
 
 #define UVERBS_ATTR_FD(_attr_id, _fd_type, _access, ...)                       \
-	((const struct uverbs_attr_def){                                       \
+	(&(const struct uverbs_attr_def){                                      \
 		.id = (_attr_id) +                                             \
 		      BUILD_BUG_ON_ZERO((_access) != UVERBS_ACCESS_NEW &&      \
 					(_access) != UVERBS_ACCESS_READ),      \
@@ -230,7 +230,7 @@ struct uverbs_object_tree_def {
 		} })
 
 #define UVERBS_ATTR_PTR_IN(_attr_id, _type, ...)                               \
-	((const struct uverbs_attr_def){                                       \
+	(&(const struct uverbs_attr_def){                                      \
 		.id = _attr_id,                                                \
 		.attr = {                                                      \
 			.ptr = { .type = UVERBS_ATTR_TYPE_PTR_IN,              \
@@ -239,7 +239,7 @@ struct uverbs_object_tree_def {
 		} })
 
 #define UVERBS_ATTR_PTR_OUT(_attr_id, _type, ...)                              \
-	((const struct uverbs_attr_def){                                       \
+	(&(const struct uverbs_attr_def){                                      \
 		.id = _attr_id,                                                \
 		.attr = {                                                      \
 			.ptr = { .type = UVERBS_ATTR_TYPE_PTR_OUT,             \
@@ -249,7 +249,7 @@ struct uverbs_object_tree_def {
 
 /* _enum_arry should be a 'static const union uverbs_attr_spec[]' */
 #define UVERBS_ATTR_ENUM_IN(_attr_id, _enum_arr, ...)                          \
-	((const struct uverbs_attr_def){                                       \
+	(&(const struct uverbs_attr_def){                                      \
 		.id = _attr_id,                                                \
 		.attr = { .enum_def = { .type = UVERBS_ATTR_TYPE_ENUM_IN,      \
 					.ids = _enum_arr,                      \
@@ -263,12 +263,12 @@ struct uverbs_object_tree_def {
  * spec.
  */
 #define UVERBS_ATTR_UHW()                                                      \
-	&UVERBS_ATTR_PTR_IN(UVERBS_ATTR_UHW_IN,                                \
+	UVERBS_ATTR_PTR_IN(UVERBS_ATTR_UHW_IN,                                 \
+			   UVERBS_ATTR_SIZE(0, USHRT_MAX),		       \
+			   UA_FLAGS(UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO)),       \
+	UVERBS_ATTR_PTR_OUT(UVERBS_ATTR_UHW_OUT,                               \
 			    UVERBS_ATTR_SIZE(0, USHRT_MAX),		       \
-			    UA_FLAGS(UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO)),      \
-	&UVERBS_ATTR_PTR_OUT(UVERBS_ATTR_UHW_OUT,                              \
-			     UVERBS_ATTR_SIZE(0, USHRT_MAX),		       \
-			     UA_FLAGS(UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
+			    UA_FLAGS(UVERBS_ATTR_SPEC_F_MIN_SZ_OR_ZERO))
 
 /*
  * =======================================
