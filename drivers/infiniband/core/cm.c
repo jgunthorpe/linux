@@ -222,12 +222,8 @@ struct cm_work {
 struct cm_timewait_info {
 	struct cm_work work;
 	struct list_head list;
-	struct rb_node remote_qp_node;
-	struct rb_node remote_id_node;
 	__be64 remote_ca_guid;
 	__be32 remote_qpn;
-	u8 inserted_remote_qp;
-	u8 inserted_remote_id;
 };
 
 struct cm_id_private {
@@ -275,6 +271,8 @@ struct cm_id_private {
 	int prim_send_port_not_ready;
 	int altr_send_port_not_ready;
 
+	struct rb_node remote_qp_node;
+	struct rb_node remote_id_node;
 	__be64 remote_ca_guid;
 
 	struct list_head work_list;
@@ -698,39 +696,34 @@ static struct cm_id_private * cm_find_listen(struct ib_device *device,
 static struct cm_id_private *
 cm_insert_remote_id(struct cm_id_private *cm_id_priv)
 {
-	struct cm_timewait_info *timewait_info = cm_id_priv->timewait_info;
 	struct rb_node **link = &cm.remote_id_table.rb_node;
 	struct rb_node *parent = NULL;
-	struct cm_timewait_info *cur_timewait_info;
-	struct cm_id_private *res = NULL;
+	struct cm_id_private *cur_cm_id_priv;
 	__be64 remote_ca_guid = cm_id_priv->remote_ca_guid;
 	__be32 remote_id = cm_id_priv->id.remote_id;
 
-	timewait_info->remote_ca_guid = remote_ca_guid;
-	timewait_info->work.remote_id = remote_id;
-
+	lockdep_assert_held(&cm.lock);
 	while (*link) {
 		parent = *link;
-		cur_timewait_info = rb_entry(parent, struct cm_timewait_info,
-					     remote_id_node);
-		if (be32_lt(remote_id, cur_timewait_info->work.remote_id))
+		cur_cm_id_priv =
+			rb_entry(parent, struct cm_id_private, remote_id_node);
+		if (be32_lt(remote_id, cur_cm_id_priv->id.remote_id))
 			link = &(*link)->rb_left;
-		else if (be32_gt(remote_id, cur_timewait_info->work.remote_id))
+		else if (be32_gt(remote_id, cur_cm_id_priv->id.remote_id))
 			link = &(*link)->rb_right;
-		else if (be64_lt(remote_ca_guid, cur_timewait_info->remote_ca_guid))
+		else if (be64_lt(remote_ca_guid,
+				 cur_cm_id_priv->remote_ca_guid))
 			link = &(*link)->rb_left;
-		else if (be64_gt(remote_ca_guid, cur_timewait_info->remote_ca_guid))
+		else if (be64_gt(remote_ca_guid,
+				 cur_cm_id_priv->remote_ca_guid))
 			link = &(*link)->rb_right;
 		else {
-			res = cm_acquire_id(cur_timewait_info->work.local_id,
-					    cur_timewait_info->work.remote_id);
-			WARN_ON(!res);
-			return res;
+			refcount_inc(&cur_cm_id_priv->refcount);
+			return cur_cm_id_priv;
 		}
 	}
-	timewait_info->inserted_remote_id = 1;
-	rb_link_node(&timewait_info->remote_id_node, parent, link);
-	rb_insert_color(&timewait_info->remote_id_node, &cm.remote_id_table);
+	rb_link_node(&cm_id_priv->remote_id_node, parent, link);
+	rb_insert_color(&cm_id_priv->remote_id_node, &cm.remote_id_table);
 	return NULL;
 }
 
@@ -738,24 +731,23 @@ static struct cm_id_private *cm_find_remote_id(__be64 remote_ca_guid,
 					       __be32 remote_id)
 {
 	struct rb_node *node = cm.remote_id_table.rb_node;
-	struct cm_timewait_info *timewait_info;
 	struct cm_id_private *res = NULL;
+	struct cm_id_private *cur;
 
 	spin_lock_irq(&cm.lock);
 	while (node) {
-		timewait_info = rb_entry(node, struct cm_timewait_info,
-					 remote_id_node);
-		if (be32_lt(remote_id, timewait_info->work.remote_id))
+		cur = rb_entry(node, struct cm_id_private, remote_id_node);
+		if (be32_lt(remote_id, cur->id.remote_id))
 			node = node->rb_left;
-		else if (be32_gt(remote_id, timewait_info->work.remote_id))
+		else if (be32_gt(remote_id, cur->id.remote_id))
 			node = node->rb_right;
-		else if (be64_lt(remote_ca_guid, timewait_info->remote_ca_guid))
+		else if (be64_lt(remote_ca_guid, cur->remote_ca_guid))
 			node = node->rb_left;
-		else if (be64_gt(remote_ca_guid, timewait_info->remote_ca_guid))
+		else if (be64_gt(remote_ca_guid, cur->remote_ca_guid))
 			node = node->rb_right;
 		else {
-			res = cm_acquire_id(timewait_info->work.local_id,
-					     timewait_info->work.remote_id);
+			refcount_inc(&cur->refcount);
+			res = cur;
 			break;
 		}
 	}
@@ -766,39 +758,30 @@ static struct cm_id_private *cm_find_remote_id(__be64 remote_ca_guid,
 static struct cm_id_private *
 cm_insert_remote_qpn(struct cm_id_private *cm_id_priv)
 {
-	struct cm_timewait_info *timewait_info = cm_id_priv->timewait_info;
 	struct rb_node **link = &cm.remote_qp_table.rb_node;
 	struct rb_node *parent = NULL;
-	struct cm_timewait_info *cur_timewait_info;
+	struct cm_id_private *cur;
 	__be64 remote_ca_guid = cm_id_priv->remote_ca_guid;
 	__be32 remote_qpn = cm_id_priv->remote_qpn;
-	struct cm_id_private *res;
-
-	timewait_info->remote_ca_guid = remote_ca_guid;
-	timewait_info->remote_qpn = cm_id_priv->remote_qpn;
 
 	while (*link) {
 		parent = *link;
-		cur_timewait_info = rb_entry(parent, struct cm_timewait_info,
-					     remote_qp_node);
-		if (be32_lt(remote_qpn, cur_timewait_info->remote_qpn))
+		cur = rb_entry(parent, struct cm_id_private, remote_qp_node);
+		if (be32_lt(remote_qpn, cur->remote_qpn))
 			link = &(*link)->rb_left;
-		else if (be32_gt(remote_qpn, cur_timewait_info->remote_qpn))
+		else if (be32_gt(remote_qpn, cur->remote_qpn))
 			link = &(*link)->rb_right;
-		else if (be64_lt(remote_ca_guid, cur_timewait_info->remote_ca_guid))
+		else if (be64_lt(remote_ca_guid, cur->remote_ca_guid))
 			link = &(*link)->rb_left;
-		else if (be64_gt(remote_ca_guid, cur_timewait_info->remote_ca_guid))
+		else if (be64_gt(remote_ca_guid, cur->remote_ca_guid))
 			link = &(*link)->rb_right;
 		else {
-			res = cm_acquire_id(cur_timewait_info->work.local_id,
-					    cur_timewait_info->work.remote_id);
-			WARN_ON(!res);
-			return res;
+			refcount_inc(&cur->refcount);
+			return cur;
 		}
 	}
-	timewait_info->inserted_remote_qp = 1;
-	rb_link_node(&timewait_info->remote_qp_node, parent, link);
-	rb_insert_color(&timewait_info->remote_qp_node, &cm.remote_qp_table);
+	rb_link_node(&cm_id_priv->remote_qp_node, parent, link);
+	rb_insert_color(&cm_id_priv->remote_qp_node, &cm.remote_qp_table);
 	return NULL;
 }
 
@@ -871,6 +854,8 @@ struct ib_cm_id *ib_create_cm_id(struct ib_device *device,
 	INIT_LIST_HEAD(&cm_id_priv->work_list);
 	INIT_LIST_HEAD(&cm_id_priv->prim_list);
 	INIT_LIST_HEAD(&cm_id_priv->altr_list);
+	RB_CLEAR_NODE(&cm_id_priv->remote_qp_node);
+	RB_CLEAR_NODE(&cm_id_priv->remote_id_node);
 	atomic_set(&cm_id_priv->work_count, -1);
 	refcount_set(&cm_id_priv->refcount, 1);
 	return &cm_id_priv->id;
@@ -927,16 +912,14 @@ static u8 cm_ack_timeout(u8 ca_ack_delay, u8 packet_life_time)
 
 static void cm_remove_remote(struct cm_id_private *cm_id_priv)
 {
-	struct cm_timewait_info *timewait_info = cm_id_priv->timewait_info;
-
-	if (timewait_info->inserted_remote_id) {
-		rb_erase(&timewait_info->remote_id_node, &cm.remote_id_table);
-		timewait_info->inserted_remote_id = 0;
+	if (!RB_EMPTY_NODE(&cm_id_priv->remote_id_node)) {
+		rb_erase(&cm_id_priv->remote_id_node, &cm.remote_id_table);
+		RB_CLEAR_NODE(&cm_id_priv->remote_id_node);
 	}
 
-	if (timewait_info->inserted_remote_qp) {
-		rb_erase(&timewait_info->remote_qp_node, &cm.remote_qp_table);
-		timewait_info->inserted_remote_qp = 0;
+	if (!RB_EMPTY_NODE(&cm_id_priv->remote_qp_node)) {
+		rb_erase(&cm_id_priv->remote_qp_node, &cm.remote_qp_table);
+		RB_CLEAR_NODE(&cm_id_priv->remote_qp_node);
 	}
 }
 
@@ -992,10 +975,10 @@ static void cm_reset_to_idle(struct cm_id_private *cm_id_priv)
 	unsigned long flags;
 
 	cm_id_priv->id.state = IB_CM_IDLE;
+	spin_lock_irqsave(&cm.lock, flags);
+	cm_remove_remote(cm_id_priv);
+	spin_unlock_irqrestore(&cm.lock, flags);
 	if (cm_id_priv->timewait_info) {
-		spin_lock_irqsave(&cm.lock, flags);
-		cm_remove_remote(cm_id_priv);
-		spin_unlock_irqrestore(&cm.lock, flags);
 		kfree(cm_id_priv->timewait_info);
 		cm_id_priv->timewait_info = NULL;
 	}
@@ -1105,6 +1088,8 @@ retest:
 
 	rdma_destroy_ah_attr(&cm_id_priv->av.ah_attr);
 	rdma_destroy_ah_attr(&cm_id_priv->alt_av.ah_attr);
+	WARN_ON(!RB_EMPTY_NODE(&cm_id_priv->remote_id_node) ||
+		!RB_EMPTY_NODE(&cm_id_priv->remote_qp_node));
 	kfree(cm_id_priv->private_data);
 	kfree_rcu(cm_id_priv, rcu);
 }
