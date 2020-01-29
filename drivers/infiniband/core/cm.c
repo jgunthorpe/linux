@@ -102,7 +102,6 @@ static struct ib_cm {
 	struct xarray local_id_table;
 	u32 local_id_next;
 	__be32 random_id_operand;
-	struct list_head timewait_list;
 	struct workqueue_struct *wq;
 	/* Sync on cm change port state */
 	spinlock_t state_lock;
@@ -213,17 +212,10 @@ struct cm_work {
 	struct list_head list;
 	struct cm_port *port;
 	struct ib_mad_recv_wc *mad_recv_wc;	/* Received MADs */
-	__be32 local_id;			/* Established / timewait */
+	__be32 local_id;			/* Established */
 	__be32 remote_id;
 	struct ib_cm_event cm_event;
 	struct sa_path_rec path[0];
-};
-
-struct cm_timewait_info {
-	struct cm_work work;
-	struct list_head list;
-	__be64 remote_ca_guid;
-	__be32 remote_qpn;
 };
 
 struct cm_id_private {
@@ -240,7 +232,6 @@ struct cm_id_private {
 	struct rcu_head rcu;
 
 	struct ib_mad_send_buf *msg;
-	struct cm_timewait_info *timewait_info;
 	/* todo: use alternate port on send failure */
 	struct cm_av av;
 	struct cm_av alt_av;
@@ -277,9 +268,11 @@ struct cm_id_private {
 
 	struct list_head work_list;
 	atomic_t work_count;
+	struct delayed_work timewait_work;
 };
 
 static void cm_work_handler(struct work_struct *work);
+static void cm_timewait_handler(struct work_struct *_work);
 
 static inline void cm_deref_id(struct cm_id_private *cm_id_priv)
 {
@@ -858,6 +851,7 @@ struct ib_cm_id *ib_create_cm_id(struct ib_device *device,
 	RB_CLEAR_NODE(&cm_id_priv->remote_id_node);
 	atomic_set(&cm_id_priv->work_count, -1);
 	refcount_set(&cm_id_priv->refcount, 1);
+	INIT_DELAYED_WORK(&cm_id_priv->timewait_work, cm_timewait_handler);
 	return &cm_id_priv->id;
 
 error:
@@ -923,51 +917,29 @@ static void cm_remove_remote(struct cm_id_private *cm_id_priv)
 	}
 }
 
-static struct cm_timewait_info * cm_create_timewait_info(__be32 local_id)
-{
-	struct cm_timewait_info *timewait_info;
-
-	timewait_info = kzalloc(sizeof *timewait_info, GFP_KERNEL);
-	if (!timewait_info)
-		return ERR_PTR(-ENOMEM);
-
-	timewait_info->work.local_id = local_id;
-	INIT_DELAYED_WORK(&timewait_info->work.work, cm_work_handler);
-	timewait_info->work.cm_event.event = IB_CM_TIMEWAIT_EXIT;
-	return timewait_info;
-}
-
 static void cm_enter_timewait(struct cm_id_private *cm_id_priv)
 {
 	int wait_time;
 	unsigned long flags;
-	struct cm_device *cm_dev;
 
-	cm_dev = ib_get_client_data(cm_id_priv->id.device, &cm_client);
-	if (!cm_dev)
-		return;
+	lockdep_assert_held(&cm_id_priv->lock);
 
 	spin_lock_irqsave(&cm.lock, flags);
 	cm_remove_remote(cm_id_priv);
-	list_add_tail(&cm_id_priv->timewait_info->list, &cm.timewait_list);
 	spin_unlock_irqrestore(&cm.lock, flags);
 
-	/*
-	 * The cm_id could be destroyed by the user before we exit timewait.
-	 * To protect against this, we search for the cm_id after exiting
-	 * timewait before notifying the user that we've exited timewait.
-	 */
 	cm_id_priv->id.state = IB_CM_TIMEWAIT;
 	wait_time = cm_convert_to_ms(cm_id_priv->av.timeout);
 
-	/* Check if the device started its remove_one */
-	spin_lock_irqsave(&cm.lock, flags);
-	if (!cm_dev->going_down)
-		queue_delayed_work(cm.wq, &cm_id_priv->timewait_info->work.work,
-				   msecs_to_jiffies(wait_time));
-	spin_unlock_irqrestore(&cm.lock, flags);
-
-	cm_id_priv->timewait_info = NULL;
+	/*
+	 * FIXME: If we loose the race in cm_destroy_id() then cm_destroy_id()
+	 * will have to wait until the timewait expires.
+	 */
+	if (WARN_ON(delayed_work_pending(&cm_id_priv->timewait_work)))
+		return
+	refcount_inc(&cm_id_priv->refcount);
+	queue_delayed_work(cm.wq, &cm_id_priv->timewait_work,
+			   msecs_to_jiffies(wait_time));
 }
 
 static void cm_reset_to_idle(struct cm_id_private *cm_id_priv)
@@ -978,10 +950,6 @@ static void cm_reset_to_idle(struct cm_id_private *cm_id_priv)
 	spin_lock_irqsave(&cm.lock, flags);
 	cm_remove_remote(cm_id_priv);
 	spin_unlock_irqrestore(&cm.lock, flags);
-	if (cm_id_priv->timewait_info) {
-		kfree(cm_id_priv->timewait_info);
-		cm_id_priv->timewait_info = NULL;
-	}
 }
 
 static void cm_destroy_id(struct ib_cm_id *cm_id, int err)
@@ -1082,6 +1050,8 @@ retest:
 
 	cm_free_id(cm_id->local_id);
 	cm_deref_id(cm_id_priv);
+	if (cancel_delayed_work_sync(&cm_id_priv->timewait_work))
+		cm_deref_id(cm_id_priv);
 	wait_for_completion(&cm_id_priv->comp);
 	while ((work = cm_dequeue_work(cm_id_priv)) != NULL)
 		cm_free_work(work);
@@ -1439,25 +1409,16 @@ int ib_send_cm_req(struct ib_cm_id *cm_id,
 	}
 	spin_unlock_irqrestore(&cm_id_priv->lock, flags);
 
-	if (WARN_ON(cm_id_priv->timewait_info))
-		return -EINVAL;
-	cm_id_priv->timewait_info = cm_create_timewait_info(cm_id_priv->
-							    id.local_id);
-	if (IS_ERR(cm_id_priv->timewait_info)) {
-		ret = PTR_ERR(cm_id_priv->timewait_info);
-		goto out;
-	}
-
 	ret = cm_init_av_by_path(param->primary_path,
 				 param->ppath_sgid_attr, &cm_id_priv->av,
 				 cm_id_priv);
 	if (ret)
-		goto error1;
+		goto out;
 	if (param->alternate_path) {
 		ret = cm_init_av_by_path(param->alternate_path, NULL,
 					 &cm_id_priv->alt_av, cm_id_priv);
 		if (ret)
-			goto error1;
+			goto out;
 	}
 	cm_id->service_id = param->service_id;
 	cm_id->service_mask = ~cpu_to_be64(0);
@@ -1475,7 +1436,7 @@ int ib_send_cm_req(struct ib_cm_id *cm_id,
 
 	ret = cm_alloc_msg(cm_id_priv, &cm_id_priv->msg);
 	if (ret)
-		goto error1;
+		goto out;
 
 	req_msg = (struct cm_req_msg *) cm_id_priv->msg->mad;
 	cm_format_req(req_msg, cm_id_priv, param);
@@ -1498,7 +1459,6 @@ int ib_send_cm_req(struct ib_cm_id *cm_id,
 	return 0;
 
 error2:	cm_free_msg(cm_id_priv->msg);
-error1:	kfree(cm_id_priv->timewait_info);
 out:	return ret;
 }
 EXPORT_SYMBOL(ib_send_cm_req);
@@ -2005,19 +1965,13 @@ static int cm_req_handler(struct cm_work *work)
 				      &cm_id_priv->av);
 	if (ret)
 		goto destroy;
-	cm_id_priv->timewait_info = cm_create_timewait_info(cm_id_priv->
-							    id.local_id);
-	if (IS_ERR(cm_id_priv->timewait_info)) {
-		ret = PTR_ERR(cm_id_priv->timewait_info);
-		goto destroy;
-	}
 
 	listen_cm_id_priv = cm_match_req(work, cm_id_priv);
 	if (!listen_cm_id_priv) {
 		pr_debug("%s: local_id %d, no listen_cm_id_priv\n", __func__,
 			 be32_to_cpu(cm_id->local_id));
 		ret = -EINVAL;
-		goto free_timeinfo;
+		goto destroy;
 	}
 
 	cm_id_priv->id.cm_handler = listen_cm_id_priv->id.cm_handler;
@@ -2105,8 +2059,6 @@ static int cm_req_handler(struct cm_work *work)
 rejected:
 	refcount_dec(&cm_id_priv->refcount);
 	cm_deref_id(listen_cm_id_priv);
-free_timeinfo:
-	kfree(cm_id_priv->timewait_info);
 destroy:
 	ib_destroy_cm_id(cm_id);
 	return ret;
@@ -3360,27 +3312,21 @@ out:
 	return -EINVAL;
 }
 
-static int cm_timewait_handler(struct cm_work *work)
+static void cm_timewait_handler(struct work_struct *delayed_work)
 {
-	struct cm_timewait_info *timewait_info;
-	struct cm_id_private *cm_id_priv;
+	struct cm_id_private *cm_id_priv = container_of(
+		delayed_work, struct cm_id_private, timewait_work.work);
+	struct cm_work *work;
 	int ret;
 
-	timewait_info = container_of(work, struct cm_timewait_info, work);
-	spin_lock_irq(&cm.lock);
-	list_del(&timewait_info->list);
-	spin_unlock_irq(&cm.lock);
-
-	cm_id_priv = cm_acquire_id(timewait_info->work.local_id,
-				   timewait_info->work.remote_id);
-	if (!cm_id_priv)
-		return -EINVAL;
-
+	work = kmalloc(struct_size(work, path, 0), GFP_KERNEL);
+	if (!work)
+		goto out_deref;
+	work->cm_event.event = IB_CM_TIMEWAIT_EXIT;
 	spin_lock_irq(&cm_id_priv->lock);
-	if (cm_id_priv->id.state != IB_CM_TIMEWAIT ||
-	    cm_id_priv->remote_qpn != timewait_info->remote_qpn) {
+	if (cm_id_priv->id.state != IB_CM_TIMEWAIT) {
 		spin_unlock_irq(&cm_id_priv->lock);
-		goto out;
+		goto out_work;
 	}
 	cm_id_priv->id.state = IB_CM_IDLE;
 	ret = atomic_inc_and_test(&cm_id_priv->work_count);
@@ -3392,10 +3338,11 @@ static int cm_timewait_handler(struct cm_work *work)
 		cm_process_work(cm_id_priv, work);
 	else
 		cm_deref_id(cm_id_priv);
-	return 0;
-out:
+	return;
+out_work:
+	kfree(work);
+out_deref:
 	cm_deref_id(cm_id_priv);
-	return -EINVAL;
 }
 
 static void cm_format_sidr_req(struct cm_sidr_req_msg *sidr_req_msg,
@@ -3816,9 +3763,6 @@ static void cm_work_handler(struct work_struct *_work)
 	case IB_CM_APR_RECEIVED:
 		ret = cm_apr_handler(work);
 		break;
-	case IB_CM_TIMEWAIT_EXIT:
-		ret = cm_timewait_handler(work);
-		break;
 	default:
 		pr_debug("cm_event.event: 0x%x\n", work->cm_event.event);
 		ret = -EINVAL;
@@ -3883,7 +3827,7 @@ static int cm_establish(struct ib_cm_id *cm_id)
 	/* Check if the device started its remove_one */
 	spin_lock_irqsave(&cm.lock, flags);
 	if (!cm_dev->going_down) {
-		queue_delayed_work(cm.wq, &work->work, 0);
+		queue_work(cm.wq, &work->work.work);
 	} else {
 		kfree(work);
 		ret = -ENODEV;
@@ -4014,7 +3958,7 @@ static void cm_recv_handler(struct ib_mad_agent *mad_agent,
 	/* Check if the device started its remove_one */
 	spin_lock_irq(&cm.lock);
 	if (!port->cm_dev->going_down)
-		queue_delayed_work(cm.wq, &work->work, 0);
+		queue_work(cm.wq, &work->work.work);
 	else
 		going_down = 1;
 	spin_unlock_irq(&cm.lock);
@@ -4396,9 +4340,11 @@ static void cm_remove_one(struct ib_device *ib_device, void *client_data)
 		ib_modify_port(ib_device, port->port_num, 0, &port_modify);
 		/* Mark all the cm_id's as not valid */
 		spin_lock_irq(&cm.lock);
-		list_for_each_entry(cm_id_priv, &port->cm_priv_altr_list, altr_list)
+		list_for_each_entry (cm_id_priv, &port->cm_priv_altr_list,
+				     altr_list)
 			cm_id_priv->altr_send_port_not_ready = 1;
-		list_for_each_entry(cm_id_priv, &port->cm_priv_prim_list, prim_list)
+		list_for_each_entry (cm_id_priv, &port->cm_priv_prim_list,
+				     prim_list)
 			cm_id_priv->prim_send_port_not_ready = 1;
 		spin_unlock_irq(&cm.lock);
 		/*
@@ -4434,7 +4380,6 @@ static int __init ib_cm_init(void)
 	cm.remote_sidr_table = RB_ROOT;
 	xa_init_flags(&cm.local_id_table, XA_FLAGS_ALLOC | XA_FLAGS_LOCK_IRQ);
 	get_random_bytes(&cm.random_id_operand, sizeof cm.random_id_operand);
-	INIT_LIST_HEAD(&cm.timewait_list);
 
 	ret = class_register(&cm_class);
 	if (ret) {
@@ -4463,21 +4408,9 @@ error1:
 
 static void __exit ib_cm_cleanup(void)
 {
-	struct cm_timewait_info *timewait_info, *tmp;
-
 	ib_unregister_client(&cm_client);
 
-	spin_lock_irq(&cm.lock);
-	list_for_each_entry(timewait_info, &cm.timewait_list, list)
-		cancel_delayed_work(&timewait_info->work.work);
-	spin_unlock_irq(&cm.lock);
-
 	destroy_workqueue(cm.wq);
-
-	list_for_each_entry_safe(timewait_info, tmp, &cm.timewait_list, list) {
-		list_del(&timewait_info->list);
-		kfree(timewait_info);
-	}
 
 	class_unregister(&cm_class);
 	WARN_ON(!xa_empty(&cm.local_id_table));
