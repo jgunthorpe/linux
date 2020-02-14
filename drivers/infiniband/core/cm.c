@@ -695,14 +695,19 @@ static struct cm_id_private * cm_find_listen(struct ib_device *device,
 	return NULL;
 }
 
-static struct cm_timewait_info * cm_insert_remote_id(struct cm_timewait_info
-						     *timewait_info)
+static struct cm_id_private *
+cm_insert_remote_id(struct cm_id_private *cm_id_priv)
 {
+	struct cm_timewait_info *timewait_info = cm_id_priv->timewait_info;
 	struct rb_node **link = &cm.remote_id_table.rb_node;
 	struct rb_node *parent = NULL;
 	struct cm_timewait_info *cur_timewait_info;
-	__be64 remote_ca_guid = timewait_info->remote_ca_guid;
-	__be32 remote_id = timewait_info->work.remote_id;
+	struct cm_id_private *res = NULL;
+	__be64 remote_ca_guid = cm_id_priv->remote_ca_guid;
+	__be32 remote_id = cm_id_priv->id.remote_id;
+
+	timewait_info->remote_ca_guid = remote_ca_guid;
+	timewait_info->work.remote_id = remote_id;
 
 	while (*link) {
 		parent = *link;
@@ -716,8 +721,12 @@ static struct cm_timewait_info * cm_insert_remote_id(struct cm_timewait_info
 			link = &(*link)->rb_left;
 		else if (be64_gt(remote_ca_guid, cur_timewait_info->remote_ca_guid))
 			link = &(*link)->rb_right;
-		else
-			return cur_timewait_info;
+		else {
+			res = cm_acquire_id(cur_timewait_info->work.local_id,
+					    cur_timewait_info->work.remote_id);
+			WARN_ON(!res);
+			return res;
+		}
 	}
 	timewait_info->inserted_remote_id = 1;
 	rb_link_node(&timewait_info->remote_id_node, parent, link);
@@ -1896,22 +1905,17 @@ static struct cm_id_private * cm_match_req(struct cm_work *work,
 					   struct cm_id_private *cm_id_priv)
 {
 	struct cm_id_private *listen_cm_id_priv, *cur_cm_id_priv;
-	struct cm_timewait_info *timewait_info;
 	struct cm_req_msg *req_msg;
 
 	req_msg = (struct cm_req_msg *)work->mad_recv_wc->recv_buf.mad;
 
 	/* Check for possible duplicate REQ. */
 	spin_lock_irq(&cm.lock);
-	timewait_info = cm_insert_remote_id(cm_id_priv->timewait_info);
-	if (timewait_info) {
-		cur_cm_id_priv = cm_acquire_id(timewait_info->work.local_id,
-					   timewait_info->work.remote_id);
+	cur_cm_id_priv = cm_insert_remote_id(cm_id_priv);
+	if (cur_cm_id_priv) {
 		spin_unlock_irq(&cm.lock);
-		if (cur_cm_id_priv) {
-			cm_dup_req_handler(work, cur_cm_id_priv);
-			cm_deref_id(cur_cm_id_priv);
-		}
+		cm_dup_req_handler(work, cur_cm_id_priv);
+		cm_deref_id(cur_cm_id_priv);
 		return NULL;
 	}
 
@@ -2022,8 +2026,6 @@ static int cm_req_handler(struct cm_work *work)
 		ret = PTR_ERR(cm_id_priv->timewait_info);
 		goto destroy;
 	}
-	cm_id_priv->timewait_info->work.remote_id =
-		cpu_to_be32(IBA_GET(CM_REQ_LOCAL_COMM_ID, req_msg));
 
 	listen_cm_id_priv = cm_match_req(work, cm_id_priv);
 	if (!listen_cm_id_priv) {
@@ -2383,18 +2385,19 @@ static int cm_rep_handler(struct cm_work *work)
 		goto error;
 	}
 
+	cm_id_priv->id.remote_id =
+		cpu_to_be32(IBA_GET(CM_REP_LOCAL_COMM_ID, rep_msg));
 	cm_id_priv->remote_qpn = cm_rep_get_qpn(rep_msg, cm_id_priv->qp_type);
 	cm_id_priv->remote_ca_guid =
 		cpu_to_be64(IBA_GET(CM_REP_LOCAL_CA_GUID, rep_msg));
 
-	cm_id_priv->timewait_info->work.remote_id =
-		cpu_to_be32(IBA_GET(CM_REP_LOCAL_COMM_ID, rep_msg));
-
 	spin_lock(&cm.lock);
 	/* Check for duplicate REP. */
-	if (cm_insert_remote_id(cm_id_priv->timewait_info)) {
+	cur_cm_id_priv = cm_insert_remote_id(cm_id_priv);
+	if (cur_cm_id_priv) {
 		spin_unlock(&cm.lock);
 		spin_unlock_irq(&cm_id_priv->lock);
+		cm_deref_id(cur_cm_id_priv);
 		ret = -EINVAL;
 		pr_debug("%s: Failed to insert remote id %d\n", __func__,
 			 IBA_GET(CM_REP_REMOTE_COMM_ID, rep_msg));
@@ -2423,8 +2426,6 @@ static int cm_rep_handler(struct cm_work *work)
 	spin_unlock(&cm.lock);
 
 	cm_id_priv->id.state = IB_CM_REP_RCVD;
-	cm_id_priv->id.remote_id =
-		cpu_to_be32(IBA_GET(CM_REP_LOCAL_COMM_ID, rep_msg));
 	cm_id_priv->initiator_depth =
 		IBA_GET(CM_REP_RESPONDER_RESOURCES, rep_msg);
 	cm_id_priv->responder_resources =
@@ -2455,6 +2456,11 @@ static int cm_rep_handler(struct cm_work *work)
 	return 0;
 
 error:
+	/*
+	 * If we get another REP then allow the cm_acquire_id at the top of the
+	 * function to still work.
+	 */
+	cm_id_priv->id.remote_id = 0;
 	cm_deref_id(cm_id_priv);
 	return ret;
 }
