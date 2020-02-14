@@ -38,8 +38,8 @@ int nouveau_dmem_migrate_vma(struct nouveau_drm *drm,
 			     unsigned long start,
 			     unsigned long end);
 
-void nouveau_dmem_convert_pfn(struct nouveau_drm *drm,
-			      struct hmm_range *range);
+void nouveau_hmm_convert_pfn(struct nouveau_drm *drm, struct hmm_range *range,
+			     u64 *ioctl_addr);
 #else /* IS_ENABLED(CONFIG_DRM_NOUVEAU_SVM) */
 static inline void nouveau_dmem_init(struct nouveau_drm *drm) {}
 static inline void nouveau_dmem_fini(struct nouveau_drm *drm) {}

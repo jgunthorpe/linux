@@ -37,27 +37,26 @@ enum {
 	HMM_NEED_ALL_BITS = HMM_NEED_FAULT | HMM_NEED_WRITE_FAULT,
 };
 
-/*
- * hmm_device_entry_from_pfn() - create a valid device entry value from pfn
- * @range: range use to encode HMM pfn value
- * @pfn: pfn value for which to create the device entry
- * Return: valid device entry for the pfn
- */
-static uint64_t hmm_device_entry_from_pfn(const struct hmm_range *range,
-					  unsigned long pfn)
+static inline struct hmm_pfn hmm_make_pfn(unsigned long pfn,
+					  unsigned long cpu_flags)
 {
-	return (pfn << range->pfn_shift) | range->flags[HMM_PFN_VALID];
+	return (struct hmm_pfn){ .pfn = pfn, .flags = cpu_flags };
+}
+
+static inline struct hmm_pfn hmm_make_flags(unsigned long cpu_flags)
+{
+	return (struct hmm_pfn){ .flags = cpu_flags };
 }
 
 static int hmm_pfns_fill(unsigned long addr, unsigned long end,
-		struct hmm_range *range, enum hmm_pfn_value_e value)
+			 struct hmm_range *range, unsigned long cpu_flags)
 {
-	uint64_t *pfns = range->pfns;
+	struct hmm_pfn *pfns = range->pfns;
 	unsigned long i;
 
 	i = (addr - range->start) >> PAGE_SHIFT;
 	for (; addr < end; addr += PAGE_SIZE, i++)
-		pfns[i] = range->values[value];
+		pfns[i] = hmm_make_flags(cpu_flags);
 
 	return 0;
 }
@@ -96,7 +95,8 @@ static int hmm_vma_fault(unsigned long addr, unsigned long end,
 }
 
 static unsigned int hmm_pte_need_fault(const struct hmm_vma_walk *hmm_vma_walk,
-				       uint64_t pfns, uint64_t cpu_flags)
+				       unsigned long pfn_req_flags,
+				       unsigned long cpu_flags)
 {
 	struct hmm_range *range = hmm_vma_walk->range;
 
@@ -110,27 +110,28 @@ static unsigned int hmm_pte_need_fault(const struct hmm_vma_walk *hmm_vma_walk,
 	 * waste to have the user pre-fill the pfn arrays with a default
 	 * flags value.
 	 */
-	pfns = (pfns & range->pfn_flags_mask) | range->default_flags;
+	pfn_req_flags =
+		(pfn_req_flags & range->pfn_flags_mask) | range->default_flags;
 
 	/* We aren't ask to do anything ... */
-	if (!(pfns & range->flags[HMM_PFN_VALID]))
+	if (!(pfn_req_flags & HMM_PFN_REQ_FAULT))
 		return 0;
 
 	/* Need to write fault ? */
-	if ((pfns & range->flags[HMM_PFN_WRITE]) &&
-	    !(cpu_flags & range->flags[HMM_PFN_WRITE]))
+	if ((pfn_req_flags & HMM_PFN_REQ_WRITE) &&
+	    !(cpu_flags & HMM_PFN_WRITE))
 		return HMM_NEED_FAULT | HMM_NEED_WRITE_FAULT;
 
 	/* If CPU page table is not valid then we need to fault */
-	if (!(cpu_flags & range->flags[HMM_PFN_VALID]))
+	if (!(cpu_flags & HMM_PFN_VALID))
 		return HMM_NEED_FAULT;
 	return 0;
 }
 
 static unsigned int
 hmm_range_need_fault(const struct hmm_vma_walk *hmm_vma_walk,
-		     const uint64_t *pfns, unsigned long npages,
-		     uint64_t cpu_flags)
+		     const struct hmm_pfn *pfns, unsigned long npages,
+		     unsigned long cpu_flags)
 {
 	struct hmm_range *range = hmm_vma_walk->range;
 	unsigned int required_fault = 0;
@@ -142,12 +143,12 @@ hmm_range_need_fault(const struct hmm_vma_walk *hmm_vma_walk,
 	 * hmm_pte_need_fault() will always return 0.
 	 */
 	if (!((range->default_flags | range->pfn_flags_mask) &
-	      range->flags[HMM_PFN_VALID]))
+	      HMM_PFN_REQ_FAULT))
 		return 0;
 
 	for (i = 0; i < npages; ++i) {
-		required_fault |=
-			hmm_pte_need_fault(hmm_vma_walk, pfns[i], cpu_flags);
+		required_fault |= hmm_pte_need_fault(hmm_vma_walk,
+						     pfns[i].flags, cpu_flags);
 		if (required_fault == HMM_NEED_ALL_BITS)
 			return required_fault;
 	}
@@ -161,7 +162,7 @@ static int hmm_vma_walk_hole(unsigned long addr, unsigned long end,
 	struct hmm_range *range = hmm_vma_walk->range;
 	unsigned int required_fault;
 	unsigned long i, npages;
-	uint64_t *pfns;
+	struct hmm_pfn *pfns;
 
 	i = (addr - range->start) >> PAGE_SHIFT;
 	npages = (end - addr) >> PAGE_SHIFT;
@@ -174,27 +175,27 @@ static int hmm_vma_walk_hole(unsigned long addr, unsigned long end,
 	}
 	if (required_fault)
 		return hmm_vma_fault(addr, end, required_fault, walk);
-	return hmm_pfns_fill(addr, end, range, HMM_PFN_NONE);
+	return hmm_pfns_fill(addr, end, range, HMM_PFN_FAULTABLE);
 }
 
-static inline uint64_t pmd_to_hmm_pfn_flags(struct hmm_range *range, pmd_t pmd)
+static inline unsigned long pmd_to_hmm_pfn_flags(struct hmm_range *range,
+						 pmd_t pmd)
 {
 	if (pmd_protnone(pmd))
-		return 0;
-	return pmd_write(pmd) ? range->flags[HMM_PFN_VALID] |
-				range->flags[HMM_PFN_WRITE] :
-				range->flags[HMM_PFN_VALID];
+		return HMM_PFN_FAULTABLE;
+	return pmd_write(pmd) ? (HMM_PFN_VALID | HMM_PFN_WRITE) : HMM_PFN_VALID;
 }
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 static int hmm_vma_handle_pmd(struct mm_walk *walk, unsigned long addr,
-		unsigned long end, uint64_t *pfns, pmd_t pmd)
+			      unsigned long end, struct hmm_pfn *pfns,
+			      pmd_t pmd)
 {
 	struct hmm_vma_walk *hmm_vma_walk = walk->private;
 	struct hmm_range *range = hmm_vma_walk->range;
 	unsigned long pfn, npages, i;
 	unsigned int required_fault;
-	uint64_t cpu_flags;
+	unsigned long cpu_flags;
 
 	npages = (end - addr) >> PAGE_SHIFT;
 	cpu_flags = pmd_to_hmm_pfn_flags(range, pmd);
@@ -205,13 +206,13 @@ static int hmm_vma_handle_pmd(struct mm_walk *walk, unsigned long addr,
 
 	pfn = pmd_pfn(pmd) + ((addr & ~PMD_MASK) >> PAGE_SHIFT);
 	for (i = 0; addr < end; addr += PAGE_SIZE, i++, pfn++)
-		pfns[i] = hmm_device_entry_from_pfn(range, pfn) | cpu_flags;
+		pfns[i] = hmm_make_pfn(pfn, cpu_flags);
 	return 0;
 }
 #else /* CONFIG_TRANSPARENT_HUGEPAGE */
 /* stub to allow the code below to compile */
 int hmm_vma_handle_pmd(struct mm_walk *walk, unsigned long addr,
-		unsigned long end, uint64_t *pfns, pmd_t pmd);
+		unsigned long end, struct hmm_pfn *pfns, pmd_t pmd);
 #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
 
 static inline bool hmm_is_device_private_entry(struct hmm_range *range,
@@ -222,31 +223,31 @@ static inline bool hmm_is_device_private_entry(struct hmm_range *range,
 		range->dev_private_owner;
 }
 
-static inline uint64_t pte_to_hmm_pfn_flags(struct hmm_range *range, pte_t pte)
+static inline unsigned long pte_to_hmm_pfn_flags(struct hmm_range *range,
+						 pte_t pte)
 {
 	if (pte_none(pte) || !pte_present(pte) || pte_protnone(pte))
-		return 0;
-	return pte_write(pte) ? range->flags[HMM_PFN_VALID] |
-				range->flags[HMM_PFN_WRITE] :
-				range->flags[HMM_PFN_VALID];
+		return HMM_PFN_FAULTABLE;
+	return pte_write(pte) ? (HMM_PFN_VALID | HMM_PFN_WRITE) : HMM_PFN_VALID;
 }
 
 static int hmm_vma_handle_pte(struct mm_walk *walk, unsigned long addr,
 			      unsigned long end, pmd_t *pmdp, pte_t *ptep,
-			      uint64_t *pfn)
+			      struct hmm_pfn *pfn)
 {
 	struct hmm_vma_walk *hmm_vma_walk = walk->private;
 	struct hmm_range *range = hmm_vma_walk->range;
 	unsigned int required_fault;
-	uint64_t cpu_flags;
+	unsigned long cpu_flags;
 	pte_t pte = *ptep;
-	uint64_t orig_pfn = *pfn;
+	uint64_t pfn_req_flags = pfn->flags;
 
 	if (pte_none(pte)) {
-		required_fault = hmm_pte_need_fault(hmm_vma_walk, orig_pfn, 0);
+		required_fault =
+			hmm_pte_need_fault(hmm_vma_walk, pfn_req_flags, 0);
 		if (required_fault)
 			goto fault;
-		*pfn = range->values[HMM_PFN_NONE];
+		*pfn = hmm_make_flags(HMM_PFN_FAULTABLE);
 		return 0;
 	}
 
@@ -258,17 +259,18 @@ static int hmm_vma_handle_pte(struct mm_walk *walk, unsigned long addr,
 		 * the PFN even if not present.
 		 */
 		if (hmm_is_device_private_entry(range, entry)) {
-			*pfn = hmm_device_entry_from_pfn(range,
-				device_private_entry_to_pfn(entry));
-			*pfn |= range->flags[HMM_PFN_VALID];
+			cpu_flags = HMM_PFN_VALID | HMM_PFN_DEVICE_PRIVATE;
 			if (is_write_device_private_entry(entry))
-				*pfn |= range->flags[HMM_PFN_WRITE];
+				cpu_flags |= HMM_PFN_WRITE;
+			*pfn = hmm_make_pfn(device_private_entry_to_pfn(entry),
+					    cpu_flags);
 			return 0;
 		}
 
-		required_fault = hmm_pte_need_fault(hmm_vma_walk, orig_pfn, 0);
+		required_fault =
+			hmm_pte_need_fault(hmm_vma_walk, pfn_req_flags, 0);
 		if (!required_fault) {
-			*pfn = range->values[HMM_PFN_NONE];
+			*pfn = hmm_make_flags(HMM_PFN_FAULTABLE);
 			return 0;
 		}
 
@@ -288,7 +290,8 @@ static int hmm_vma_handle_pte(struct mm_walk *walk, unsigned long addr,
 	}
 
 	cpu_flags = pte_to_hmm_pfn_flags(range, pte);
-	required_fault = hmm_pte_need_fault(hmm_vma_walk, orig_pfn, cpu_flags);
+	required_fault =
+		hmm_pte_need_fault(hmm_vma_walk, pfn_req_flags, cpu_flags);
 	if (required_fault)
 		goto fault;
 
@@ -297,15 +300,15 @@ static int hmm_vma_handle_pte(struct mm_walk *walk, unsigned long addr,
 	 * fall through and treat it like a normal page.
 	 */
 	if (pte_special(pte) && !is_zero_pfn(pte_pfn(pte))) {
-		if (hmm_pte_need_fault(hmm_vma_walk, orig_pfn, 0)) {
+		if (hmm_pte_need_fault(hmm_vma_walk, pfn_req_flags, 0)) {
 			pte_unmap(ptep);
 			return -EFAULT;
 		}
-		*pfn = range->values[HMM_PFN_SPECIAL];
+		*pfn = hmm_make_flags(HMM_PFN_ERROR);
 		return 0;
 	}
 
-	*pfn = hmm_device_entry_from_pfn(range, pte_pfn(pte)) | cpu_flags;
+	*pfn = hmm_make_pfn(pte_pfn(pte), cpu_flags);
 	return 0;
 
 fault:
@@ -321,7 +324,8 @@ static int hmm_vma_walk_pmd(pmd_t *pmdp,
 {
 	struct hmm_vma_walk *hmm_vma_walk = walk->private;
 	struct hmm_range *range = hmm_vma_walk->range;
-	uint64_t *pfns = &range->pfns[(start - range->start) >> PAGE_SHIFT];
+	struct hmm_pfn *pfns =
+		&range->pfns[(start - range->start) >> PAGE_SHIFT];
 	unsigned long npages = (end - start) >> PAGE_SHIFT;
 	unsigned long addr = start;
 	pte_t *ptep;
@@ -338,7 +342,7 @@ again:
 			pmd_migration_entry_wait(walk->mm, pmdp);
 			return -EBUSY;
 		}
-		return hmm_pfns_fill(start, end, range, HMM_PFN_NONE);
+		return hmm_pfns_fill(start, end, range, HMM_PFN_FAULTABLE);
 	}
 
 	if (!pmd_present(pmd)) {
@@ -393,13 +397,12 @@ again:
 
 #if defined(CONFIG_ARCH_HAS_PTE_DEVMAP) && \
     defined(CONFIG_HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD)
-static inline uint64_t pud_to_hmm_pfn_flags(struct hmm_range *range, pud_t pud)
+static inline unsigned long pud_to_hmm_pfn_flags(struct hmm_range *range,
+						 pud_t pud)
 {
 	if (!pud_present(pud))
 		return 0;
-	return pud_write(pud) ? range->flags[HMM_PFN_VALID] |
-				range->flags[HMM_PFN_WRITE] :
-				range->flags[HMM_PFN_VALID];
+	return pud_write(pud) ? (HMM_PFN_VALID | HMM_PFN_WRITE) : HMM_PFN_VALID;
 }
 
 static int hmm_vma_walk_pud(pud_t *pudp, unsigned long start, unsigned long end,
@@ -427,7 +430,8 @@ static int hmm_vma_walk_pud(pud_t *pudp, unsigned long start, unsigned long end,
 	if (pud_huge(pud) && pud_devmap(pud)) {
 		unsigned long i, npages, pfn;
 		unsigned int required_fault;
-		uint64_t *pfns, cpu_flags;
+		struct hmm_pfn *pfns;
+		unsigned long cpu_flags;
 
 		if (!pud_present(pud)) {
 			spin_unlock(ptl);
@@ -448,8 +452,7 @@ static int hmm_vma_walk_pud(pud_t *pudp, unsigned long start, unsigned long end,
 
 		pfn = pud_pfn(pud) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
 		for (i = 0; i < npages; ++i, ++pfn)
-			pfns[i] = hmm_device_entry_from_pfn(range, pfn) |
-				  cpu_flags;
+			pfns[i] = hmm_make_pfn(pfn, cpu_flags);
 		goto out_unlock;
 	}
 
@@ -473,8 +476,9 @@ static int hmm_vma_walk_hugetlb_entry(pte_t *pte, unsigned long hmask,
 	struct hmm_vma_walk *hmm_vma_walk = walk->private;
 	struct hmm_range *range = hmm_vma_walk->range;
 	struct vm_area_struct *vma = walk->vma;
-	uint64_t orig_pfn, cpu_flags;
 	unsigned int required_fault;
+	unsigned long pfn_req_flags;
+	unsigned long cpu_flags;
 	spinlock_t *ptl;
 	pte_t entry;
 
@@ -482,9 +486,10 @@ static int hmm_vma_walk_hugetlb_entry(pte_t *pte, unsigned long hmask,
 	entry = huge_ptep_get(pte);
 
 	i = (start - range->start) >> PAGE_SHIFT;
-	orig_pfn = range->pfns[i];
+	pfn_req_flags = range->pfns[i].flags;
 	cpu_flags = pte_to_hmm_pfn_flags(range, entry);
-	required_fault = hmm_pte_need_fault(hmm_vma_walk, orig_pfn, cpu_flags);
+	required_fault =
+		hmm_pte_need_fault(hmm_vma_walk, pfn_req_flags, cpu_flags);
 	if (required_fault) {
 		spin_unlock(ptl);
 		return hmm_vma_fault(addr, end, required_fault, walk);
@@ -492,8 +497,8 @@ static int hmm_vma_walk_hugetlb_entry(pte_t *pte, unsigned long hmask,
 
 	pfn = pte_pfn(entry) + ((start & ~hmask) >> PAGE_SHIFT);
 	for (; addr < end; addr += PAGE_SIZE, i++, pfn++)
-		range->pfns[i] = hmm_device_entry_from_pfn(range, pfn) |
-				 cpu_flags;
+		range->pfns[i] = hmm_make_pfn(pfn, cpu_flags);
+
 	spin_unlock(ptl);
 	return 0;
 }

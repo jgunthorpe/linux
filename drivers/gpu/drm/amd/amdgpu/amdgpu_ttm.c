@@ -772,18 +772,6 @@ struct amdgpu_ttm_tt {
 };
 
 #ifdef CONFIG_DRM_AMDGPU_USERPTR
-/* flags used by HMM internal, not related to CPU/GPU PTE flags */
-static const uint64_t hmm_range_flags[HMM_PFN_FLAG_MAX] = {
-	(1 << 0), /* HMM_PFN_VALID */
-	(1 << 1), /* HMM_PFN_WRITE */
-};
-
-static const uint64_t hmm_range_values[HMM_PFN_VALUE_MAX] = {
-	0xfffffffffffffffeUL, /* HMM_PFN_ERROR */
-	0, /* HMM_PFN_NONE */
-	0xfffffffffffffffcUL /* HMM_PFN_SPECIAL */
-};
-
 /**
  * amdgpu_ttm_tt_get_user_pages - get device accessible pages that back user
  * memory and start HMM tracking CPU page table update
@@ -822,14 +810,11 @@ int amdgpu_ttm_tt_get_user_pages(struct amdgpu_bo *bo, struct page **pages)
 		goto out;
 	}
 	range->notifier = &bo->notifier;
-	range->flags = hmm_range_flags;
-	range->values = hmm_range_values;
-	range->pfn_shift = PAGE_SHIFT;
 	range->start = bo->notifier.interval_tree.start;
 	range->end = bo->notifier.interval_tree.last + 1;
-	range->default_flags = hmm_range_flags[HMM_PFN_VALID];
+	range->default_flags = HMM_PFN_REQ_FAULT;
 	if (!amdgpu_ttm_tt_is_readonly(ttm))
-		range->default_flags |= range->flags[HMM_PFN_WRITE];
+		range->default_flags |= HMM_PFN_REQ_WRITE;
 
 	range->pfns = kvmalloc_array(ttm->num_pages, sizeof(*range->pfns),
 				     GFP_KERNEL);
@@ -868,17 +853,13 @@ retry:
 		goto out_free_pfns;
 	}
 
-	for (i = 0; i < ttm->num_pages; i++) {
-		/* FIXME: The pages cannot be touched outside the notifier_lock */
-		pages[i] = hmm_device_entry_to_page(range, range->pfns[i]);
-		if (unlikely(!pages[i])) {
-			pr_err("Page fault failed for pfn[%lu] = 0x%llx\n",
-			       i, range->pfns[i]);
-			r = -ENOMEM;
-
-			goto out_free_pfns;
-		}
-	}
+	/*
+	 * Due to default_flags, all pages are HMM_PFN_VALID or
+	 * hmm_range_fault() fails. FIXME: The pages cannot be touched outside
+	 * the notifier_lock, and mmu_interval_read_retry() must be done first.
+	 */
+	for (i = 0; i < ttm->num_pages; i++)
+		pages[i] = hmm_pfn_to_page(&range->pfns[i]);
 
 	gtt->range = range;
 	mmput(mm);
@@ -1014,8 +995,7 @@ static void amdgpu_ttm_tt_unpin_userptr(struct ttm_tt *ttm)
 
 		for (i = 0; i < ttm->num_pages; i++) {
 			if (ttm->pages[i] !=
-				hmm_device_entry_to_page(gtt->range,
-					      gtt->range->pfns[i]))
+			    hmm_pfn_to_page(&gtt->range->pfns[i]))
 				break;
 		}
 

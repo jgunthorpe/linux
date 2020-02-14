@@ -672,27 +672,63 @@ out:
 	return ret;
 }
 
-void
-nouveau_dmem_convert_pfn(struct nouveau_drm *drm,
-			 struct hmm_range *range)
+void nouveau_hmm_convert_pfn(struct nouveau_drm *drm, struct hmm_range *range,
+			     u64 *ioctl_addr)
 {
 	unsigned long i, npages;
 
+	/*
+	 * The ioctl_addr prepared here is passed through nvif_object_ioctl()
+	 * to an eventual DMA map on some call chain like:
+	 *    nouveau_svm_fault():
+	 *      args.i.m.method = NVIF_VMM_V0_PFNMAP
+	 *      nouveau_range_fault()
+	 *       nvif_object_ioctl()
+	 *        client->driver->ioctl()
+	 *           struct nvif_driver nvif_driver_nvkm:
+	 *             .ioctl = nvkm_client_ioctl
+	 *            nvkm_ioctl()
+	 *             nvkm_ioctl_path()
+	 *               nvkm_ioctl_v0[type].func(..)
+	 *               nvkm_ioctl_mthd()
+	 *                nvkm_object_mthd()
+	 *                   struct nvkm_object_func nvkm_uvmm:
+	 *                     .mthd = nvkm_uvmm_mthd
+	 *                    nvkm_uvmm_mthd()
+	 *                     nvkm_uvmm_mthd_pfnmap()
+	 *                      nvkm_vmm_pfn_map()
+	 *                       nvkm_vmm_ptes_get_map()
+	 *                        func == gp100_vmm_pgt_pfn
+	 *                         struct nvkm_vmm_desc_func gp100_vmm_desc_spt:
+	 *                           .pfn = gp100_vmm_pgt_pfn
+	 *                          nvkm_vmm_iter()
+	 *                           REF_PTES == func == gp100_vmm_pgt_pfn()
+	 *			      dma_map_page()
+	 *
+	 * This is all just encoding the internal hmm reprensetation into a
+	 * different nouveau internal representation.
+	 */
 	npages = (range->end - range->start) >> PAGE_SHIFT;
 	for (i = 0; i < npages; ++i) {
-		struct page *page;
-		uint64_t addr;
+		unsigned long cpu_flags = range->pfns[i].flags;
+		u64 nvflags = 0;
 
-		page = hmm_device_entry_to_page(range, range->pfns[i]);
-		if (page == NULL)
-			continue;
+		if (cpu_flags & HMM_PFN_VALID)
+			nvflags |= NVIF_VMM_PFNMAP_V0_V;
+		if (cpu_flags & HMM_PFN_WRITE)
+			nvflags |= NVIF_VMM_PFNMAP_V0_W;
+		if (cpu_flags & HMM_PFN_DEVICE_PRIVATE) {
+			struct page *page = hmm_pfn_to_page(&range->pfns[i]);
 
-		if (!is_device_private_page(page))
-			continue;
-
-		addr = nouveau_dmem_page_addr(page);
-		range->pfns[i] &= ((1UL << range->pfn_shift) - 1);
-		range->pfns[i] |= (addr >> PAGE_SHIFT) << range->pfn_shift;
-		range->pfns[i] |= NVIF_VMM_PFNMAP_V0_VRAM;
+			if (WARN_ON(!is_device_private_page(page)))
+				ioctl_addr[i] = 0;
+			else
+				ioctl_addr[i] = nouveau_dmem_page_addr(page) |
+					  nvflags | NVIF_VMM_PFNMAP_V0_VRAM;
+		} else {
+			ioctl_addr[i] = (range->pfns[i].pfn << PAGE_SHIFT) |
+					nvflags | NVIF_VMM_PFNMAP_V0_HOST;
+			/* Ralph: What about NVIF_VMM_PFNMAP_V0_APER ? */
+		}
 	}
 }
