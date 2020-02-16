@@ -1986,6 +1986,8 @@ static int cm_req_handler(struct cm_work *work)
 	if (IS_ERR(cm_id))
 		return PTR_ERR(cm_id);
 
+	/* FIXME: add locking here too */
+
 	cm_id_priv = container_of(cm_id, struct cm_id_private, id);
 	cm_id_priv->id.remote_id =
 		cpu_to_be32(IBA_GET(CM_REQ_LOCAL_COMM_ID, req_msg));
@@ -3525,32 +3527,35 @@ static int cm_sidr_req_handler(struct cm_work *work)
 	if (ret)
 		goto out;
 
+	spin_lock_irq(&cm_id_priv->lock);
 	cm_id_priv->id.remote_id =
 		cpu_to_be32(IBA_GET(CM_SIDR_REQ_REQUESTID, sidr_req_msg));
 	cm_id_priv->tid = sidr_req_msg->hdr.tid;
 	atomic_inc(&cm_id_priv->work_count);
 
-	spin_lock_irq(&cm.lock);
+	spin_lock(&cm.lock);
 	cur_cm_id_priv = cm_insert_remote_sidr(cm_id_priv);
 	if (cur_cm_id_priv) {
-		spin_unlock_irq(&cm.lock);
+		spin_unlock(&cm.lock);
+		spin_unlock_irq(&cm_id_priv->lock);
 		atomic_long_inc(&work->port->counter_group[CM_RECV_DUPLICATES].
 				counter[CM_SIDR_REQ_COUNTER]);
 		goto out; /* Duplicate message. */
 	}
-	cm_id_priv->id.state = IB_CM_SIDR_REQ_RCVD;
 	cur_cm_id_priv = cm_find_listen(
 		cm_id->device,
 		cpu_to_be64(IBA_GET(CM_SIDR_REQ_SERVICEID, sidr_req_msg)));
 	if (!cur_cm_id_priv) {
-		spin_unlock_irq(&cm.lock);
+		spin_unlock(&cm.lock);
+		spin_unlock_irq(&cm_id_priv->lock);
 		cm_reject_sidr_req(cm_id_priv, IB_SIDR_UNSUPPORTED);
 		goto out; /* No match. */
 	}
 	refcount_inc(&cur_cm_id_priv->refcount);
 	refcount_inc(&cm_id_priv->refcount);
-	spin_unlock_irq(&cm.lock);
+	spin_unlock(&cm.lock);
 
+	cm_id_priv->id.state = IB_CM_SIDR_REQ_RCVD;
 	cm_id_priv->id.cm_handler = cur_cm_id_priv->id.cm_handler;
 	cm_id_priv->id.context = cur_cm_id_priv->id.context;
 	cm_id_priv->id.service_id =
@@ -3558,6 +3563,7 @@ static int cm_sidr_req_handler(struct cm_work *work)
 	cm_id_priv->id.service_mask = ~cpu_to_be64(0);
 
 	cm_format_sidr_req_event(work, cm_id_priv, &cur_cm_id_priv->id);
+	spin_unlock_irq(&cm_id_priv->lock);
 	cm_process_work(cm_id_priv, work);
 	cm_deref_id(cur_cm_id_priv);
 	return 0;
