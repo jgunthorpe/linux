@@ -593,6 +593,16 @@ static struct cm_id_private *cm_acquire_id(__be32 local_id, __be32 remote_id)
 
 	rcu_read_lock();
 	cm_id_priv = xa_load(&cm.local_id_table, cm_local_id(local_id));
+	/* FIXME id.remote_id cannot be read without holding the spinlock.
+	   Every remaning caller is now in a mad handler function which has a general pattern of
+	         cm_id_priv = cm_acquire_id()
+		 spin_lock(cm_id_priv)
+		 if (cm_id_priv->state != <good states>)
+		      return EINVAL
+
+           Lift the test for remote id to be before the test for state in every
+	   caller, make cm_acquire_id only work on the local_id
+	*/
 	if (!cm_id_priv || cm_id_priv->id.remote_id != remote_id ||
 	    !refcount_inc_not_zero(&cm_id_priv->refcount))
 		cm_id_priv = NULL;
