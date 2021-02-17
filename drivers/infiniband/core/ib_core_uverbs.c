@@ -9,45 +9,6 @@
 #include "core_priv.h"
 
 /**
- * rdma_umap_priv_init() - Initialize the private data of a vma
- *
- * @priv: The already allocated private data
- * @vma: The vm area struct that needs private data
- * @entry: entry into the mmap_xa that needs to be linked with
- *       this vma
- *
- * Each time we map IO memory into user space this keeps track of the
- * mapping. When the device is hot-unplugged we 'zap' the mmaps in user space
- * to point to the zero page and allow the hot unplug to proceed.
- *
- * This is necessary for cases like PCI physical hot unplug as the actual BAR
- * memory may vanish after this and access to it from userspace could MCE.
- *
- * RDMA drivers supporting disassociation must have their user space designed
- * to cope in some way with their IO pages going to the zero page.
- *
- */
-void rdma_umap_priv_init(struct rdma_umap_priv *priv,
-			 struct vm_area_struct *vma,
-			 struct rdma_user_mmap_entry *entry)
-{
-	struct ib_uverbs_file *ufile = vma->vm_file->private_data;
-
-	priv->vma = vma;
-	if (entry) {
-		kref_get(&entry->ref);
-		priv->entry = entry;
-	}
-	vma->vm_private_data = priv;
-	/* vm_ops is setup in ib_uverbs_mmap() to avoid module dependencies */
-
-	mutex_lock(&ufile->umap_lock);
-	list_add(&priv->list, &ufile->umaps);
-	mutex_unlock(&ufile->umap_lock);
-}
-EXPORT_SYMBOL(rdma_umap_priv_init);
-
-/**
  * rdma_user_mmap_io() - Map IO memory into a process
  *
  * @ucontext: associated user context
@@ -69,7 +30,6 @@ int rdma_user_mmap_io(struct ib_ucontext *ucontext, struct vm_area_struct *vma,
 		      struct rdma_user_mmap_entry *entry)
 {
 	struct ib_uverbs_file *ufile = ucontext->ufile;
-	struct rdma_umap_priv *priv;
 
 	if (!(vma->vm_flags & VM_SHARED))
 		return -EINVAL;
@@ -83,17 +43,13 @@ int rdma_user_mmap_io(struct ib_ucontext *ucontext, struct vm_area_struct *vma,
 		return -EINVAL;
 	lockdep_assert_held(&ufile->device->disassociate_srcu);
 
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		return -ENOMEM;
-
+	/* vm_ops is setup in ib_uverbs_mmap() to avoid module dependencies */
+	vma->vm_private_data = entry;
 	vma->vm_page_prot = prot;
-	if (io_remap_pfn_range(vma, vma->vm_start, pfn, size, prot)) {
-		kfree(priv);
+	if (io_remap_pfn_range(vma, vma->vm_start, pfn, size, prot))
 		return -EAGAIN;
-	}
+	kref_get(&entry->ref);
 
-	rdma_umap_priv_init(priv, vma, entry);
 	return 0;
 }
 EXPORT_SYMBOL(rdma_user_mmap_io);
@@ -264,7 +220,6 @@ int rdma_user_mmap_entry_insert_range(struct ib_ucontext *ucontext,
 				      size_t length, u32 min_pgoff,
 				      u32 max_pgoff)
 {
-	struct ib_uverbs_file *ufile = ucontext->ufile;
 	XA_STATE(xas, &ucontext->mmap_xa, min_pgoff);
 	u32 xa_first, xa_last, npages;
 	int err;
@@ -282,8 +237,6 @@ int rdma_user_mmap_entry_insert_range(struct ib_ucontext *ucontext,
 	 * storing. During the xa_insert the lock could be released, possibly
 	 * allowing another thread to choose the same range.
 	 */
-	mutex_lock(&ufile->umap_lock);
-
 	xa_lock(&ucontext->mmap_xa);
 
 	/* We want to find an empty range */
@@ -322,7 +275,6 @@ int rdma_user_mmap_entry_insert_range(struct ib_ucontext *ucontext,
 	 */
 	entry->start_pgoff = xa_first;
 	xa_unlock(&ucontext->mmap_xa);
-	mutex_unlock(&ufile->umap_lock);
 
 	ibdev_dbg(ucontext->device, "mmap: pgoff[%#lx] npages[%#x] inserted\n",
 		  entry->start_pgoff, npages);
@@ -335,7 +287,6 @@ err_undo:
 
 err_unlock:
 	xa_unlock(&ucontext->mmap_xa);
-	mutex_unlock(&ufile->umap_lock);
 	return -ENOMEM;
 }
 EXPORT_SYMBOL(rdma_user_mmap_entry_insert_range);

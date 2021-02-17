@@ -46,6 +46,8 @@
 #include <linux/anon_inodes.h>
 #include <linux/slab.h>
 #include <linux/sched/mm.h>
+#include <linux/pseudo_fs.h>
+#include <linux/mount.h>
 
 #include <linux/uaccess.h>
 
@@ -73,6 +75,10 @@ enum {
 
 static dev_t dynamic_uverbs_dev;
 static struct class *uverbs_class;
+
+#define RDMA_MAGIC 0x52444d41 /* "RDMA" */
+static int rdma_fs_cnt;
+static struct vfsmount *rdma_fs_mnt;
 
 static DEFINE_IDA(uverbs_ida);
 static int ib_uverbs_add_one(struct ib_device *device);
@@ -125,6 +131,10 @@ static void ib_uverbs_release_dev(struct device *device)
 	cleanup_srcu_struct(&dev->disassociate_srcu);
 	mutex_destroy(&dev->lists_mutex);
 	mutex_destroy(&dev->xrcd_tree_mutex);
+	if (dev->anon_inode) {
+		iput(dev->anon_inode);
+		simple_release_fs(&rdma_fs_mnt, &rdma_fs_cnt);
+	}
 	kfree(dev);
 }
 
@@ -206,7 +216,7 @@ void ib_uverbs_release_file(struct kref *ref)
 
 	if (file->disassociate_page)
 		__free_pages(file->disassociate_page, 0);
-	mutex_destroy(&file->umap_lock);
+	mutex_destroy(&file->disassociate_page_lock);
 	mutex_destroy(&file->ucontext_lock);
 	kfree(file);
 }
@@ -693,73 +703,29 @@ static int ib_uverbs_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 	vma->vm_ops = &rdma_umap_ops;
 	ret = ucontext->device->ops.mmap(ucontext, vma);
+	/*
+	 * Old drivers will create vmas without using the rdma_user_mmap stuff,
+	 * and leave vm_private_data == NULL, so disable our mechanism.
+	 */
+	if (vma->vm_ops == &rdma_umap_ops && !vma->vm_private_data)
+		vma->vm_ops = NULL;
 out:
 	srcu_read_unlock(&file->device->disassociate_srcu, srcu_key);
 	return ret;
 }
 
-/*
- * The VMA has been dup'd, initialize the vm_private_data with a new tracking
- * struct
- */
 static void rdma_umap_open(struct vm_area_struct *vma)
 {
-	struct ib_uverbs_file *ufile = vma->vm_file->private_data;
-	struct rdma_umap_priv *opriv = vma->vm_private_data;
-	struct rdma_umap_priv *priv;
+	struct rdma_user_mmap_entry *entry = vma->vm_private_data;
 
-	if (!opriv)
-		return;
-
-	/* We are racing with disassociation */
-	if (!down_read_trylock(&ufile->hw_destroy_rwsem))
-		goto out_zap;
-	/*
-	 * Disassociation already completed, the VMA should already be zapped.
-	 */
-	if (!ufile->ucontext)
-		goto out_unlock;
-
-	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
-	if (!priv)
-		goto out_unlock;
-	rdma_umap_priv_init(priv, vma, opriv->entry);
-
-	up_read(&ufile->hw_destroy_rwsem);
-	return;
-
-out_unlock:
-	up_read(&ufile->hw_destroy_rwsem);
-out_zap:
-	/*
-	 * We can't allow the VMA to be created with the actual IO pages, that
-	 * would break our API contract, and it can't be stopped at this
-	 * point, so zap it.
-	 */
-	vma->vm_private_data = NULL;
-	zap_vma_ptes(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+	kref_get(&entry->ref);
 }
 
 static void rdma_umap_close(struct vm_area_struct *vma)
 {
-	struct ib_uverbs_file *ufile = vma->vm_file->private_data;
-	struct rdma_umap_priv *priv = vma->vm_private_data;
+	struct rdma_user_mmap_entry *entry = vma->vm_private_data;
 
-	if (!priv)
-		return;
-
-	/*
-	 * The vma holds a reference on the struct file that created it, which
-	 * in turn means that the ib_uverbs_file is guaranteed to exist at
-	 * this point.
-	 */
-	mutex_lock(&ufile->umap_lock);
-	if (priv->entry)
-		rdma_user_mmap_entry_put(priv->entry);
-
-	list_del(&priv->list);
-	mutex_unlock(&ufile->umap_lock);
-	kfree(priv);
+	rdma_user_mmap_entry_put(entry);
 }
 
 /*
@@ -769,11 +735,7 @@ static void rdma_umap_close(struct vm_area_struct *vma)
 static vm_fault_t rdma_umap_fault(struct vm_fault *vmf)
 {
 	struct ib_uverbs_file *ufile = vmf->vma->vm_file->private_data;
-	struct rdma_umap_priv *priv = vmf->vma->vm_private_data;
 	vm_fault_t ret = 0;
-
-	if (!priv)
-		return VM_FAULT_SIGBUS;
 
 	/* Read only pages can just use the system zero page. */
 	if (!(vmf->vma->vm_flags & (VM_WRITE | VM_MAYWRITE))) {
@@ -782,7 +744,7 @@ static vm_fault_t rdma_umap_fault(struct vm_fault *vmf)
 		return 0;
 	}
 
-	mutex_lock(&ufile->umap_lock);
+	mutex_lock(&ufile->disassociate_page_lock);
 	if (!ufile->disassociate_page)
 		ufile->disassociate_page =
 			alloc_pages(vmf->gfp_mask | __GFP_ZERO, 0);
@@ -797,7 +759,7 @@ static vm_fault_t rdma_umap_fault(struct vm_fault *vmf)
 	} else {
 		ret = VM_FAULT_SIGBUS;
 	}
-	mutex_unlock(&ufile->umap_lock);
+	mutex_unlock(&ufile->disassociate_page_lock);
 
 	return ret;
 }
@@ -807,69 +769,6 @@ static const struct vm_operations_struct rdma_umap_ops = {
 	.close = rdma_umap_close,
 	.fault = rdma_umap_fault,
 };
-
-void uverbs_user_mmap_disassociate(struct ib_uverbs_file *ufile)
-{
-	struct rdma_umap_priv *priv, *next_priv;
-
-	lockdep_assert_held(&ufile->hw_destroy_rwsem);
-
-	while (1) {
-		struct mm_struct *mm = NULL;
-
-		/* Get an arbitrary mm pointer that hasn't been cleaned yet */
-		mutex_lock(&ufile->umap_lock);
-		while (!list_empty(&ufile->umaps)) {
-			int ret;
-
-			priv = list_first_entry(&ufile->umaps,
-						struct rdma_umap_priv, list);
-			mm = priv->vma->vm_mm;
-			ret = mmget_not_zero(mm);
-			if (!ret) {
-				list_del_init(&priv->list);
-				if (priv->entry) {
-					rdma_user_mmap_entry_put(priv->entry);
-					priv->entry = NULL;
-				}
-				mm = NULL;
-				continue;
-			}
-			break;
-		}
-		mutex_unlock(&ufile->umap_lock);
-		if (!mm)
-			return;
-
-		/*
-		 * The umap_lock is nested under mmap_lock since it used within
-		 * the vma_ops callbacks, so we have to clean the list one mm
-		 * at a time to get the lock ordering right. Typically there
-		 * will only be one mm, so no big deal.
-		 */
-		mmap_read_lock(mm);
-		mutex_lock(&ufile->umap_lock);
-		list_for_each_entry_safe (priv, next_priv, &ufile->umaps,
-					  list) {
-			struct vm_area_struct *vma = priv->vma;
-
-			if (vma->vm_mm != mm)
-				continue;
-			list_del_init(&priv->list);
-
-			zap_vma_ptes(vma, vma->vm_start,
-				     vma->vm_end - vma->vm_start);
-
-			if (priv->entry) {
-				rdma_user_mmap_entry_put(priv->entry);
-				priv->entry = NULL;
-			}
-		}
-		mutex_unlock(&ufile->umap_lock);
-		mmap_read_unlock(mm);
-		mmput(mm);
-	}
-}
 
 /*
  * ib_uverbs_open() does not need the BKL:
@@ -887,7 +786,6 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 	struct ib_uverbs_file *file;
 	struct ib_device *ib_dev;
 	int ret;
-	int module_dependent;
 	int srcu_key;
 
 	dev = container_of(inode->i_cdev, struct ib_uverbs_device, cdev);
@@ -909,12 +807,15 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 		goto err;
 	}
 
-	/* In case IB device supports disassociate ucontext, there is no hard
-	 * dependency between uverbs device and its low level device.
+	/*
+	 * In case the IB device supports disassociate ucontext, there is no
+	 * hard dependency between uverbs device and its low level device. The
+	 * use of f_mapping causes all mmaps to be linked to the address space
+	 * and we can wipe them out on disassociation.
 	 */
-	module_dependent = !(ib_dev->ops.disassociate_ucontext);
-
-	if (module_dependent) {
+	if (dev->anon_inode) {
+		filp->f_mapping = dev->anon_inode->i_mapping;
+	} else {
 		if (!try_module_get(ib_dev->ops.owner)) {
 			ret = -ENODEV;
 			goto err;
@@ -924,10 +825,7 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 	file = kzalloc(sizeof(*file), GFP_KERNEL);
 	if (!file) {
 		ret = -ENOMEM;
-		if (module_dependent)
-			goto err_module;
-
-		goto err;
+		goto err_module;
 	}
 
 	file->device	 = dev;
@@ -937,8 +835,7 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 	spin_lock_init(&file->uobjects_lock);
 	INIT_LIST_HEAD(&file->uobjects);
 	init_rwsem(&file->hw_destroy_rwsem);
-	mutex_init(&file->umap_lock);
-	INIT_LIST_HEAD(&file->umaps);
+	mutex_init(&file->disassociate_page_lock);
 
 	filp->private_data = file;
 	list_add_tail(&file->list, &dev->uverbs_file_list);
@@ -950,8 +847,8 @@ static int ib_uverbs_open(struct inode *inode, struct file *filp)
 	return stream_open(inode, filp);
 
 err_module:
-	module_put(ib_dev->ops.owner);
-
+	if (!dev->anon_inode)
+		module_put(ib_dev->ops.owner);
 err:
 	mutex_unlock(&dev->lists_mutex);
 	srcu_read_unlock(&dev->disassociate_srcu, srcu_key);
@@ -1098,6 +995,33 @@ static int ib_uverbs_create_uapi(struct ib_device *device,
 	return 0;
 }
 
+static int rdma_fs_init_fs_context(struct fs_context *fc)
+{
+	return init_pseudo(fc, RDMA_MAGIC) ? 0 : -ENOMEM;
+}
+
+static struct file_system_type rdma_fs_type = {
+	.name = "rdma",
+	.owner = THIS_MODULE,
+	.init_fs_context = rdma_fs_init_fs_context,
+	.kill_sb = kill_anon_super,
+};
+
+static struct inode *rdma_fs_inode_new(void)
+{
+	struct inode *inode;
+	int r;
+
+	r = simple_pin_fs(&rdma_fs_type, &rdma_fs_mnt, &rdma_fs_cnt);
+	if (r < 0)
+		return ERR_PTR(r);
+
+	inode = alloc_anon_inode(rdma_fs_mnt->mnt_sb);
+	if (IS_ERR(inode))
+		simple_release_fs(&rdma_fs_mnt, &rdma_fs_cnt);
+	return inode;
+}
+
 static int ib_uverbs_add_one(struct ib_device *device)
 {
 	int devnum;
@@ -1132,6 +1056,16 @@ static int ib_uverbs_add_one(struct ib_device *device)
 	INIT_LIST_HEAD(&uverbs_dev->uverbs_file_list);
 	rcu_assign_pointer(uverbs_dev->ib_dev, device);
 	uverbs_dev->num_comp_vectors = device->num_comp_vectors;
+
+	if (!(device->ops.disassociate_ucontext)) {
+		struct inode *anon_inode = rdma_fs_inode_new();
+
+		if (IS_ERR(anon_inode)) {
+			ret = PTR_ERR(anon_inode);
+			goto err;
+		}
+		uverbs_dev->anon_inode = anon_inode;
+	}
 
 	devnum = ida_alloc_max(&uverbs_ida, IB_UVERBS_MAX_DEVICES - 1,
 			       GFP_KERNEL);

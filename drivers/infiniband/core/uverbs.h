@@ -112,6 +112,7 @@ struct ib_uverbs_device {
 	struct mutex				lists_mutex; /* protect lists */
 	struct list_head			uverbs_file_list;
 	struct uverbs_api			*uapi;
+	struct inode				*anon_inode;
 };
 
 struct ib_uverbs_event_queue {
@@ -155,8 +156,7 @@ struct ib_uverbs_file {
 	spinlock_t		uobjects_lock;
 	struct list_head	uobjects;
 
-	struct mutex umap_lock;
-	struct list_head umaps;
+	struct mutex disassociate_page_lock;
 	struct page *disassociate_page;
 
 	struct xarray		idr;

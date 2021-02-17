@@ -860,7 +860,8 @@ static void ufile_destroy_ucontext(struct ib_uverbs_file *ufile,
 	 * they need to be zap'd.
 	 */
 	if (reason == RDMA_REMOVE_DRIVER_REMOVE) {
-		uverbs_user_mmap_disassociate(ufile);
+		unmap_mapping_range(ufile->device->anon_inode->i_mapping, 0, 0,
+				    true);
 		if (ib_dev->ops.disassociate_ucontext)
 			ib_dev->ops.disassociate_ucontext(ucontext);
 	}
