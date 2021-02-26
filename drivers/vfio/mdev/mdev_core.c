@@ -85,8 +85,11 @@ void mdev_release_parent(struct kref *kref)
 	put_device(dev);
 }
 
-/* Caller must hold parent unreg_sem read or write lock */
-static void mdev_device_remove_common(struct mdev_device *mdev)
+/*
+ * Caller must hold parent unreg_sem read lock and the creation_lock, or the
+ * unreg_sem write lock
+ */
+void mdev_device_remove_locked(struct mdev_device *mdev)
 {
 	struct mdev_parent *parent = mdev->type->parent;
 
@@ -102,7 +105,7 @@ static int mdev_device_remove_cb(struct device *dev, void *data)
 	struct mdev_device *mdev = mdev_from_dev(dev);
 
 	if (mdev)
-		mdev_device_remove_common(mdev);
+		mdev_device_remove_locked(mdev);
 	return 0;
 }
 
@@ -238,6 +241,7 @@ static void mdev_device_release(struct device *dev)
 	list_del(&mdev->next);
 	mutex_unlock(&mdev_list_lock);
 
+	mutex_destroy(&mdev->creation_lock);
 	dev_dbg(&mdev->dev, "MDEV: destroying\n");
 	kfree(mdev);
 }
@@ -306,6 +310,7 @@ int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 	mdev->type = type;
 	/* Pairs with the put in mdev_device_release() */
 	kobject_get(&type->kobj);
+	mutex_init(&mdev->creation_lock);
 
 	guid_copy(&mdev->uuid, uuid);
 	list_add(&mdev->next, &mdev_list);
@@ -321,6 +326,7 @@ int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 		goto out_put_device;
 	}
 
+	mutex_lock(&mdev->creation_lock);
 	ret = device_add(&mdev->dev);
 	if (ret)
 		goto out_unlock;
@@ -333,52 +339,28 @@ int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 	if (ret)
 		goto out_del;
 
-	mdev->active = true;
 	dev_dbg(&mdev->dev, "MDEV: created\n");
+
+	/*
+	 * Any of the removal paths can instantly start running inside these two
+	 * unlocks. Holding the extra get ensures that both the new mdev and
+	 * parent pointers do not become freed while we are unlocking.
+	 */
+	get_device(&mdev->dev);
+	mutex_unlock(&mdev->creation_lock);
 	up_read(&parent->unreg_sem);
+	put_device(&mdev->dev);
 
 	return 0;
 
 out_del:
 	device_del(&mdev->dev);
 out_unlock:
+	mutex_unlock(&mdev->creation_lock);
 	up_read(&parent->unreg_sem);
 out_put_device:
 	put_device(&mdev->dev);
 	return ret;
-}
-
-int mdev_device_remove(struct mdev_device *mdev)
-{
-	struct mdev_device *tmp;
-	struct mdev_parent *parent = mdev->type->parent;
-
-	mutex_lock(&mdev_list_lock);
-	list_for_each_entry(tmp, &mdev_list, next) {
-		if (tmp == mdev)
-			break;
-	}
-
-	if (tmp != mdev) {
-		mutex_unlock(&mdev_list_lock);
-		return -ENODEV;
-	}
-
-	if (!mdev->active) {
-		mutex_unlock(&mdev_list_lock);
-		return -EAGAIN;
-	}
-
-	mdev->active = false;
-	mutex_unlock(&mdev_list_lock);
-
-	/* Check if parent unregistration has started */
-	if (!down_read_trylock(&parent->unreg_sem))
-		return -ENODEV;
-
-	mdev_device_remove_common(mdev);
-	up_read(&parent->unreg_sem);
-	return 0;
 }
 
 static int __init mdev_init(void)

@@ -19,7 +19,7 @@ struct mdev_device {
 	struct mdev_type *type;
 	struct device *iommu_device;
 	int probe_err;
-	bool active;
+	struct mutex creation_lock;
 };
 
 static inline struct mdev_device *to_mdev_device(struct device *dev)
