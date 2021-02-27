@@ -94,9 +94,11 @@ static void mdev_device_remove_common(struct mdev_device *mdev)
 	mdev_remove_sysfs_files(mdev);
 	device_del(&mdev->dev);
 	lockdep_assert_held(&parent->unreg_sem);
-	ret = parent->ops->remove(mdev);
-	if (ret)
-		dev_err(&mdev->dev, "Remove failed: err=%d\n", ret);
+	if (parent->ops->remove) {
+		ret = parent->ops->remove(mdev);
+		if (ret)
+			dev_err(&mdev->dev, "Remove failed: err=%d\n", ret);
+	}
 
 	/* Balances with device_initialize() */
 	put_device(&mdev->dev);
@@ -127,7 +129,9 @@ int mdev_register_device(struct device *dev, const struct mdev_parent_ops *ops)
 	char *envp[] = { env_string, NULL };
 
 	/* check for mandatory ops */
-	if (!ops || !ops->create || !ops->remove || !ops->supported_type_groups)
+	if (!ops || !ops->supported_type_groups)
+		return -EINVAL;
+	if (!ops->device_driver && (!ops->create || !ops->remove))
 		return -EINVAL;
 
 	dev = get_device(dev);
@@ -251,6 +255,43 @@ static void mdev_device_release(struct device *dev)
 	kfree(mdev);
 }
 
+/*
+ * mdev drivers can refuse to bind during probe(), in this case we want to fail
+ * the creation of the mdev all the way back to sysfs. This is a weird model
+ * that doesn't fit in the driver core well, nor does it seem to appear any
+ * place else in the kernel, so use a simple hack.
+ */
+static int mdev_bind_driver(struct mdev_device *mdev)
+{
+	struct mdev_driver *drv = mdev->type->parent->ops->device_driver;
+	int ret;
+
+	if (!drv)
+		drv = &vfio_mdev_driver;
+
+	while (1) {
+		device_lock(&mdev->dev);
+		if (mdev->dev.driver == &drv->driver) {
+			ret = 0;
+			goto out_unlock;
+		}
+		if (mdev->probe_err) {
+			ret = mdev->probe_err;
+			goto out_unlock;
+		}
+		device_unlock(&mdev->dev);
+		ret = device_attach(&mdev->dev);
+		if (ret)
+			return ret;
+		mdev->probe_err = -EINVAL;
+	}
+	return 0;
+
+out_unlock:
+	device_unlock(&mdev->dev);
+	return ret;
+}
+
 int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 {
 	int ret;
@@ -296,13 +337,19 @@ int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 		goto out_put_device;
 	}
 
-	ret = parent->ops->create(mdev);
-	if (ret)
-		goto out_unlock;
+	if (parent->ops->create) {
+		ret = parent->ops->create(mdev);
+		if (ret)
+			goto out_unlock;
+	}
 
 	ret = device_add(&mdev->dev);
 	if (ret)
 		goto out_remove;
+
+	ret = mdev_bind_driver(mdev);
+	if (ret)
+		goto out_del;
 
 	ret = mdev_create_sysfs_files(mdev);
 	if (ret)
@@ -317,7 +364,8 @@ int mdev_device_create(struct mdev_type *type, const guid_t *uuid)
 out_del:
 	device_del(&mdev->dev);
 out_remove:
-	parent->ops->remove(mdev);
+	if (parent->ops->remove)
+		parent->ops->remove(mdev);
 out_unlock:
 	up_read(&parent->unreg_sem);
 out_put_device:
