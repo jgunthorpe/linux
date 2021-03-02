@@ -747,7 +747,7 @@ void vfio_init_group_dev(struct vfio_device *device, struct device *dev,
 	device->dev = dev;
 	device->ops = ops;
 }
-EXPORT_SYMBOL_GPL(vfio_init_group_dev);
+EXPORT_SYMBOL(vfio_init_group_dev);
 
 int vfio_register_group_dev(struct vfio_device *device)
 {
@@ -796,7 +796,7 @@ int vfio_register_group_dev(struct vfio_device *device)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(vfio_register_group_dev);
+EXPORT_SYMBOL(vfio_register_group_dev);
 
 /**
  * Get a reference to the vfio_device for a device.  Even if the
@@ -927,7 +927,7 @@ void vfio_unregister_group_dev(struct vfio_device *device)
 	/* Matches the get in vfio_register_group_dev() */
 	vfio_group_put(group);
 }
-EXPORT_SYMBOL_GPL(vfio_unregister_group_dev);
+EXPORT_SYMBOL(vfio_unregister_group_dev);
 
 /**
  * VFIO base fd, /dev/vfio/vfio

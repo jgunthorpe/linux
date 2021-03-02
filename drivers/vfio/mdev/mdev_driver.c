@@ -74,15 +74,8 @@ static int mdev_remove(struct device *dev)
 static int mdev_match(struct device *dev, struct device_driver *drv)
 {
 	struct mdev_device *mdev = to_mdev_device(dev);
-	struct mdev_driver *target = mdev->type->parent->ops->device_driver;
 
-	/*
-	 * The ops specify the device driver to connect, fall back to the old
-	 * shim driver if the driver hasn't been converted.
-	 */
-	if (!target)
-		target = &vfio_mdev_driver;
-	return drv == &target->driver;
+	return drv == &mdev->type->parent->ops->device_driver->driver;
 }
 
 struct bus_type mdev_bus_type = {
@@ -118,13 +111,3 @@ void mdev_unregister_driver(struct mdev_driver *drv)
 	driver_unregister(&drv->driver);
 }
 EXPORT_SYMBOL(mdev_unregister_driver);
-
-int mdev_bus_register(void)
-{
-	return bus_register(&mdev_bus_type);
-}
-
-void mdev_bus_unregister(void)
-{
-	bus_unregister(&mdev_bus_type);
-}
