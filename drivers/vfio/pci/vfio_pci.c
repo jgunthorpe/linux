@@ -2021,7 +2021,6 @@ static void vfio_pci_vga_uninit(struct vfio_pci_device *vdev)
 static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct vfio_pci_device *vdev;
-	struct iommu_group *group;
 	int ret;
 
 	if (vfio_pci_is_denylisted(pdev))
@@ -2043,15 +2042,9 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return -EBUSY;
 	}
 
-	group = vfio_iommu_group_get(&pdev->dev);
-	if (!group)
-		return -EINVAL;
-
 	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
-	if (!vdev) {
-		ret = -ENOMEM;
-		goto out_group_put;
-	}
+	if (!vdev)
+		return -ENOMEM;
 
 	vfio_init_group_dev(&vdev->vdev, &pdev->dev, &vfio_pci_ops);
 	vdev->irq_type = VFIO_PCI_NUM_IRQS;
@@ -2106,8 +2099,6 @@ out_reflck:
 out_free:
 	kfree(vdev->pm_save);
 	kfree(vdev);
-out_group_put:
-	vfio_iommu_group_put(group, &pdev->dev);
 	return ret;
 }
 
@@ -2122,8 +2113,6 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 	vfio_pci_vf_uninit(vdev);
 	vfio_pci_reflck_put(vdev->reflck);
 	vfio_pci_vga_uninit(vdev);
-
-	vfio_iommu_group_put(pdev->dev.iommu_group, &pdev->dev);
 
 	if (!disable_idle_d3)
 		vfio_pci_set_power_state(vdev, PCI_D0);

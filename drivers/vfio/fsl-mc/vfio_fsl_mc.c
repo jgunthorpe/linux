@@ -604,22 +604,13 @@ static void vfio_fsl_uninit_device(struct vfio_fsl_mc_device *vdev)
 
 static int vfio_fsl_mc_probe(struct fsl_mc_device *mc_dev)
 {
-	struct iommu_group *group;
 	struct vfio_fsl_mc_device *vdev;
 	struct device *dev = &mc_dev->dev;
 	int ret;
 
-	group = vfio_iommu_group_get(dev);
-	if (!group) {
-		dev_err(dev, "VFIO_FSL_MC: No IOMMU group\n");
-		return -EINVAL;
-	}
-
 	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
-	if (!vdev) {
-		ret = -ENOMEM;
-		goto out_group_put;
-	}
+	if (!vdev)
+		return -ENOMEM;
 
 	vfio_init_group_dev(&vdev->vdev, dev, &vfio_fsl_mc_ops);
 	mutex_init(&vdev->igate);
@@ -658,8 +649,6 @@ out_reflck:
 	vfio_fsl_mc_reflck_put(vdev->reflck);
 out_kfree:
 	kfree(vdev);
-out_group_put:
-	vfio_iommu_group_put(group, dev);
 	return ret;
 }
 
@@ -676,8 +665,6 @@ static int vfio_fsl_mc_remove(struct fsl_mc_device *mc_dev)
 	vfio_fsl_mc_reflck_put(vdev->reflck);
 
 	kfree(vdev);
-	vfio_iommu_group_put(mc_dev->dev.iommu_group, dev);
-
 	return 0;
 }
 
