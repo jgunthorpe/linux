@@ -47,18 +47,17 @@ static vfio_platform_reset_fn_t vfio_platform_lookup_reset(const char *compat,
 	return reset_fn;
 }
 
-static int vfio_platform_acpi_probe(struct vfio_platform_device *vdev,
-				    struct device *dev)
+static int vfio_platform_acpi_probe(struct vfio_platform_device *vdev)
 {
 	struct acpi_device *adev;
 
 	if (acpi_disabled)
 		return -ENOENT;
 
-	adev = ACPI_COMPANION(dev);
+	adev = ACPI_COMPANION(vdev->vdev.dev);
 	if (!adev) {
-		dev_err(dev, "ACPI companion device not found for %s\n",
-			vdev->name);
+		dev_err(vdev->vdev.dev,
+			"ACPI companion device not found for vfio_platform\n");
 		return -ENODEV;
 	}
 
@@ -630,16 +629,15 @@ static const struct vfio_device_ops vfio_platform_ops = {
 	.mmap		= vfio_platform_mmap,
 };
 
-static int vfio_platform_of_probe(struct vfio_platform_device *vdev,
-			   struct device *dev)
+static int vfio_platform_of_probe(struct vfio_platform_device *vdev)
 {
 	int ret;
 
-	ret = device_property_read_string(dev, "compatible",
+	ret = device_property_read_string(vdev->vdev.dev, "compatible",
 					  &vdev->compat);
 	if (ret)
-		dev_err(dev, "Cannot retrieve compat for %s\n", vdev->name);
-
+		dev_err(vdev->vdev.dev,
+			"Cannot retrieve OF compatible string for vfio_platform\n");
 	return ret;
 }
 
@@ -667,17 +665,16 @@ int vfio_platform_probe_common(struct vfio_platform_device *vdev,
 
 	vfio_init_group_dev(&vdev->vdev, dev, &vfio_platform_ops);
 
-	ret = vfio_platform_acpi_probe(vdev, dev);
+	ret = vfio_platform_acpi_probe(vdev);
 	if (ret)
-		ret = vfio_platform_of_probe(vdev, dev);
+		ret = vfio_platform_of_probe(vdev);
 
 	if (ret)
 		return ret;
 
 	ret = vfio_platform_get_reset(vdev);
 	if (ret && vdev->reset_required) {
-		dev_err(dev, "No reset function found for device %s\n",
-			vdev->name);
+		dev_err(dev, "No reset function found\n");
 		return ret;
 	}
 

@@ -47,7 +47,6 @@ static int vfio_platform_probe(struct platform_device *pdev)
 	if (!vdev)
 		return -ENOMEM;
 
-	vdev->name = pdev->name;
 	vdev->flags = VFIO_DEVICE_FLAGS_PLATFORM;
 	vdev->get_resource = get_platform_resource;
 	vdev->get_irq = get_platform_irq;

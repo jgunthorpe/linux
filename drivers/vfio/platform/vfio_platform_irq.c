@@ -187,8 +187,8 @@ static int vfio_set_trigger(struct vfio_platform_device *vdev, int index,
 	if (fd < 0) /* Disable only */
 		return 0;
 
-	irq->name = kasprintf(GFP_KERNEL, "vfio-irq[%d](%s)",
-						irq->hwirq, vdev->name);
+	irq->name = kasprintf(GFP_KERNEL, "vfio-irq[%d](%s)", irq->hwirq,
+			      dev_name(vdev->vdev.dev));
 	if (!irq->name)
 		return -ENOMEM;
 
