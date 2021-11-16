@@ -789,6 +789,7 @@ static void mlx5_mkey_cache_free(struct mlx5_ib_dev *dev, struct mlx5_ib_mr *mr)
 {
 	struct mlx5_cache_ent *ent = mr->mmkey.cache_ent;
 
+	WRITE_ONCE(dev->cache.last_add, jiffies);
 	xa_lock_irq(&ent->mkeys);
 	push_to_reserved(ent, mr->mmkey.key);
 	queue_adjust_cache_locked(ent);
