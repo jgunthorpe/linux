@@ -595,8 +595,10 @@ static void __cache_work_func(struct mlx5_cache_ent *ent)
 		xa_lock_irq(&ent->mkeys);
 		if (ent->disabled)
 			goto out;
-		if (need_delay)
+		if (need_delay) {
 			queue_delayed_work(cache->wq, &ent->dwork, 300 * HZ);
+			goto out;
+		}
 		remove_cache_mkey_locked(ent);
 		queue_adjust_cache_locked(ent);
 	}
