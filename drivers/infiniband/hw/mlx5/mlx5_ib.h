@@ -639,6 +639,7 @@ struct mlx5_ib_mkey {
 	u32 key;
 	enum mlx5_mkey_type type;
 	unsigned int ndescs;
+	unsigned int access_mode;
 	struct wait_queue_head wait;
 	refcount_t usecount;
 	struct mlx5_cache_ent *cache_ent;
@@ -744,6 +745,7 @@ struct mlx5_cache_ent {
 	char                    name[4];
 	unsigned int		ndescs;
 
+	u8 is_tmp:1;
 	u8 disabled:1;
 	u8 fill_to_high_water:1;
 
@@ -779,6 +781,7 @@ struct mlx5_mr_cache {
 	struct mutex		cache_lock;
 	struct dentry		*root;
 	unsigned long		last_add;
+	struct delayed_work	remove_ent_dwork;
 };
 
 struct mlx5_ib_port_resources {
