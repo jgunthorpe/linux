@@ -673,8 +673,6 @@ struct mlx5_ib_mr {
 		struct {
 			u32 out[MLX5_ST_SZ_DW(create_mkey_out)];
 			struct mlx5_async_work cb_work;
-			/* Cache list element */
-			struct list_head list;
 		};
 
 		/* Used only by kernel MRs (umem == NULL) */
@@ -755,11 +753,9 @@ struct umr_common {
 };
 
 struct mlx5_cache_ent {
-	struct list_head	head;
-	/* sync access to the cahce entry
-	 */
-	spinlock_t		lock;
-
+	struct xarray		mkeys;
+	unsigned long		stored;
+	unsigned long		reserved;
 
 	char                    name[4];
 	u32                     order;
@@ -771,18 +767,13 @@ struct mlx5_cache_ent {
 	u8 fill_to_high_water:1;
 
 	/*
-	 * - available_mrs is the length of list head, ie the number of MRs
-	 *   available for immediate allocation.
 	 * - total_mrs is available_mrs plus all in use MRs that could be
 	 *   returned to the cache.
 	 * - limit is the low water mark for available_mrs, 2* limit is the
 	 *   upper water mark.
-	 * - pending is the number of MRs currently being created
 	 */
 	u32 total_mrs;
-	u32 available_mrs;
 	u32 limit;
-	u32 pending;
 
 	/* Statistics */
 	u32                     miss;
