@@ -750,12 +750,12 @@ struct mlx5_cache_ent {
 	u8 fill_to_high_water:1;
 
 	/*
-	 * - total_mrs is available_mrs plus all in use MRs that could be
+	 * - total_mkeys is stored mkeys plus all in use mkeys that could be
 	 *   returned to the cache.
-	 * - limit is the low water mark for available_mrs, 2* limit is the
+	 * - limit is the low water mark for available_mkeys, 2 * limit is the
 	 *   upper water mark.
 	 */
-	u32 total_mrs;
+	u32 total_mkeys;
 	u32 limit;
 
 	/* Statistics */
@@ -775,7 +775,7 @@ struct mlx5_async_create_mkey {
 	u32 mkey;
 };
 
-struct mlx5_mr_cache {
+struct mlx5_mkey_cache {
 	struct workqueue_struct *wq;
 	struct rb_root		cache_root;
 	struct mutex		cache_lock;
@@ -1078,7 +1078,7 @@ struct mlx5_ib_dev {
 	struct mlx5_ib_resources	devr;
 
 	atomic_t			mkey_var;
-	struct mlx5_mr_cache		cache;
+	struct mlx5_mkey_cache		cache;
 	struct timer_list		delay_timer;
 	/* Prevents soft lock on massive reg MRs */
 	struct mutex			slow_path_mutex;
@@ -1325,15 +1325,15 @@ void mlx5_ib_populate_pas(struct ib_umem *umem, size_t page_size, __be64 *pas,
 			  u64 access_flags);
 void mlx5_ib_copy_pas(u64 *old, u64 *new, int step, int num);
 int mlx5_ib_get_cqe_size(struct ib_cq *ibcq);
-int mlx5_mr_cache_init(struct mlx5_ib_dev *dev);
-int mlx5_mr_cache_cleanup(struct mlx5_ib_dev *dev);
+int mlx5_mkey_cache_init(struct mlx5_ib_dev *dev);
+int mlx5_mkey_cache_cleanup(struct mlx5_ib_dev *dev);
 
 int mlx5_acc_flags_to_ent_flags(struct mlx5_ib_dev *dev, int access_flags);
 void mlx5_set_cache_mkc(struct mlx5_ib_dev *dev, void *mkc, int access_flags,
 			unsigned int access_mode, unsigned int page_shift);
-struct mlx5_ib_mr *mlx5_mr_cache_alloc(struct mlx5_ib_dev *dev, int *in,
-				       int inlen, unsigned int ndescs,
-				       unsigned int access_mode);
+struct mlx5_ib_mr *mlx5_mkey_cache_alloc(struct mlx5_ib_dev *dev, int *in,
+					 int inlen, unsigned int ndescs,
+					 unsigned int access_mode);
 
 int mlx5_ib_check_mr_status(struct ib_mr *ibmr, u32 check_mask,
 			    struct ib_mr_status *mr_status);

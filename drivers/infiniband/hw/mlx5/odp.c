@@ -434,8 +434,8 @@ static struct mlx5_ib_mr *implicit_get_child_mr(struct mlx5_ib_mr *imr,
 			   mlx5_acc_flags_to_ent_flags(dev, imr->access_flags),
 			   MLX5_MKC_ACCESS_MODE_MTT, PAGE_SHIFT);
 
-	mr = mlx5_mr_cache_alloc(dev, in, inlen, MLX5_IMR_MTT_ENTRIES,
-				 MLX5_MKC_ACCESS_MODE_MTT);
+	mr = mlx5_mkey_cache_alloc(dev, in, inlen, MLX5_IMR_MTT_ENTRIES,
+				   MLX5_MKC_ACCESS_MODE_MTT);
 	if (IS_ERR(mr)) {
 		ib_umem_odp_release(odp);
 		kfree(in);
@@ -528,8 +528,8 @@ struct mlx5_ib_mr *mlx5_ib_alloc_implicit_mr(struct mlx5_ib_pd *pd,
 			   mlx5_acc_flags_to_ent_flags(dev, access_flags),
 			   MLX5_MKC_ACCESS_MODE_KSM, PAGE_SHIFT);
 
-	imr = mlx5_mr_cache_alloc(dev, in, inlen, mlx5_imr_ksm_entries,
-				  MLX5_MKC_ACCESS_MODE_KSM);
+	imr = mlx5_mkey_cache_alloc(dev, in, inlen, mlx5_imr_ksm_entries,
+				    MLX5_MKC_ACCESS_MODE_KSM);
 	if (IS_ERR(imr)) {
 		ib_umem_odp_release(umem_odp);
 		kfree(in);

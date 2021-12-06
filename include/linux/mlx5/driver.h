@@ -699,7 +699,7 @@ enum {
 };
 
 enum {
-	MAX_MR_CACHE_ENTRIES = 21,
+	MAX_MKEY_CACHE_ENTRIES = 21,
 };
 
 struct mlx5_profile {
@@ -708,7 +708,7 @@ struct mlx5_profile {
 	struct {
 		int	size;
 		int	limit;
-	} mr_cache[MAX_MR_CACHE_ENTRIES];
+	} mr_cache[MAX_MKEY_CACHE_ENTRIES];
 };
 
 struct mlx5_hca_cap {
