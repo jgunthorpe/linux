@@ -573,7 +573,7 @@ mlxsw_sp_port_get_transceiver_overheat_stats(struct mlxsw_sp_port *mlxsw_sp_port
 	u64 stats;
 	int err;
 
-	err = mlxsw_env_module_overheat_counter_get(mlxsw_core,
+	err = mlxsw_env_module_overheat_counter_get(mlxsw_core, 0,
 						    port_mapping.module,
 						    &stats);
 	if (err)
@@ -1036,7 +1036,7 @@ static int mlxsw_sp_get_module_info(struct net_device *netdev,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	int err;
 
-	err = mlxsw_env_get_module_info(mlxsw_sp->core,
+	err = mlxsw_env_get_module_info(netdev, mlxsw_sp->core, 0,
 					mlxsw_sp_port->mapping.module,
 					modinfo);
 
@@ -1050,7 +1050,7 @@ static int mlxsw_sp_get_module_eeprom(struct net_device *netdev,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	int err;
 
-	err = mlxsw_env_get_module_eeprom(netdev, mlxsw_sp->core,
+	err = mlxsw_env_get_module_eeprom(netdev, mlxsw_sp->core, 0,
 					  mlxsw_sp_port->mapping.module, ee,
 					  data);
 
@@ -1066,8 +1066,8 @@ mlxsw_sp_get_module_eeprom_by_page(struct net_device *dev,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	u8 module = mlxsw_sp_port->mapping.module;
 
-	return mlxsw_env_get_module_eeprom_by_page(mlxsw_sp->core, module, page,
-						   extack);
+	return mlxsw_env_get_module_eeprom_by_page(mlxsw_sp->core, 0, module,
+						   page, extack);
 }
 
 static int
@@ -1210,7 +1210,7 @@ static int mlxsw_sp_reset(struct net_device *dev, u32 *flags)
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	u8 module = mlxsw_sp_port->mapping.module;
 
-	return mlxsw_env_reset_module(dev, mlxsw_sp->core, module, flags);
+	return mlxsw_env_reset_module(dev, mlxsw_sp->core, 0, module, flags);
 }
 
 static int
@@ -1222,8 +1222,8 @@ mlxsw_sp_get_module_power_mode(struct net_device *dev,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	u8 module = mlxsw_sp_port->mapping.module;
 
-	return mlxsw_env_get_module_power_mode(mlxsw_sp->core, module, params,
-					       extack);
+	return mlxsw_env_get_module_power_mode(mlxsw_sp->core, 0, module,
+					       params, extack);
 }
 
 static int
@@ -1235,7 +1235,7 @@ mlxsw_sp_set_module_power_mode(struct net_device *dev,
 	struct mlxsw_sp *mlxsw_sp = mlxsw_sp_port->mlxsw_sp;
 	u8 module = mlxsw_sp_port->mapping.module;
 
-	return mlxsw_env_set_module_power_mode(mlxsw_sp->core, module,
+	return mlxsw_env_set_module_power_mode(mlxsw_sp->core, 0, module,
 					       params->policy, extack);
 }
 
@@ -1273,10 +1273,20 @@ struct mlxsw_sp1_port_link_mode {
 
 static const struct mlxsw_sp1_port_link_mode mlxsw_sp1_port_link_mode[] = {
 	{
+		.mask		= MLXSW_REG_PTYS_ETH_SPEED_100BASE_T,
+		.mask_ethtool	= ETHTOOL_LINK_MODE_100baseT_Full_BIT,
+		.speed		= SPEED_100,
+	},
+	{
 		.mask		= MLXSW_REG_PTYS_ETH_SPEED_SGMII |
 				  MLXSW_REG_PTYS_ETH_SPEED_1000BASE_KX,
 		.mask_ethtool	= ETHTOOL_LINK_MODE_1000baseKX_Full_BIT,
 		.speed		= SPEED_1000,
+	},
+	{
+		.mask		= MLXSW_REG_PTYS_ETH_SPEED_1000BASE_T,
+		.mask_ethtool   = ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
+		.speed          = SPEED_1000,
 	},
 	{
 		.mask		= MLXSW_REG_PTYS_ETH_SPEED_10GBASE_CX4 |
@@ -1491,7 +1501,7 @@ static u32 mlxsw_sp1_to_ptys_speed_lanes(struct mlxsw_sp *mlxsw_sp, u8 width,
 
 static void
 mlxsw_sp1_reg_ptys_eth_pack(struct mlxsw_sp *mlxsw_sp, char *payload,
-			    u8 local_port, u32 proto_admin, bool autoneg)
+			    u16 local_port, u32 proto_admin, bool autoneg)
 {
 	mlxsw_reg_ptys_eth_pack(payload, local_port, proto_admin, autoneg);
 }
@@ -1969,7 +1979,7 @@ static u32 mlxsw_sp2_to_ptys_speed_lanes(struct mlxsw_sp *mlxsw_sp, u8 width,
 
 static void
 mlxsw_sp2_reg_ptys_eth_pack(struct mlxsw_sp *mlxsw_sp, char *payload,
-			    u8 local_port, u32 proto_admin,
+			    u16 local_port, u32 proto_admin,
 			    bool autoneg)
 {
 	mlxsw_reg_ptys_ext_eth_pack(payload, local_port, proto_admin, autoneg);
