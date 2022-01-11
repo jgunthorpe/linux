@@ -407,9 +407,13 @@ static void mlx5_ib_page_fault_resume(struct mlx5_ib_dev *dev,
 static struct mlx5_ib_mr *implicit_get_child_mr(struct mlx5_ib_mr *imr,
 						unsigned long idx)
 {
+	struct mlx5_ib_dev *dev = mr_to_mdev(imr);
 	struct ib_umem_odp *odp;
 	struct mlx5_ib_mr *mr;
 	struct mlx5_ib_mr *ret;
+	void *mkc;
+	int inlen;
+	int *in;
 	int err;
 
 	odp = ib_umem_odp_alloc_child(to_ib_umem_odp(imr->umem),
@@ -418,13 +422,27 @@ static struct mlx5_ib_mr *implicit_get_child_mr(struct mlx5_ib_mr *imr,
 	if (IS_ERR(odp))
 		return ERR_CAST(odp);
 
-	mr = mlx5_mr_cache_alloc(
-		mr_to_mdev(imr), MLX5_IMR_MTT_CACHE_ENTRY, imr->access_flags);
+	inlen = MLX5_ST_SZ_BYTES(create_mkey_in);
+	in = kzalloc(inlen, GFP_KERNEL);
+	if (!in) {
+		ib_umem_odp_release(odp);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	mlx5_set_cache_mkc(dev, mkc,
+			   mlx5_acc_flags_to_ent_flags(dev, imr->access_flags),
+			   MLX5_MKC_ACCESS_MODE_MTT, PAGE_SHIFT);
+
+	mr = mlx5_mkey_cache_alloc(dev, in, inlen, MLX5_IMR_MTT_ENTRIES,
+				   MLX5_MKC_ACCESS_MODE_MTT);
 	if (IS_ERR(mr)) {
 		ib_umem_odp_release(odp);
+		kfree(in);
 		return mr;
 	}
 
+	mr->access_flags = imr->access_flags;
 	mr->ibmr.pd = imr->ibmr.pd;
 	mr->ibmr.device = &mr_to_mdev(imr)->ib_dev;
 	mr->umem = &odp->umem;
@@ -468,12 +486,14 @@ static struct mlx5_ib_mr *implicit_get_child_mr(struct mlx5_ib_mr *imr,
 	xa_unlock(&imr->implicit_children);
 
 	mlx5_ib_dbg(mr_to_mdev(imr), "key %x mr %p\n", mr->mmkey.key, mr);
+	kfree(in);
 	return mr;
 
 out_lock:
 	xa_unlock(&imr->implicit_children);
 out_mr:
 	mlx5_ib_dereg_mr(&mr->ibmr, NULL);
+	kfree(in);
 	return ret;
 }
 
@@ -483,6 +503,9 @@ struct mlx5_ib_mr *mlx5_ib_alloc_implicit_mr(struct mlx5_ib_pd *pd,
 	struct mlx5_ib_dev *dev = to_mdev(pd->ibpd.device);
 	struct ib_umem_odp *umem_odp;
 	struct mlx5_ib_mr *imr;
+	void *mkc;
+	int inlen;
+	int *in;
 	int err;
 
 	if (!mlx5_ib_can_load_pas_with_umr(dev,
@@ -493,12 +516,27 @@ struct mlx5_ib_mr *mlx5_ib_alloc_implicit_mr(struct mlx5_ib_pd *pd,
 	if (IS_ERR(umem_odp))
 		return ERR_CAST(umem_odp);
 
-	imr = mlx5_mr_cache_alloc(dev, MLX5_IMR_KSM_CACHE_ENTRY, access_flags);
+	inlen = MLX5_ST_SZ_BYTES(create_mkey_in);
+	in = kzalloc(inlen, GFP_KERNEL);
+	if (!in) {
+		ib_umem_odp_release(umem_odp);
+		return ERR_PTR(-ENOMEM);
+	}
+
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	mlx5_set_cache_mkc(dev, mkc,
+			   mlx5_acc_flags_to_ent_flags(dev, access_flags),
+			   MLX5_MKC_ACCESS_MODE_KSM, PAGE_SHIFT);
+
+	imr = mlx5_mkey_cache_alloc(dev, in, inlen, mlx5_imr_ksm_entries,
+				    MLX5_MKC_ACCESS_MODE_KSM);
 	if (IS_ERR(imr)) {
 		ib_umem_odp_release(umem_odp);
+		kfree(in);
 		return imr;
 	}
 
+	imr->access_flags = access_flags;
 	imr->ibmr.pd = &pd->ibpd;
 	imr->ibmr.iova = 0;
 	imr->umem = &umem_odp->umem;
@@ -523,10 +561,12 @@ struct mlx5_ib_mr *mlx5_ib_alloc_implicit_mr(struct mlx5_ib_pd *pd,
 		goto out_mr;
 
 	mlx5_ib_dbg(dev, "key %x mr %p\n", imr->mmkey.key, imr);
+	kfree(in);
 	return imr;
 out_mr:
 	mlx5_ib_err(dev, "Failed to register MKEY %d\n", err);
 	mlx5_ib_dereg_mr(&imr->ibmr, NULL);
+	kfree(in);
 	return ERR_PTR(err);
 }
 
@@ -1589,32 +1629,6 @@ mlx5_ib_odp_destroy_eq(struct mlx5_ib_dev *dev, struct mlx5_ib_pf_eq *eq)
 	mempool_destroy(eq->pool);
 
 	return err;
-}
-
-void mlx5_odp_init_mr_cache_entry(struct mlx5_cache_ent *ent)
-{
-	if (!(ent->dev->odp_caps.general_caps & IB_ODP_SUPPORT_IMPLICIT))
-		return;
-
-	switch (ent->order - 2) {
-	case MLX5_IMR_MTT_CACHE_ENTRY:
-		ent->page = PAGE_SHIFT;
-		ent->xlt = MLX5_IMR_MTT_ENTRIES *
-			   sizeof(struct mlx5_mtt) /
-			   MLX5_IB_UMR_OCTOWORD;
-		ent->access_mode = MLX5_MKC_ACCESS_MODE_MTT;
-		ent->limit = 0;
-		break;
-
-	case MLX5_IMR_KSM_CACHE_ENTRY:
-		ent->page = MLX5_KSM_PAGE_SHIFT;
-		ent->xlt = mlx5_imr_ksm_entries *
-			   sizeof(struct mlx5_klm) /
-			   MLX5_IB_UMR_OCTOWORD;
-		ent->access_mode = MLX5_MKC_ACCESS_MODE_KSM;
-		ent->limit = 0;
-		break;
-	}
 }
 
 static const struct ib_device_ops mlx5_ib_dev_odp_ops = {
