@@ -69,6 +69,8 @@ struct vfio_device_ops {
 	int	(*mmap)(struct vfio_device *vdev, struct vm_area_struct *vma);
 	void	(*request)(struct vfio_device *vdev, unsigned int count);
 	int	(*match)(struct vfio_device *vdev, char *buf);
+	int     (*migration_step_device_state)(struct vfio_device *device,
+					       u32 next_state);
 };
 
 void vfio_init_group_dev(struct vfio_device *device, struct device *dev,
@@ -81,6 +83,9 @@ extern struct vfio_device *vfio_device_get_from_dev(struct device *dev);
 extern void vfio_device_put(struct vfio_device *device);
 
 int vfio_assign_device_set(struct vfio_device *device, void *set_id);
+
+int vfio_mig_set_device_state(struct vfio_device *device, u32 target_state,
+			      u32 *cur_state);
 
 /*
  * External user API

@@ -1557,6 +1557,242 @@ static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 	return 0;
 }
 
+enum {
+	VFIO_MIG_FSM_MAX_STATE = VFIO_DEVICE_STATE_RUNNING_P2P + 1,
+};
+
+/*
+ * vfio_mig_get_next_state - Compute the next step in the FSM
+ * @cur_fsm - The current state the device is in
+ * @new_fsm - The target state to reach
+ *
+ * Return the next step in the state progression between cur_fsm and
+ * new_fsm. This breaks down requests for complex transitions into
+ * smaller steps and returns the next step to get to new_fsm. The
+ * function may need to be called up to four times before reaching new_fsm.
+ *
+ * VFIO_DEVICE_STATE_ERROR is returned if the state transition is not allowed.
+ */
+static u32 vfio_mig_get_next_state(u32 cur_fsm, u32 new_fsm)
+{
+	/*
+	 * The coding in this table requires the driver to implement 15
+	 * FSM arcs:
+	 *        PRE_COPY -> PRE_COPY_P2P
+	 *        PRE_COPY -> RUNNING
+	 *        PRE_COPY_P2P -> PRE_COPY
+	 *        PRE_COPY_P2P -> RUNNING_P2P
+	 *        PRE_COPY_P2P -> STOP_COPY
+	 *        RESUMING -> STOP
+	 *        RUNNING -> PRE_COPY
+	 *        RUNNING -> RUNNING_P2P
+	 *        RUNNING_P2P -> PRE_COPY_P2P
+	 *        RUNNING_P2P -> RUNNING
+	 *        RUNNING_P2P -> STOP
+	 *        STOP -> RESUMING
+	 *        STOP -> RUNNING_P2P
+	 *        STOP -> STOP_COPY
+	 *        STOP_COPY -> STOP
+	 *
+	 * The coding will step through multiple states for these combination
+	 * transitions:
+	 *        PRE_COPY -> PRE_COPY_P2P -> STOP_COPY
+	 *        PRE_COPY -> RUNNING -> RUNNING_P2P
+	 *        PRE_COPY -> RUNNING -> RUNNING_P2P -> STOP
+	 *        PRE_COPY -> RUNNING -> RUNNING_P2P -> STOP -> RESUMING
+	 *        PRE_COPY_P2P -> RUNNING_P2P -> RUNNING
+	 *        PRE_COPY_P2P -> RUNNING_P2P -> STOP
+	 *        PRE_COPY_P2P -> RUNNING_P2P -> STOP -> RESUMING
+	 *        RESUMING -> STOP -> RUNNING_P2P
+	 *        RESUMING -> STOP -> RUNNING_P2P -> PRE_COPY_P2P
+	 *        RESUMING -> STOP -> RUNNING_P2P -> RUNNING
+	 *        RESUMING -> STOP -> RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *        RESUMING -> STOP -> STOP_COPY
+	 *        RUNNING -> RUNNING_P2P -> PRE_COPY_P2P
+	 *        RUNNING -> RUNNING_P2P -> STOP
+	 *        RUNNING -> RUNNING_P2P -> STOP -> RESUMING
+	 *        RUNNING -> RUNNING_P2P -> STOP -> STOP_COPY
+	 *        RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *        RUNNING_P2P -> STOP -> RESUMING
+	 *        RUNNING_P2P -> STOP -> STOP_COPY
+	 *        STOP -> RUNNING_P2P -> PRE_COPY_P2P
+	 *        STOP -> RUNNING_P2P -> RUNNING
+	 *        STOP -> RUNNING_P2P -> RUNNING -> PRE_COPY
+	 *        STOP_COPY -> STOP -> RESUMING
+	 *        STOP_COPY -> STOP -> RUNNING_P2P
+	 *        STOP_COPY -> STOP -> RUNNING_P2P -> RUNNING
+	 *
+	 *  The following transitions are blocked:
+	 *        STOP_COPY -> PRE_COPY
+	 *        STOP_COPY -> PRE_COPY_P2P
+	 */
+	static const u8 vfio_from_fsm_table[VFIO_MIG_FSM_MAX_STATE][VFIO_MIG_FSM_MAX_STATE] = {
+		[VFIO_DEVICE_STATE_STOP] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RESUMING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RUNNING] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_PRE_COPY] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_PRE_COPY_P2P] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_PRE_COPY,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_STOP_COPY] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP_COPY,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RESUMING] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_RESUMING,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_RUNNING_P2P] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_RUNNING,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_PRE_COPY_P2P,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_STOP,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_RUNNING_P2P,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+		[VFIO_DEVICE_STATE_ERROR] = {
+			[VFIO_DEVICE_STATE_STOP] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RUNNING] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_PRE_COPY_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_STOP_COPY] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RESUMING] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_RUNNING_P2P] = VFIO_DEVICE_STATE_ERROR,
+			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
+		},
+	};
+	return vfio_from_fsm_table[cur_fsm][new_fsm];
+}
+
+static bool vfio_mig_in_saving_group(u32 state)
+{
+	return state == VFIO_DEVICE_STATE_PRE_COPY ||
+	       state == VFIO_DEVICE_STATE_PRE_COPY_P2P ||
+	       state == VFIO_DEVICE_STATE_STOP_COPY;
+}
+
+/*
+ * vfio_mig_set_device_state - Change the migration device_state
+ * @device - The VFIO device to act on
+ * @target_device_state - The new state from the uAPI
+ * @cur_state - Pointer to the drivers current migration FSM state
+ *
+ * This validates target_device_state and then calls
+ * ops->migration_step_device_state() enough times to achieve the target state.
+ * See vfio_mig_get_next_state() for the required arcs.
+ *
+ * If the op callback fails then the driver should leave the device state
+ * unchanged and return errno, should this not be possible then it should set
+ * cur_state to VFIO_DEVICE_STATE_ERROR and return errno.
+ *
+ * If a step fails then this attempts to reverse the FSM back to the original
+ * state, should that fail it is set to VFIO_DEVICE_STATE_ERROR and error is
+ * returned.
+ */
+int vfio_mig_set_device_state(struct vfio_device *device, u32 target_state,
+			      u32 *cur_state)
+{
+	u32 starting_state = *cur_state;
+	u32 next_state;
+	int ret;
+
+	if (target_state >= VFIO_MIG_FSM_MAX_STATE)
+		return -EINVAL;
+
+	while (*cur_state != target_state) {
+		next_state = vfio_mig_get_next_state(*cur_state, target_state);
+		if (next_state == VFIO_DEVICE_STATE_ERROR) {
+			ret = -EINVAL;
+			goto out_restore_state;
+		}
+		ret = device->ops->migration_step_device_state(device,
+							       next_state);
+		if (ret)
+			goto out_restore_state;
+		*cur_state = next_state;
+	}
+	return 0;
+
+out_restore_state:
+	if (*cur_state == VFIO_DEVICE_STATE_ERROR)
+		return ret;
+	/*
+	 * If the window as initialized, and we closed the window, then we
+	 * cannot recover the old state.
+	 */
+	if ((vfio_mig_in_saving_group(starting_state) &&
+	     !vfio_mig_in_saving_group(*cur_state)) ||
+	    (starting_state == VFIO_DEVICE_STATE_RESUMING &&
+	     *cur_state != VFIO_DEVICE_STATE_RESUMING)) {
+		*cur_state = VFIO_DEVICE_STATE_ERROR;
+		return ret;
+	}
+
+	/*
+	 * Make a best effort to restore things back to where we started.
+	 */
+	while (*cur_state != starting_state) {
+		next_state =
+			vfio_mig_get_next_state(*cur_state, starting_state);
+		if (next_state == VFIO_DEVICE_STATE_ERROR ||
+		    device->ops->migration_step_device_state(device,
+							     next_state)) {
+			*cur_state = VFIO_DEVICE_STATE_ERROR;
+			break;
+		}
+		*cur_state = next_state;
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vfio_mig_set_device_state);
+
 static long vfio_device_fops_unl_ioctl(struct file *filep,
 				       unsigned int cmd, unsigned long arg)
 {
