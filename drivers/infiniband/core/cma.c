@@ -766,6 +766,7 @@ static int cma_resolve_ib_dev(struct rdma_id_private *id_priv)
 	unsigned int p;
 	u16 pkey, index;
 	enum ib_port_state port_state;
+	int ret;
 	int i;
 
 	cma_dev = NULL;
@@ -784,9 +785,14 @@ static int cma_resolve_ib_dev(struct rdma_id_private *id_priv)
 
 			if (ib_get_cached_port_state(cur_dev->device, p, &port_state))
 				continue;
-			for (i = 0; !rdma_query_gid(cur_dev->device,
-						    p, i, &gid);
-			     i++) {
+
+			for (i = 0; i < cur_dev->device->port_data[p].immutable.gid_tbl_len;
+			     ++i) {
+				ret = rdma_query_gid(cur_dev->device, p, i,
+						     &gid);
+				if (ret)
+					continue;
+
 				if (!memcmp(&gid, dgid, sizeof(gid))) {
 					cma_dev = cur_dev;
 					sgid = gid;
@@ -1824,6 +1830,31 @@ static void cma_release_port(struct rdma_id_private *id_priv)
 	mutex_unlock(&lock);
 }
 
+static void cma_iboe_set_mgid(struct sockaddr *addr, union ib_gid *mgid,
+			      enum ib_gid_type gid_type)
+{
+	struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
+
+	if (!cma_any_addr(addr) && addr->sa_family == AF_INET6) {
+		memcpy(mgid, &sin6->sin6_addr, sizeof(*mgid));
+		return;
+	}
+
+	memset(mgid, 0, sizeof(*mgid));
+	if (cma_any_addr(addr))
+		return;
+
+	/* AF_INET4 */
+	if (gid_type != IB_GID_TYPE_ROCE_UDP_ENCAP) {
+		mgid->raw[0] = 0xff;
+		mgid->raw[1] = 0x0e;
+	}
+	mgid->raw[10] = 0xff;
+	mgid->raw[11] = 0xff;
+	*(__be32 *)(&mgid->raw[12]) = sin->sin_addr.s_addr;
+}
+
 static void destroy_mc(struct rdma_id_private *id_priv,
 		       struct cma_multicast *mc)
 {
@@ -1841,10 +1872,13 @@ static void destroy_mc(struct rdma_id_private *id_priv,
 			ndev = dev_get_by_index(dev_addr->net,
 						dev_addr->bound_dev_if);
 		if (ndev) {
+			enum ib_gid_type gid_type;
 			union ib_gid mgid;
 
-			cma_set_mgid(id_priv, (struct sockaddr *)&mc->addr,
-				     &mgid);
+			gid_type = cma_get_default_gid_type(
+				id_priv->cma_dev, id_priv->id.port_num);
+			cma_iboe_set_mgid((struct sockaddr *)&mc->addr, &mgid,
+					  gid_type);
 
 			if (!send_only)
 				cma_igmp_send(ndev, &mgid, false);
@@ -4033,8 +4067,7 @@ static int cma_resolve_ib_udp(struct rdma_id_private *id_priv,
 
 	memset(&req, 0, sizeof req);
 	offset = cma_user_data_offset(id_priv);
-	req.private_data_len = offset + conn_param->private_data_len;
-	if (req.private_data_len < conn_param->private_data_len)
+	if (check_add_overflow(offset, conn_param->private_data_len, &req.private_data_len))
 		return -EINVAL;
 
 	if (req.private_data_len) {
@@ -4093,8 +4126,7 @@ static int cma_connect_ib(struct rdma_id_private *id_priv,
 
 	memset(&req, 0, sizeof req);
 	offset = cma_user_data_offset(id_priv);
-	req.private_data_len = offset + conn_param->private_data_len;
-	if (req.private_data_len < conn_param->private_data_len)
+	if (check_add_overflow(offset, conn_param->private_data_len, &req.private_data_len))
 		return -EINVAL;
 
 	if (req.private_data_len) {
@@ -4698,35 +4730,6 @@ static int cma_join_ib_multicast(struct rdma_id_private *id_priv,
 	return PTR_ERR_OR_ZERO(mc->sa_mc);
 }
 
-static void cma_iboe_set_mgid(struct sockaddr *addr, union ib_gid *mgid,
-			      enum ib_gid_type gid_type)
-{
-	struct sockaddr_in *sin = (struct sockaddr_in *)addr;
-	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)addr;
-
-	if (cma_any_addr(addr)) {
-		memset(mgid, 0, sizeof *mgid);
-	} else if (addr->sa_family == AF_INET6) {
-		memcpy(mgid, &sin6->sin6_addr, sizeof *mgid);
-	} else {
-		mgid->raw[0] =
-			(gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP) ? 0 : 0xff;
-		mgid->raw[1] =
-			(gid_type == IB_GID_TYPE_ROCE_UDP_ENCAP) ? 0 : 0x0e;
-		mgid->raw[2] = 0;
-		mgid->raw[3] = 0;
-		mgid->raw[4] = 0;
-		mgid->raw[5] = 0;
-		mgid->raw[6] = 0;
-		mgid->raw[7] = 0;
-		mgid->raw[8] = 0;
-		mgid->raw[9] = 0;
-		mgid->raw[10] = 0xff;
-		mgid->raw[11] = 0xff;
-		*(__be32 *)(&mgid->raw[12]) = sin->sin_addr.s_addr;
-	}
-}
-
 static int cma_iboe_join_multicast(struct rdma_id_private *id_priv,
 				   struct cma_multicast *mc)
 {
@@ -4734,7 +4737,7 @@ static int cma_iboe_join_multicast(struct rdma_id_private *id_priv,
 	int err = 0;
 	struct sockaddr *addr = (struct sockaddr *)&mc->addr;
 	struct net_device *ndev = NULL;
-	struct ib_sa_multicast ib;
+	struct ib_sa_multicast ib = {};
 	enum ib_gid_type gid_type;
 	bool send_only;
 

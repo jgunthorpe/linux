@@ -23,9 +23,9 @@ MC_CLI=${MC_CLI:=smcroutectl}
 PING_COUNT=${PING_COUNT:=10}
 PING_TIMEOUT=${PING_TIMEOUT:=5}
 WAIT_TIMEOUT=${WAIT_TIMEOUT:=20}
-INTERFACE_TIMEOUT=${INTERFACE_TIMEOUT:=600}
 REQUIRE_JQ=${REQUIRE_JQ:=yes}
 REQUIRE_MZ=${REQUIRE_MZ:=yes}
+INTERFACE_TIMEOUT=${INTERFACE_TIMEOUT:=90}
 
 relative_path="${BASH_SOURCE%/*}"
 if [[ "$relative_path" == "${BASH_SOURCE}" ]]; then
@@ -418,7 +418,7 @@ setup_wait_dev_with_timeout()
 
 	for ((i = 1; i <= $max_iterations; ++i)); do
 		ip link show dev $dev up \
-			| grep 'state UP' &> /dev/null
+			| grep 'UP,LOWER_UP' &> /dev/null
 		if [[ $? -ne 0 ]]; then
 			sleep 1
 		else
