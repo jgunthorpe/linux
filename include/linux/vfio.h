@@ -27,12 +27,18 @@ struct vfio_device_set {
 	unsigned int device_count;
 };
 
+enum vfio_device_flags {
+	/* migration state doesn't support P2P quiescence */
+	VFIO_DEV_FLAGS_MIG_NOP2P = 1 << 0,
+};
+
 struct vfio_device {
 	struct device *dev;
 	const struct vfio_device_ops *ops;
 	struct vfio_group *group;
 	struct vfio_device_set *dev_set;
 	struct list_head dev_set_list;
+	u32 flags; /* From enum vfio_device_flags */
 
 	/* Members below here are private, not for driver use */
 	refcount_t refcount;
@@ -87,7 +93,8 @@ int vfio_assign_device_set(struct vfio_device *device, void *set_id);
 int vfio_mig_set_device_state(struct vfio_device *device, u32 target_state,
 			      u32 *cur_state);
 
-int vfio_mig_arc_supported(u32 from_state, u32 to_state);
+int vfio_mig_arc_supported(struct vfio_device *vdev, u32 from_state,
+			   u32 to_state);
 /*
  * External user API
  */

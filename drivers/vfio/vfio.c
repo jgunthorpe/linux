@@ -1573,7 +1573,8 @@ enum {
  *
  * VFIO_DEVICE_STATE_ERROR is returned if the state transition is not allowed.
  */
-static u32 vfio_mig_get_next_state(u32 cur_fsm, u32 new_fsm)
+static u32 vfio_mig_get_next_state(struct vfio_device *device, u32 cur_fsm,
+				   u32 new_fsm)
 {
 	/*
 	 * The coding in this table requires the driver to implement 15
@@ -1708,7 +1709,34 @@ static u32 vfio_mig_get_next_state(u32 cur_fsm, u32 new_fsm)
 			[VFIO_DEVICE_STATE_ERROR] = VFIO_DEVICE_STATE_ERROR,
 		},
 	};
-	return vfio_from_fsm_table[cur_fsm][new_fsm];
+
+	/*
+	 * When P2P is not supported the driver must implement 9 FSM arcs:
+	 *        PRE_COPY -> RUNNING
+	 *        PRE_COPY -> STOP_COPY
+	 *        RESUMING -> STOP
+	 *        RUNNING -> PRE_COPY
+	 *        RUNNING -> STOP
+	 *        STOP -> RESUMING
+	 *        STOP -> RUNNING
+	 *        STOP -> STOP_COPY
+	 *        STOP_COPY -> STOP
+	 */
+	if (device->flags & VFIO_DEV_FLAGS_MIG_NOP2P) {
+		if (new_fsm == VFIO_DEVICE_STATE_PRE_COPY_P2P ||
+		    new_fsm == VFIO_DEVICE_STATE_RUNNING_P2P ||
+		    cur_fsm == VFIO_DEVICE_STATE_PRE_COPY_P2P ||
+		    cur_fsm == VFIO_DEVICE_STATE_RUNNING_P2P)
+			return VFIO_DEVICE_STATE_ERROR;
+	}
+
+	cur_fsm = vfio_from_fsm_table[cur_fsm][new_fsm];
+	if (device->flags & VFIO_DEV_FLAGS_MIG_NOP2P) {
+		while (cur_fsm == VFIO_DEVICE_STATE_PRE_COPY_P2P ||
+		       cur_fsm == VFIO_DEVICE_STATE_RUNNING_P2P)
+			cur_fsm = vfio_from_fsm_table[cur_fsm][new_fsm];
+	}
+	return cur_fsm;
 }
 
 static bool vfio_mig_in_saving_group(u32 state)
@@ -1747,7 +1775,8 @@ int vfio_mig_set_device_state(struct vfio_device *device, u32 target_state,
 		return -EINVAL;
 
 	while (*cur_state != target_state) {
-		next_state = vfio_mig_get_next_state(*cur_state, target_state);
+		next_state = vfio_mig_get_next_state(device, *cur_state,
+						     target_state);
 		if (next_state == VFIO_DEVICE_STATE_ERROR) {
 			ret = -EINVAL;
 			goto out_restore_state;
@@ -1779,8 +1808,8 @@ out_restore_state:
 	 * Make a best effort to restore things back to where we started.
 	 */
 	while (*cur_state != starting_state) {
-		next_state =
-			vfio_mig_get_next_state(*cur_state, starting_state);
+		next_state = vfio_mig_get_next_state(device, *cur_state,
+						     starting_state);
 		if (next_state == VFIO_DEVICE_STATE_ERROR ||
 		    device->ops->migration_step_device_state(device,
 							     next_state)) {
@@ -1793,13 +1822,14 @@ out_restore_state:
 }
 EXPORT_SYMBOL_GPL(vfio_mig_set_device_state);
 
-int vfio_mig_arc_supported(u32 from_state, u32 to_state)
+int vfio_mig_arc_supported(struct vfio_device *vdev, u32 from_state,
+			   u32 to_state)
 {
 	/*
 	 * The coding tables always have error in the first hop if the
 	 * ultimate destination is impossible.
 	 */
-	if (vfio_mig_get_next_state(from_state, to_state) ==
+	if (vfio_mig_get_next_state(vdev, from_state, to_state) ==
 	    VFIO_DEVICE_STATE_ERROR)
 		return -EOPNOTSUPP;
 

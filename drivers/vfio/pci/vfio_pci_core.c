@@ -1188,7 +1188,8 @@ hot_reset_release:
 		if (supp.argsz < minsz)
 			return -EINVAL;
 
-		return vfio_mig_arc_supported(supp.from_state, supp.to_state);
+		return vfio_mig_arc_supported(core_vdev, supp.from_state,
+					      supp.to_state);
 	}
 
 	return -ENOTTY;
