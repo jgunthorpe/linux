@@ -1173,6 +1173,21 @@ hot_reset_release:
 		default:
 			return -ENOTTY;
 		}
+	} else if (cmd == VFIO_DEVICE_MIG_ARC_SUPPORTED) {
+		struct vfio_device_mig_arc_supported supp;
+
+		if (!core_vdev->ops->migration_step_device_state)
+			return -EOPNOTSUPP;
+
+		minsz = offsetofend(struct vfio_device_mig_arc_supported,
+				    to_state);
+		if (copy_from_user(&supp, (void __user *)arg, minsz))
+			return -EFAULT;
+
+		if (supp.argsz < minsz)
+			return -EINVAL;
+
+		return vfio_mig_arc_supported(supp.from_state, supp.to_state);
 	}
 
 	return -ENOTTY;

@@ -87,6 +87,7 @@ int vfio_assign_device_set(struct vfio_device *device, void *set_id);
 int vfio_mig_set_device_state(struct vfio_device *device, u32 target_state,
 			      u32 *cur_state);
 
+int vfio_mig_arc_supported(u32 from_state, u32 to_state);
 /*
  * External user API
  */

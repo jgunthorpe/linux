@@ -536,7 +536,9 @@ struct vfio_region_gfx_edid {
  *   STOP_COPY -> PRE_COPY
  *   STOP_COPY -> PRE_COPY_P2P
  *     These arcs are not permitted and return error if requested. Future
- *     revisions of this API may define behaviors for these arcs.
+ *     revisions of this API may define behaviors for these arcs in this case
+ *     support will be discoverable by the VFIO_DEVICE_MIG_ARC_SUPPORTED
+ *     ioctl.
  *
  *   any -> ERROR
  *     ERROR cannot be specified as a device state, however any transition
@@ -578,7 +580,9 @@ struct vfio_region_gfx_edid {
  *   exist but modified so that the device is fully operational while in
  *   either state. When not supported the user will have to request
  *   combination transitions (ie PRE_COPY -> STOP_COPY / RESUMING -> RUNNING)
- *   to avoid writing the unsupported device_state value.
+ *   to avoid writing the unsupported device_state value. The user can
+ *   discover if these states are supported by using the
+ *   VFIO_DEVICE_MIG_ARC_SUPPORTED ioctl.
  *
  * reserved:
  *   Reads on this field return zero and writes are ignored.
@@ -1420,6 +1424,22 @@ struct vfio_iommu_spapr_tce_remove {
 };
 #define VFIO_IOMMU_SPAPR_TCE_REMOVE	_IO(VFIO_TYPE, VFIO_BASE + 20)
 
+/**
+ * VFIO_DEVICE_MIG_ARC_SUPPORTED - _IOW(VFIO_TYPE, VFIO_BASE + 21, struct vfio_device_mig_arc_supported)
+ *
+ * Checks whether a migration transition between the given to/from device_state
+ * is supported.
+ *
+ * Return: 0 on success, -1 and errno is set on failure.
+ */
+struct vfio_device_mig_arc_supported {
+	__u32 argsz;
+	__u32 from_state; /* state based on VFIO_DEVICE_STATE_XXX */
+	__u32 to_state;   /* state based on VFIO_DEVICE_STATE_XXX */
+	__u32 reserved;
+};
+
+#define VFIO_DEVICE_MIG_ARC_SUPPORTED	_IO(VFIO_TYPE, VFIO_BASE + 21)
 /* ***************************************************************** */
 
 #endif /* _UAPIVFIO_H */

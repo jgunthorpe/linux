@@ -1793,6 +1793,21 @@ out_restore_state:
 }
 EXPORT_SYMBOL_GPL(vfio_mig_set_device_state);
 
+int vfio_mig_arc_supported(u32 from_state, u32 to_state)
+{
+	/*
+	 * The coding tables always have error in the first hop if the
+	 * ultimate destination is impossible.
+	 */
+	if (vfio_mig_get_next_state(from_state, to_state) ==
+	    VFIO_DEVICE_STATE_ERROR)
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(vfio_mig_arc_supported);
+
+
 static long vfio_device_fops_unl_ioctl(struct file *filep,
 				       unsigned int cmd, unsigned long arg)
 {
