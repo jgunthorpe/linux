@@ -456,6 +456,8 @@ void vfio_pci_core_close_device(struct vfio_device *core_vdev)
 	vfio_spapr_pci_eeh_release(vdev->pdev);
 	vfio_pci_core_disable(vdev);
 
+	vfio_pci_dma_buf_cleanup(vdev);
+
 	mutex_lock(&vdev->igate);
 	if (vdev->err_trigger) {
 		eventfd_ctx_put(vdev->err_trigger);
@@ -644,7 +646,10 @@ int vfio_pci_try_reset_function(struct vfio_pci_core_device *vdev)
 		return -EINVAL;
 
 	vfio_pci_zap_and_down_write_memory_lock(vdev);
+	vfio_pci_dma_buf_move(vdev, true);
 	ret = pci_try_reset_function(vdev->pdev);
+	if (__vfio_pci_memory_enabled(vdev))
+		vfio_pci_dma_buf_move(vdev, false);
 	up_write(&vdev->memory_lock);
 
 	return ret;
@@ -1176,6 +1181,8 @@ hot_reset_release:
 			mutex_unlock(&vdev->vf_token->lock);
 
 			return 0;
+		case VFIO_DEVICE_FEATURE_DMA_BUF:
+			return vfio_pci_core_feature_dma_buf(vdev, flags, arg, argsz);
 		default:
 			return -ENOTTY;
 		}
@@ -1795,6 +1802,7 @@ void vfio_pci_core_init_device(struct vfio_pci_core_device *vdev,
 	mutex_init(&vdev->vma_lock);
 	INIT_LIST_HEAD(&vdev->vma_list);
 	init_rwsem(&vdev->memory_lock);
+	INIT_LIST_HEAD(&vdev->dmabufs);
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_init_device);
 
@@ -2070,7 +2078,24 @@ static int vfio_pci_dev_set_hot_reset(struct vfio_device_set *dev_set,
 	}
 	cur_mem = NULL;
 
+	/*
+	 * The pci_reset_bus() will reset all the devices in the bus.
+	 * The power state can be non-D0 for some of the devices in the bus.
+	 * For these devices, the pci_reset_bus() will internally set
+	 * the power state to D0 without vfio driver involvement.
+	 * For the devices which have NoSoftRst-, the reset function can
+	 * cause the PCI config space reset without restoring the original
+	 * state (saved locally in 'vdev->pm_save').
+	 */
+	list_for_each_entry(cur, &dev_set->device_list, vdev.dev_set_list) {
+		vfio_pci_dma_buf_move(cur, true);
+	}
+
 	ret = pci_reset_bus(pdev);
+
+	list_for_each_entry(cur, &dev_set->device_list, vdev.dev_set_list)
+		if (__vfio_pci_memory_enabled(cur))
+			vfio_pci_dma_buf_move(cur, false);
 
 err_undo:
 	list_for_each_entry(cur, &dev_set->device_list, vdev.dev_set_list) {
