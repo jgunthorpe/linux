@@ -173,8 +173,8 @@ static inline ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev,
 }
 #endif
 
-extern long vfio_pci_ioeventfd(struct vfio_pci_core_device *vdev, loff_t offset,
-			       uint64_t data, int count, int fd);
+extern int vfio_pci_ioeventfd(struct vfio_pci_core_device *vdev, loff_t offset,
+			      uint64_t data, int count, int fd);
 
 extern int vfio_pci_init_perm_bits(void);
 extern void vfio_pci_uninit_perm_bits(void);
