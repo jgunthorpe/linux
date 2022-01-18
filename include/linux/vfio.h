@@ -82,6 +82,11 @@ void vfio_unregister_group_dev(struct vfio_device *device);
 extern struct vfio_device *vfio_device_get_from_dev(struct device *dev);
 extern void vfio_device_put(struct vfio_device *device);
 
+static inline void vfio_device_get(struct vfio_device *device)
+{
+       refcount_inc(&device->refcount);
+}
+
 int vfio_assign_device_set(struct vfio_device *device, void *set_id);
 
 /* events for the backend driver notify callback */
