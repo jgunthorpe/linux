@@ -17,6 +17,18 @@
 
 #include "mdev_private.h"
 
+/*
+ * Return the struct vfio_device for the mdev when using the legacy
+ * vfio_mdev_dev_ops path. No new callers to this function should be added.
+ */
+struct vfio_device *mdev_legacy_get_vfio_device(struct mdev_device *mdev)
+{
+	if (WARN_ON(mdev->dev.driver != &vfio_mdev_driver.driver))
+		return NULL;
+	return dev_get_drvdata(&mdev->dev);
+}
+EXPORT_SYMBOL_GPL(mdev_legacy_get_vfio_device);
+
 static int vfio_mdev_open_device(struct vfio_device *core_vdev)
 {
 	struct mdev_device *mdev = to_mdev_device(core_vdev->dev);

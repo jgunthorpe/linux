@@ -29,6 +29,7 @@ static inline struct mdev_device *to_mdev_device(struct device *dev)
 unsigned int mdev_get_type_group_id(struct mdev_device *mdev);
 unsigned int mtype_get_type_group_id(struct mdev_type *mtype);
 struct device *mtype_get_parent_dev(struct mdev_type *mtype);
+struct vfio_device *mdev_legacy_get_vfio_device(struct mdev_device *mdev);
 
 /**
  * struct mdev_parent_ops - Structure to be registered for each parent device to
