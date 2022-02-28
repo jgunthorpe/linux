@@ -268,6 +268,7 @@ static void gvt_unpin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 {
 	struct drm_i915_private *i915 = vgpu->gvt->gt->i915;
 	struct kvmgt_vdev *vdev = kvmgt_vdev(vgpu);
+	struct vfio_device *vfio_dev = mdev_legacy_get_vfio_device(vdev->mdev);
 	int total_pages;
 	int npage;
 	int ret;
@@ -277,7 +278,7 @@ static void gvt_unpin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 	for (npage = 0; npage < total_pages; npage++) {
 		unsigned long cur_gfn = gfn + npage;
 
-		ret = vfio_group_unpin_pages(vdev->vfio_group, &cur_gfn, 1);
+		ret = vfio_unpin_pages(vfio_dev, &cur_gfn, 1);
 		drm_WARN_ON(&i915->drm, ret != 1);
 	}
 }
@@ -287,6 +288,7 @@ static int gvt_pin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 		unsigned long size, struct page **page)
 {
 	struct kvmgt_vdev *vdev = kvmgt_vdev(vgpu);
+	struct vfio_device *vfio_dev = mdev_legacy_get_vfio_device(vdev->mdev);
 	unsigned long base_pfn = 0;
 	int total_pages;
 	int npage;
@@ -301,8 +303,8 @@ static int gvt_pin_guest_page(struct intel_vgpu *vgpu, unsigned long gfn,
 		unsigned long cur_gfn = gfn + npage;
 		unsigned long pfn;
 
-		ret = vfio_group_pin_pages(vdev->vfio_group, &cur_gfn, 1,
-					   IOMMU_READ | IOMMU_WRITE, &pfn);
+		ret = vfio_pin_pages(vfio_dev, &cur_gfn, 1,
+				     IOMMU_READ | IOMMU_WRITE, &pfn);
 		if (ret != 1) {
 			gvt_vgpu_err("vfio_pin_pages failed for gfn 0x%lx, ret %d\n",
 				     cur_gfn, ret);
