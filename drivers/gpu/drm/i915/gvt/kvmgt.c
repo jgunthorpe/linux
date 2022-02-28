@@ -952,12 +952,15 @@ static int intel_vgpu_open_device(struct mdev_device *mdev)
 
 	ret = kvmgt_guest_init(mdev);
 	if (ret)
-		goto undo_group;
+		goto undo_module_get;
 
 	intel_gvt_ops->vgpu_activate(vgpu);
 
 	atomic_set(&vdev->released, 0);
 	return ret;
+
+undo_module_get:
+	module_put(THIS_MODULE);
 
 undo_group:
 	vfio_group_put_external_user(vdev->vfio_group);
