@@ -32,6 +32,7 @@
 #include <linux/vfio.h>
 #include <linux/wait.h>
 #include <linux/sched/signal.h>
+#include <linux/dma-map-ops.h>
 #include "vfio.h"
 
 #define DRIVER_VERSION	"0.3"
@@ -1347,6 +1348,11 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 	device = vfio_device_get_from_name(group, buf);
 	if (IS_ERR(device))
 		return PTR_ERR(device);
+
+	if (group->type == VFIO_IOMMU && !dev_is_dma_coherent(device->dev)) {
+		ret = -ENODEV;
+		goto err_device_put;
+	}
 
 	if (!try_module_get(device->dev->driver->owner)) {
 		ret = -ENODEV;
