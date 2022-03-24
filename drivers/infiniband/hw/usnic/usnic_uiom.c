@@ -42,6 +42,7 @@
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <rdma/ib_verbs.h>
+#include <linux/dma-map-ops.h>
 
 #include "usnic_log.h"
 #include "usnic_uiom.h"
@@ -474,6 +475,12 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	struct usnic_uiom_dev *uiom_dev;
 	int err;
 
+	if (!dev_is_dma_coherent(dev)) {
+		usnic_err("IOMMU of %s does not support cache coherency\n",
+				dev_name(dev));
+		return -EINVAL;
+	}
+
 	uiom_dev = kzalloc(sizeof(*uiom_dev), GFP_ATOMIC);
 	if (!uiom_dev)
 		return -ENOMEM;
@@ -483,13 +490,6 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 	if (err)
 		goto out_free_dev;
 
-	if (!iommu_capable(dev->bus, IOMMU_CAP_CACHE_COHERENCY)) {
-		usnic_err("IOMMU of %s does not support cache coherency\n",
-				dev_name(dev));
-		err = -EINVAL;
-		goto out_detach_device;
-	}
-
 	spin_lock(&pd->lock);
 	list_add_tail(&uiom_dev->link, &pd->devs);
 	pd->dev_cnt++;
@@ -497,8 +497,6 @@ int usnic_uiom_attach_dev_to_pd(struct usnic_uiom_pd *pd, struct device *dev)
 
 	return 0;
 
-out_detach_device:
-	iommu_detach_device(pd->domain, dev);
 out_free_dev:
 	kfree(uiom_dev);
 	return err;

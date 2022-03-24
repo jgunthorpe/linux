@@ -22,6 +22,7 @@
 #include <linux/vdpa.h>
 #include <linux/nospec.h>
 #include <linux/vhost.h>
+#include <linux/dma-map-ops.h>
 
 #include "vhost.h"
 
@@ -895,7 +896,7 @@ static int vhost_vdpa_alloc_domain(struct vhost_vdpa *v)
 	if (!bus)
 		return -EFAULT;
 
-	if (!iommu_capable(bus, IOMMU_CAP_CACHE_COHERENCY))
+	if (!dev_is_dma_coherent(dma_dev))
 		return -ENOTSUPP;
 
 	v->domain = iommu_domain_alloc(bus);
