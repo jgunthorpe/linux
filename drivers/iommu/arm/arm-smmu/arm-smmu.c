@@ -1333,12 +1333,6 @@ static phys_addr_t arm_smmu_iova_to_phys(struct iommu_domain *domain,
 static bool arm_smmu_capable(enum iommu_cap cap)
 {
 	switch (cap) {
-	case IOMMU_CAP_CACHE_COHERENCY:
-		/*
-		 * Return true here as the SMMU can always send out coherent
-		 * requests.
-		 */
-		return true;
 	case IOMMU_CAP_NOEXEC:
 		return true;
 	default:

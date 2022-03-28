@@ -2156,8 +2156,6 @@ static phys_addr_t amd_iommu_iova_to_phys(struct iommu_domain *dom,
 static bool amd_iommu_capable(enum iommu_cap cap)
 {
 	switch (cap) {
-	case IOMMU_CAP_CACHE_COHERENCY:
-		return true;
 	case IOMMU_CAP_INTR_REMAP:
 		return (irq_remapping_enabled == 1);
 	case IOMMU_CAP_NOEXEC:

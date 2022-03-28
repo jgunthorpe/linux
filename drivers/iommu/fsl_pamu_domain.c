@@ -177,11 +177,6 @@ static phys_addr_t fsl_pamu_iova_to_phys(struct iommu_domain *domain,
 	return iova;
 }
 
-static bool fsl_pamu_capable(enum iommu_cap cap)
-{
-	return cap == IOMMU_CAP_CACHE_COHERENCY;
-}
-
 static void fsl_pamu_domain_free(struct iommu_domain *domain)
 {
 	struct fsl_dma_domain *dma_domain = to_fsl_dma_domain(domain);
@@ -451,7 +446,6 @@ static void fsl_pamu_release_device(struct device *dev)
 }
 
 static const struct iommu_ops fsl_pamu_ops = {
-	.capable	= fsl_pamu_capable,
 	.domain_alloc	= fsl_pamu_domain_alloc,
 	.probe_device	= fsl_pamu_probe_device,
 	.release_device	= fsl_pamu_release_device,

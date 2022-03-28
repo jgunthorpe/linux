@@ -42,8 +42,6 @@ static struct s390_domain *to_s390_domain(struct iommu_domain *dom)
 static bool s390_iommu_capable(enum iommu_cap cap)
 {
 	switch (cap) {
-	case IOMMU_CAP_CACHE_COHERENCY:
-		return true;
 	case IOMMU_CAP_INTR_REMAP:
 		return true;
 	default:
