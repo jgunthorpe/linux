@@ -2184,8 +2184,9 @@ static int kvmgt_rw_gpa(unsigned long handle, unsigned long gpa,
 
 	info = (struct kvmgt_guest_info *)handle;
 
-	return vfio_dma_rw(kvmgt_vdev(info->vgpu)->vfio_group,
-			   gpa, buf, len, write);
+	return vfio_dma_rw(
+		mdev_legacy_get_vfio_device(kvmgt_vdev(info->vgpu)->mdev),
+		gpa, buf, len, write);
 }
 
 static int kvmgt_read_gpa(unsigned long handle, unsigned long gpa,
