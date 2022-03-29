@@ -1896,6 +1896,9 @@ void vfio_pci_core_unregister_device(struct vfio_pci_core_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 
+	/* Drivers must set the vfio_pci_core_device to their drvdata */
+	WARN_ON(vdev != dev_get_drvdata(&pdev->dev));
+
 	pci_disable_sriov(pdev);
 
 	vfio_unregister_group_dev(&vdev->vdev);
