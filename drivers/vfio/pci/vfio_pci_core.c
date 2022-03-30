@@ -952,7 +952,8 @@ static int
 vfio_pci_ioctl_get_pci_hot_reset_info(struct vfio_pci_core_device *vdev,
 				      void __user *arg)
 {
-	unsigned long minsz = offsetofend(struct vfio_pci_hot_reset_info, count);
+	unsigned long minsz =
+		offsetofend(struct vfio_pci_hot_reset_info, count);
 	struct vfio_pci_dependent_device *devices = NULL;
 	struct vfio_pci_fill_info fill = {};
 	struct vfio_pci_hot_reset_info hdr;
