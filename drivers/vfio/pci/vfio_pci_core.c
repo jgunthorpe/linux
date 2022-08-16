@@ -960,8 +960,7 @@ static int vfio_pci_ioctl_set_irqs(struct vfio_pci_core_device *vdev,
 	return ret;
 }
 
-static int vfio_pci_ioctl_reset(struct vfio_pci_core_device *vdev,
-				void __user *arg)
+int vfio_pci_try_reset_function(struct vfio_pci_core_device *vdev)
 {
 	int ret;
 
@@ -1202,7 +1201,7 @@ long vfio_pci_core_ioctl(struct vfio_device *core_vdev, unsigned int cmd,
 	case VFIO_DEVICE_PCI_HOT_RESET:
 		return vfio_pci_ioctl_pci_hot_reset(vdev, uarg);
 	case VFIO_DEVICE_RESET:
-		return vfio_pci_ioctl_reset(vdev, uarg);
+		return vfio_pci_try_reset_function(vdev);
 	case VFIO_DEVICE_SET_IRQS:
 		return vfio_pci_ioctl_set_irqs(vdev, uarg);
 	default:
