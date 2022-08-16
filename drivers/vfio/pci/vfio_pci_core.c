@@ -29,6 +29,8 @@
 
 #include <linux/vfio_pci_core.h>
 
+#include "vfio_pci_priv.h"
+
 #define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC "core driver for VFIO based PCI devices"
 
@@ -634,6 +636,20 @@ int vfio_pci_register_dev_region(struct vfio_pci_core_device *vdev,
 }
 EXPORT_SYMBOL_GPL(vfio_pci_register_dev_region);
 
+int vfio_pci_try_reset_function(struct vfio_pci_core_device *vdev)
+{
+	int ret;
+
+	if (!vdev->reset_works)
+		return -EINVAL;
+
+	vfio_pci_zap_and_down_write_memory_lock(vdev);
+	ret = pci_try_reset_function(vdev->pdev);
+	up_write(&vdev->memory_lock);
+
+	return ret;
+}
+
 long vfio_pci_core_ioctl(struct vfio_device *core_vdev, unsigned int cmd,
 		unsigned long arg)
 {
@@ -915,17 +931,7 @@ long vfio_pci_core_ioctl(struct vfio_device *core_vdev, unsigned int cmd,
 		return ret;
 
 	} else if (cmd == VFIO_DEVICE_RESET) {
-		int ret;
-
-		if (!vdev->reset_works)
-			return -EINVAL;
-
-		vfio_pci_zap_and_down_write_memory_lock(vdev);
-		ret = pci_try_reset_function(vdev->pdev);
-		up_write(&vdev->memory_lock);
-
-		return ret;
-
+		return vfio_pci_try_reset_function(vdev);
 	} else if (cmd == VFIO_DEVICE_GET_PCI_HOT_RESET_INFO) {
 		struct vfio_pci_hot_reset_info hdr;
 		struct vfio_pci_fill_info fill = { 0 };
