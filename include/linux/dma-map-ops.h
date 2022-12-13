@@ -430,7 +430,6 @@ enum pci_p2pdma_map_type {
 struct pci_p2pdma_map_state {
 	struct dev_pagemap *pgmap;
 	int map;
-	u64 bus_off;
 };
 
 #ifdef CONFIG_PCI_P2PDMA

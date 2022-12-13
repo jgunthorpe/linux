@@ -1017,14 +1017,15 @@ enum pci_p2pdma_map_type
 pci_p2pdma_map_segment(struct pci_p2pdma_map_state *state, struct device *dev,
 		       struct scatterlist *sg)
 {
+	struct pci_p2pdma_pagemap *p2p_pgmap = to_p2p_pgmap(sg_page(sg)->pgmap);
+
 	if (state->pgmap != sg_page(sg)->pgmap) {
 		state->pgmap = sg_page(sg)->pgmap;
 		state->map = pci_p2pdma_map_type(state->pgmap, dev);
-		state->bus_off = to_p2p_pgmap(state->pgmap)->bus_offset;
 	}
 
 	if (state->map == PCI_P2PDMA_MAP_BUS_ADDR) {
-		sg->dma_address = sg_phys(sg) + state->bus_off;
+		sg->dma_address = sg_phys(sg) + p2p_pgmap->bus_offset;
 		sg_dma_len(sg) = sg->length;
 		sg_dma_mark_bus_address(sg);
 	}
