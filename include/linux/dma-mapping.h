@@ -549,6 +549,19 @@ static inline unsigned int dma_get_min_align_mask(struct device *dev)
 	return 0;
 }
 
+/**
+ * dma_set_min_align_mask - set the alignment mask for DMA mapping
+ * @dev: device to set the alignment mask for
+ * @min_align_mask: the mask to set
+ *
+ * min_align_mask sets a requirement that after DMA mapping
+ *   dma_addr & min_align_mask == cpu_addr & min_align_mask
+ *
+ * This is useful if the DMA device computes offsets within a DMA region using
+ * logical OR instead of addition, the mask enforces that the DMA offsets match
+ * the CPU offsets, and the driver would have done something to ensure the CPU
+ * offsets are correct.
+ */
 static inline int dma_set_min_align_mask(struct device *dev,
 		unsigned int min_align_mask)
 {
