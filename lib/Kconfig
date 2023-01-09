@@ -759,3 +759,8 @@ config ASN1_ENCODER
 
 config POLYNOMIAL
        tristate
+
+config RLIST
+	bool
+	# FIXME: default n
+	default y

@@ -2647,6 +2647,16 @@ config SIPHASH_KUNIT_TEST
 	  This is intended to help people writing architecture-specific
 	  optimized versions.  If unsure, say N.
 
+config RLIST_KUNIT_TEST
+	bool "Test rlist" if !KUNIT_ALL_TESTS
+	select RLIST
+	depends on KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Tests for rlist.
+
+	  If unsure, say N.
+
 config TEST_UDELAY
 	tristate "udelay test driver"
 	help

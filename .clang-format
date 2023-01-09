@@ -572,6 +572,7 @@ ForEachMacros:
   - 'rht_for_each_from'
   - 'rht_for_each_rcu'
   - 'rht_for_each_rcu_from'
+  - 'rlist_for_each_entry'
   - 'rq_for_each_bvec'
   - 'rq_for_each_segment'
   - 'rq_list_for_each'
