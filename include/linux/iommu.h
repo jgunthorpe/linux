@@ -14,6 +14,7 @@
 #include <linux/err.h>
 #include <linux/of.h>
 #include <linux/ioasid.h>
+#include <linux/rlist_cpu.h>
 #include <uapi/linux/iommu.h>
 
 #define IOMMU_READ	(1 << 0)
@@ -280,6 +281,8 @@ struct iommu_ops {
 	struct module *owner;
 };
 
+struct rlist_cpu_slice;
+
 /**
  * struct iommu_domain_ops - domain specific operations
  * @attach_dev: attach an iommu domain to a device
@@ -302,6 +305,9 @@ struct iommu_ops {
  *             an iommu domain.
  * @unmap: unmap a physically contiguous memory region from an iommu domain
  * @unmap_pages: unmap a number of pages of the same size from an iommu domain
+ * @map_rlist: map memory into a contiguous iova
+ * @unmap_rlist: unmap contiguous iova and return the physical addresses
+ * @iova_to_rlist: read the physical addresses for a contiguous range of iova
  * @flush_iotlb_all: Synchronously flush all hardware TLBs for this domain
  * @iotlb_sync_map: Sync mappings created recently using @map to the hardware
  * @iotlb_sync: Flush all queued ranges from the hardware TLBs and empty flush
@@ -330,6 +336,15 @@ struct iommu_domain_ops {
 	size_t (*unmap_pages)(struct iommu_domain *domain, unsigned long iova,
 			      size_t pgsize, size_t pgcount,
 			      struct iommu_iotlb_gather *iotlb_gather);
+
+	int (*map_rlist)(struct iommu_domain *domain, unsigned long iova,
+			 struct rlist_cpu *rcpu, struct rlist_cpu_slice *slice,
+			 int prot, gfp_t gfp);
+	int (*unmap_rlist)(struct iommu_domain *domain, unsigned long iova,
+			   size_t length, struct rlist_cpu *rcpu, int prot,
+			   gfp_t gfp);
+	int (*iova_to_rlist)(struct iommu_domain *domain, unsigned long iova,
+			     size_t length, struct rlist_cpu *rcpu);
 
 	void (*flush_iotlb_all)(struct iommu_domain *domain);
 	void (*iotlb_sync_map)(struct iommu_domain *domain, unsigned long iova,

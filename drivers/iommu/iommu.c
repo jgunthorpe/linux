@@ -2541,6 +2541,54 @@ ssize_t iommu_map_sg_atomic(struct iommu_domain *domain, unsigned long iova,
 	return __iommu_map_sg(domain, iova, sg, nents, prot, GFP_ATOMIC);
 }
 
+#if 0
+#include <linux/rlist_mem.h>
+
+static int iommu_map_rlist_slice(struct iommu_domain *domain,
+				 unsigned long iova,
+				 struct rlist_cpu *rcpu,
+				 const struct rlist_slice *slice, int prot,
+				 gfp_t gfp)
+{
+	const struct iommu_domain_ops *ops = domain->ops;
+	unsigned long start_iova = iova;
+	struct rlist_cpu_entry entry;
+	RLIST_CPU_STATE(rls, rcpu);
+	int ret;
+
+	/* FIXME: this would be better if the iommu driver itself could execute it. */
+
+	/* rlists should already have maximally joined adjacent ranges */
+	rlist_cpu_for_each_slice_element(&rls, &entry, slice) {
+		ret = __iommu_map(domain, iova, rlist_cpu_get_phyaddr(&entry),
+				  entry.length, prot, gfp);
+		if (ret)
+			goto err_unmap;
+		iova += entry.length;
+	}
+
+	// FIXME: this wants a "gather" sort of interface as well
+	if (ops->iotlb_sync_map)
+		ops->iotlb_sync_map(domain, start_iova, iova - start_iova);
+	return 0;
+
+err_unmap:
+	iommu_unmap(domain, iova, iova - start_iova);
+	return ret;
+}
+
+static int iommu_map_rlist_range(struct iommu_domain *domain,
+				 unsigned long iova,
+				 struct rlist_cpu *rcpu,
+				 int prot, gfp_t gfp)
+{
+	struct rlist_slice slice;
+
+	rlist_make_slice(&rcpu, 0, U64_MAX, &slice);
+	return iommu_map_rlist_slice(domain, iova, rcpu, &slice, prot, gfp);
+}
+#endif
+
 /**
  * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework
  * @domain: the iommu domain where the fault has happened
