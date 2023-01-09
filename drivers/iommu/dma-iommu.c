@@ -29,6 +29,9 @@
 #include <linux/swiotlb.h>
 #include <linux/vmalloc.h>
 #include <linux/p2pdma_provider.h>
+#ifdef CONFIG_RLIST
+#include <linux/rlist_dma.h>
+#endif
 
 #include "dma-iommu.h"
 
@@ -1531,6 +1534,159 @@ static size_t iommu_dma_opt_mapping_size(void)
 	return iova_rcache_range();
 }
 
+#ifdef CONFIG_RLIST
+static void iommu_dma_sync_rlist_for_cpu(struct device *dev,
+					 struct rlist_dma *rdma,
+					 enum dma_data_direction dir)
+{
+	RLIST_CPU_STATE(rls, rdma_get_source_rcpu(rdma));
+	struct rlist_cpu_entry entry;
+
+	if (dev_use_swiotlb(dev))
+		return generic_dma_sync_rlist_for_cpu(dev, rdma, dir);
+
+	if (dev_is_dma_coherent(dev))
+		return;
+
+	rlist_cpu_for_each_entry(&rls, &entry) {
+		arch_sync_dma_for_cpu(rlist_cpu_entry_physical(&entry),
+				      entry.length, dir);
+	}
+}
+
+static void iommu_dma_sync_rlist_for_device(struct device *dev,
+					    struct rlist_dma *rdma,
+					    enum dma_data_direction dir)
+{
+	RLIST_CPU_STATE(rls, rdma_get_source_rcpu(rdma));
+	struct rlist_cpu_entry entry;
+
+	if (dev_use_swiotlb(dev))
+		return generic_dma_sync_rlist_for_device(dev, rdma, dir);
+
+	if (dev_is_dma_coherent(dev))
+		return;
+
+	rlist_cpu_for_each_entry(&rls, &entry) {
+		arch_sync_dma_for_device(rlist_cpu_entry_physical(&entry),
+					 entry.length, dir);
+	}
+}
+
+static int iommu_dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			  struct rlist_dma *rdma,
+			  const struct rlist_dma_segmentation *segment,
+			  enum dma_data_direction dir, unsigned long attrs,
+			  gfp_t gfp)
+{
+	int prot = dma_info_to_prot(dir, dev_is_dma_coherent(dev), attrs);
+	struct iommu_domain *domain = iommu_get_dma_domain(dev);
+	struct iommu_dma_cookie *cookie = domain->iova_cookie;
+	struct iova_domain *iovad = &cookie->iovad;
+	struct rlist_dma_iova_map map;
+	struct rlist_dma_state_iova rsiova;
+	dma_addr_t first_iova;
+	dma_addr_t end_iova;
+	int ret;
+
+	if (static_branch_unlikely(&iommu_deferred_attach_enabled)) {
+		ret = iommu_deferred_attach(dev, domain);
+		if (ret)
+			goto err;
+	}
+
+	/* swiotlb is done by calling the ops->map_page() */
+	if (dev_use_swiotlb(dev))
+		return generic_dma_map_rlist(dev, rcpu, rdma, segment, dir,
+					     attrs, gfp);
+
+	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		iommu_dma_sync_rlist_for_device(dev, rdma, dir);
+
+	ret = rsiova_init(&rsiova, rcpu, rdma, segment, dev, iovad->granule,
+			  gfp);
+	if (ret)
+		goto err;
+
+	if (!rsiova_length(&rsiova))
+		return 0;
+
+	first_iova = iommu_dma_alloc_iova(domain, rsiova_length(&rsiova),
+					  dma_get_mask(dev), dev);
+	if (!first_iova)
+		return -ENOMEM;
+
+	rsiova_set_iova(&rsiova, rdma, first_iova);
+
+	rsiova_for_each_map(&rsiova, first_iova, &map){
+		/* FIXME: This does a iotlb_sync_map every time, use the __ version */
+		ret = iommu_map(domain, map.iova, map.phys, map.length, prot);
+		if (ret) {
+			end_iova = map.iova;
+			goto err_unmap;
+		}
+	}
+ 
+	return 0;
+
+err_unmap:
+	rsiova_for_each_map(&rsiova, first_iova, &map){
+		if (map.iova >= end_iova)
+			break;
+		iommu_unmap(domain, map.iova, map.length);
+	}
+	rlist_dma_destroy(rdma);
+err:
+	if (ret != -ENOMEM && ret != -EREMOTEIO)
+		return -EINVAL;
+	return ret;
+}
+
+static void iommu_dma_unmap_rlist(struct device *dev,
+				  struct rlist_dma *rdma,
+				  enum dma_data_direction dir,
+				  unsigned long attrs)
+{
+	struct iommu_domain *domain = iommu_get_dma_domain(dev);
+	struct iommu_dma_cookie *cookie = domain->iova_cookie;
+	struct iova_domain *iovad = &cookie->iovad;
+	struct iommu_iotlb_gather iotlb_gather;
+	struct rlist_dma_iova_map map;
+	RLIST_DMA_STATE(rls, rdma);
+	dma_addr_t end_iova;
+
+	if (dev_use_swiotlb(dev))
+		generic_dma_unmap_rlist(dev, rdma, dir, attrs);
+	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		iommu_dma_sync_rlist_for_cpu(dev, rdma, dir);
+
+	/*
+	 * iommu_dma_map_sg() maps extra memory to avoid creating gaps when
+	 * doing max_seg_size padding, this version doesn't do that so the IOVA
+	 * will have holes. So we have to iterate over each contiguous IOVA
+	 * chunk if max_seg_size is in use.
+	 */
+
+	iommu_iotlb_gather_init(&iotlb_gather);
+	end_iova = rdma->base;
+	rlsdma_for_each_unmap(&rls, &map, iovad->granule) {
+		size_t unmapped;
+
+		unmapped = iommu_unmap_fast(domain, map.iova, map.length,
+					    &iotlb_gather);
+		WARN_ON(unmapped != map.length);
+		end_iova = map.iova + map.length;
+	}
+
+	if (!iotlb_gather.queued)
+		iommu_iotlb_sync(domain, &iotlb_gather);
+
+	iommu_dma_free_iova(cookie, rdma->base, end_iova - rdma->base,
+			    &iotlb_gather);
+}
+
+#endif /* CONFIG_RLIST */
+
 static const struct dma_map_ops iommu_dma_ops = {
 	.flags			= DMA_F_PCI_P2PDMA_SUPPORTED,
 	.alloc			= iommu_dma_alloc,
@@ -1553,6 +1709,12 @@ static const struct dma_map_ops iommu_dma_ops = {
 	.unmap_resource		= iommu_dma_unmap_resource,
 	.get_merge_boundary	= iommu_dma_get_merge_boundary,
 	.opt_mapping_size	= iommu_dma_opt_mapping_size,
+#ifdef CONFIG_RLIST
+	.map_rlist		= iommu_dma_map_rlist,
+	.unmap_rlist		= iommu_dma_unmap_rlist,
+	.sync_rlist_for_cpu	= iommu_dma_sync_rlist_for_cpu,
+	.sync_rlist_for_device  = iommu_dma_sync_rlist_for_device,
+#endif
 };
 
 /*
