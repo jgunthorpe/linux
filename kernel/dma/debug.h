@@ -54,6 +54,14 @@ extern void debug_dma_sync_sg_for_cpu(struct device *dev,
 extern void debug_dma_sync_sg_for_device(struct device *dev,
 					 struct scatterlist *sg,
 					 int nelems, int direction);
+
+void debug_dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			 struct rlist_dma *rdma,
+			 const struct rlist_dma_segmentation *segment,
+			 enum dma_data_direction dir, unsigned long attrs,
+			 int ret);
+void debug_dma_unmap_rlist(struct device *dev, struct rlist_dma *rdma, int dir);
+
 #else /* CONFIG_DMA_API_DEBUG */
 static inline void debug_dma_map_page(struct device *dev, struct page *page,
 				      size_t offset, size_t size,
@@ -126,5 +134,19 @@ static inline void debug_dma_sync_sg_for_device(struct device *dev,
 						int nelems, int direction)
 {
 }
+
+static inline void
+debug_dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+		    struct rlist_dma *rdma,
+		    const struct rlist_dma_segmentation *segment,
+		    enum dma_data_direction dir, unsigned long attrs, int ret)
+{
+}
+
+static inline void debug_dma_unmap_rlist(struct device *dev,
+					 struct rlist_dma *rdma, int dir)
+{
+}
+
 #endif /* CONFIG_DMA_API_DEBUG */
 #endif /* _KERNEL_DMA_DEBUG_H */

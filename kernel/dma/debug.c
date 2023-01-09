@@ -1571,6 +1571,22 @@ void debug_dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 	}
 }
 
+#ifdef CONFIG_RLIST
+void debug_dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			 struct rlist_dma *rdma,
+			 const struct rlist_dma_segmentation *segment,
+			 enum dma_data_direction dir, unsigned long attrs,
+			 int ret)
+{
+	 // FIXME ??
+}
+
+void debug_dma_unmap_rlist(struct device *dev, struct rlist_dma *rdma, int dir)
+{
+	 // FIXME ??
+}
+#endif
+
 static int __init dma_debug_driver_setup(char *str)
 {
 	int i;

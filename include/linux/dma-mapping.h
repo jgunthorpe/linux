@@ -100,6 +100,21 @@ static inline int dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
 	return 0;
 }
 
+struct rlist_cpu;
+struct rlist_dma;
+struct rlist_dma_segmentation;
+
+int dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+		  struct rlist_dma *rdma,
+		  const struct rlist_dma_segmentation *segment,
+		  enum dma_data_direction dir, unsigned long attrs, gfp_t gfp);
+void dma_unmap_rlist(struct device *dev, struct rlist_dma *rdma,
+		     enum dma_data_direction dir, unsigned long attrs);
+void dma_sync_rlist_for_cpu(struct device *dev, struct rlist_dma *rdma,
+			    enum dma_data_direction dir);
+void dma_sync_rlist_for_device(struct device *dev, struct rlist_dma *rdma,
+			       enum dma_data_direction dir);
+
 dma_addr_t dma_map_page_attrs(struct device *dev, struct page *page,
 		size_t offset, size_t size, enum dma_data_direction dir,
 		unsigned long attrs);

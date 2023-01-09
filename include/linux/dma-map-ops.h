@@ -10,6 +10,9 @@
 #include <linux/pgtable.h>
 
 struct cma;
+struct rlist_cpu;
+struct rlist_dma;
+struct rlist_dma_segmentation;
 
 /*
  * Values for struct dma_map_ops.flags:
@@ -81,6 +84,19 @@ struct dma_map_ops {
 	size_t (*max_mapping_size)(struct device *dev);
 	size_t (*opt_mapping_size)(void);
 	unsigned long (*get_merge_boundary)(struct device *dev);
+
+	int (*map_rlist)(struct device *dev, struct rlist_cpu *rcpu,
+			 struct rlist_dma *rdma,
+			 const struct rlist_dma_segmentation *segment,
+			 enum dma_data_direction dir, unsigned long attrs,
+			 gfp_t gfp);
+	void (*unmap_rlist)(struct device *dev, struct rlist_dma *rdma,
+			    enum dma_data_direction dir, unsigned long attrs);
+	void (*sync_rlist_for_cpu)(struct device *dev, struct rlist_dma *rdma,
+				   enum dma_data_direction dir);
+	void (*sync_rlist_for_device)(struct device *dev,
+				      struct rlist_dma *rdma,
+				      enum dma_data_direction dir);
 };
 
 #ifdef CONFIG_DMA_OPS

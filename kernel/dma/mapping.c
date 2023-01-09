@@ -16,6 +16,9 @@
 #include <linux/vmalloc.h>
 #include "debug.h"
 #include "direct.h"
+#ifdef CONFIG_RLIST
+#include <linux/rlist_dma.h>
+#endif
 
 bool dma_default_coherent;
 
@@ -841,3 +844,64 @@ unsigned long dma_get_merge_boundary(struct device *dev)
 	return ops->get_merge_boundary(dev);
 }
 EXPORT_SYMBOL_GPL(dma_get_merge_boundary);
+
+#ifdef CONFIG_RLIST
+int dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+		  struct rlist_dma *rdma,
+		  const struct rlist_dma_segmentation *segment,
+		  enum dma_data_direction dir, unsigned long attrs, gfp_t gfp)
+{
+	const struct dma_map_ops *ops = get_dma_ops(dev);
+	int ret;
+
+	if (WARN_ON(!valid_dma_direction(dir)))
+		return -EINVAL;
+	if (WARN_ON_ONCE(gfp & (__GFP_COMP | __GFP_DMA | __GFP_DMA32 |
+				__GFP_HIGHMEM)))
+		return -EINVAL;
+
+	/* FIXME: We are ignoring PPC's arch_dma_direct_map_sg() */
+	if (dma_map_direct(dev, ops))
+		ret = dma_direct_map_rlist(dev, rcpu, rdma, segment, dir, attrs,
+					   gfp);
+	else if (ops->map_rlist)
+		ret = ops->map_rlist(dev, rcpu, rdma, segment, dir, attrs, gfp);
+	else
+		return -EOPNOTSUPP;
+
+	debug_dma_map_rlist(dev, rcpu, rdma, segment, dir, attrs, ret);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(dma_map_rlist);
+
+void dma_unmap_rlist(struct device *dev, struct rlist_dma *rdma,
+		     enum dma_data_direction dir, unsigned long attrs)
+{
+	const struct dma_map_ops *ops = get_dma_ops(dev);
+
+	BUG_ON(!valid_dma_direction(dir));
+	debug_dma_unmap_rlist(dev, rdma, dir);
+	if (dma_map_direct(dev, ops))
+		dma_direct_unmap_rlist(dev, rdma, dir, attrs);
+	else if (ops->unmap_rlist)
+		ops->unmap_rlist(dev, rdma, dir, attrs);
+	else
+		 WARN(true, "Driver didn't set unmap_rlist");
+	rlist_dma_destroy(rdma);
+}
+EXPORT_SYMBOL_GPL(dma_unmap_rlist);
+
+void dma_sync_rlist_for_cpu(struct device *dev, struct rlist_dma *rdma,
+			    enum dma_data_direction dir)
+{
+	// FIXME
+}
+EXPORT_SYMBOL_GPL(dma_sync_rlist_for_cpu);
+
+void dma_sync_rlist_for_device(struct device *dev, struct rlist_dma *rdma,
+			       enum dma_data_direction dir)
+{
+	// FIXME
+}
+EXPORT_SYMBOL_GPL(dma_sync_rlist_for_device);
+#endif
