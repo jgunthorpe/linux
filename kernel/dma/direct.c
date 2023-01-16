@@ -14,6 +14,9 @@
 #include <linux/set_memory.h>
 #include <linux/slab.h>
 #include <linux/p2pdma_provider.h>
+#ifdef CONFIG_RLIST
+#include <linux/rlist_dma.h>
+#endif
 #include "direct.h"
 
 /*
@@ -642,3 +645,213 @@ int dma_direct_set_offset(struct device *dev, phys_addr_t cpu_start,
 	dev->dma_range_map = map;
 	return 0;
 }
+
+#ifdef CONFIG_RLIST
+/* Values for rlist_dma dma_map_ops_priv */
+enum {
+	DMA_DIRECT_PRIV_PAGE = 0,
+	/* These next two cannot refer to cachable memory. */
+	/* FIXME: We only need one */
+	DMA_DIRECT_PRIV_RESOURCE,
+	DMA_DIRECT_PRIV_P2P,
+};
+
+static bool dev_unrestricted_dma(struct device *dev)
+{
+	// FIXME check me
+	return *dev->dma_mask >= PHYS_ADDR_MAX ||
+	       dev->bus_dma_limit >= PHYS_ADDR_MAX;
+}
+
+static void sync_dma_rlist_for_device(struct rlist_cpu *rcpu,
+				      enum dma_data_direction dir)
+{
+	struct rlist_cpu_entry entry;
+	RLIST_CPU_STATE(rls, rcpu);
+
+	rlist_cpu_for_each_entry(&rls, &entry)
+		arch_sync_dma_for_device(rlist_cpu_entry_physical(&entry),
+					 entry.length, dir);
+}
+
+int dma_direct_map_rlist_slow(struct device *dev, struct rlist_cpu *rcpu,
+			      struct rlist_dma *rdma,
+			      const struct rlist_dma_segmentation *segment,
+			      enum dma_data_direction dir, unsigned long attrs,
+			      gfp_t gfp)
+{
+	struct p2pdma_provider_map_cache cache = {};
+	RLIST_DMA_STATE_APPEND(rlsa, rdma);
+	struct rlist_cpu_entry entry;
+	RLIST_CPU_STATE(rls, rcpu);
+	int ret;
+
+	ret = rlsdma_append_begin(&rlsa);
+	if (ret)
+		return ret;
+
+	rlist_cpu_for_each_entry(&rls, &entry) {
+		unsigned int priv;
+		dma_addr_t dma;
+
+		switch (entry.type) {
+		case RLIST_CPU_MEM_FOLIO:
+			priv = DMA_DIRECT_PRIV_PAGE;
+			dma = dma_direct_map_page(
+				dev,
+				folio_page(entry.folio,
+					   entry.folio_offset / PAGE_SIZE),
+				entry.folio_offset % PAGE_SIZE, entry.length,
+				dir, attrs);
+			break;
+
+		case RLIST_CPU_MEM_PHYSICAL: {
+			struct p2pdma_provider *provider =
+				p2pdma_provider_from_id(entry.provider_index);
+
+			ret = p2pdma_provider_map(dev, provider, entry.phys,
+						  &dma, &cache);
+			if (ret) {
+				if (ret == P2P_MAP_FILLED_DMA) {
+					priv = DMA_DIRECT_PRIV_P2P;
+					break;
+				}
+				goto err;
+			}
+
+			priv = DMA_DIRECT_PRIV_RESOURCE;
+			dma = dma_direct_map_resource(dev, entry.phys,
+						      entry.length, dir, attrs);
+			break;
+		}
+
+		default:
+			WARN(true, "Corrupt rlist_cpu");
+			ret = -EINVAL;
+			goto err;
+		}
+
+		if (dma == DMA_MAPPING_ERROR) {
+			ret = -EIO;
+			goto err;
+		}
+
+		ret = rlsdma_append(&rlsa, dma, entry.length, priv, gfp);
+		if (ret)
+			goto err;
+	}
+	rlsdma_append_end(&rlsa);
+	return 0;
+
+err:
+	rlsdma_append_destroy_rlist(&rlsa);
+	return ret;
+}
+
+int dma_direct_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			 struct rlist_dma *rdma,
+			 const struct rlist_dma_segmentation *segment,
+			 enum dma_data_direction dir, unsigned long attrs,
+			 gfp_t gfp)
+{
+	/*
+	 * General version version of the logic in dma_direct_map_page(),
+	 * determine if we definately use an identity map and can use the fast
+	 * path.
+	 */
+	if (is_swiotlb_force_bounce(dev) || !dev_unrestricted_dma(dev) ||
+	    rlist_cpu_has_p2pdma(rcpu))
+		return dma_direct_map_rlist_slow(dev, rcpu, rdma, segment, dir,
+						 attrs, gfp);
+
+	/* The DMA adresses are 1:1 with physical */
+	rlist_dma_init_identity_cpu(rdma, rcpu);
+
+	if (!dev_is_dma_coherent(dev) && !(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		sync_dma_rlist_for_device(rcpu, dir);
+	return 0;
+}
+
+#if defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU) || \
+    defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_CPU_ALL) || \
+    defined(CONFIG_SWIOTLB)
+void dma_direct_sync_rlist_for_cpu(struct device *dev, struct rlist_dma *rdma,
+				   enum dma_data_direction dir)
+{
+	struct rlist_dma_entry entry;
+	RLIST_DMA_STATE(rls, rdma);
+	phys_addr_t paddr;
+
+	rlist_dma_for_each_entry(&rls, &entry) {
+		/*
+		 * FIXME: dma_direct_sync_sg_for_cpu() ignores p2p items in the
+		 * sg? They don't need cache flushing skip them.
+		 */
+		if (entry.dma_map_ops_priv != DMA_DIRECT_PRIV_PAGE)
+			continue;
+
+		paddr = dma_to_phys(dev, entry.dma_address);
+
+		if (!dev_is_dma_coherent(dev))
+			arch_sync_dma_for_cpu(paddr, entry.length, dir);
+
+		if (unlikely(is_swiotlb_buffer(dev, paddr)))
+			swiotlb_sync_single_for_cpu(dev, paddr, entry.length,
+						    dir);
+
+		if (dir == DMA_FROM_DEVICE)
+			arch_dma_mark_clean(paddr, entry.length);
+	}
+
+	if (!dev_is_dma_coherent(dev))
+		arch_sync_dma_for_cpu_all();
+}
+
+void dma_direct_unmap_rlist(struct device *dev, struct rlist_dma *rdma,
+			    enum dma_data_direction dir, unsigned long attrs)
+{
+	struct rlist_dma_entry entry;
+	RLIST_DMA_STATE(rls, rdma);
+
+	rlist_dma_for_each_entry(&rls, &entry) {
+		if (entry.dma_map_ops_priv != DMA_DIRECT_PRIV_PAGE)
+			continue;
+
+		dma_direct_unmap_page(dev, entry.dma_address, entry.length, dir,
+				      attrs);
+	}
+}
+#endif
+
+#if defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_DEVICE) || \
+    defined(CONFIG_SWIOTLB)
+void dma_direct_sync_rlist_for_device(struct device *dev,
+				      struct rlist_dma *rdma,
+				      enum dma_data_direction dir)
+{
+	struct rlist_dma_entry entry;
+	RLIST_DMA_STATE(rls, rdma);
+	phys_addr_t paddr;
+
+	rlist_dma_for_each_entry(&rls, &entry) {
+		/*
+		 * FIXME: dma_direct_sync_sg_for_device() ignores p2p items in
+		 * the sg? They don't need cache flushing skip them.
+		 */
+		if (entry.dma_map_ops_priv != DMA_DIRECT_PRIV_PAGE)
+			continue;
+
+		paddr = dma_to_phys(dev, entry.dma_address);
+
+		/* FIXME: we could use dma_map_ops_priv instead for swiotlb */
+		if (unlikely(is_swiotlb_buffer(dev, paddr)))
+			swiotlb_sync_single_for_device(dev, paddr, entry.length,
+						       dir);
+
+		if (!dev_is_dma_coherent(dev))
+			arch_sync_dma_for_device(paddr, entry.length, dir);
+	}
+}
+#endif
+
+#endif /* CONFIG_RLIST */

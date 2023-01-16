@@ -10,6 +10,10 @@
 #include <linux/dma-direct.h>
 #include <linux/memremap.h>
 
+struct rlist_cpu;
+struct rlist_dma;
+struct rlist_dma_segmentation;
+
 int dma_direct_get_sgtable(struct device *dev, struct sg_table *sgt,
 		void *cpu_addr, dma_addr_t dma_addr, size_t size,
 		unsigned long attrs);
@@ -22,13 +26,27 @@ int dma_direct_map_sg(struct device *dev, struct scatterlist *sgl, int nents,
 		enum dma_data_direction dir, unsigned long attrs);
 size_t dma_direct_max_mapping_size(struct device *dev);
 
+int dma_direct_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			 struct rlist_dma *rdma,
+			 const struct rlist_dma_segmentation *segment,
+			 enum dma_data_direction dir, unsigned long attrs,
+			 gfp_t gfp);
+
 #if defined(CONFIG_ARCH_HAS_SYNC_DMA_FOR_DEVICE) || \
     defined(CONFIG_SWIOTLB)
 void dma_direct_sync_sg_for_device(struct device *dev, struct scatterlist *sgl,
 		int nents, enum dma_data_direction dir);
+void dma_direct_sync_rlist_for_device(struct device *dev,
+				      struct rlist_dma *rdma,
+				      enum dma_data_direction dir);
 #else
 static inline void dma_direct_sync_sg_for_device(struct device *dev,
 		struct scatterlist *sgl, int nents, enum dma_data_direction dir)
+{
+}
+static inline void dma_direct_sync_rlist_for_device(struct device *dev,
+						    struct rlist_dma *rdma,
+						    enum dma_data_direction dir)
 {
 }
 #endif
@@ -40,6 +58,10 @@ void dma_direct_unmap_sg(struct device *dev, struct scatterlist *sgl,
 		int nents, enum dma_data_direction dir, unsigned long attrs);
 void dma_direct_sync_sg_for_cpu(struct device *dev,
 		struct scatterlist *sgl, int nents, enum dma_data_direction dir);
+void dma_direct_unmap_rlist(struct device *dev, struct rlist_dma *rdma,
+			   enum dma_data_direction dir, unsigned long attrs);
+void dma_direct_sync_rlist_for_cpu(struct device *dev, struct rlist_dma *rdma,
+				   enum dma_data_direction dir);
 #else
 static inline void dma_direct_unmap_sg(struct device *dev,
 		struct scatterlist *sgl, int nents, enum dma_data_direction dir,
@@ -48,6 +70,17 @@ static inline void dma_direct_unmap_sg(struct device *dev,
 }
 static inline void dma_direct_sync_sg_for_cpu(struct device *dev,
 		struct scatterlist *sgl, int nents, enum dma_data_direction dir)
+{
+}
+static inline int dma_direct_unmap_rlist(struct device *dev,
+					 struct rlist_dma *rdma,
+					 enum dma_data_direction dir,
+					 unsigned long attrs)
+{
+}
+static inline void dma_direct_sync_rlist_for_cpu(struct device *dev,
+						 struct rlist_dma *rdma,
+						 enum dma_data_direction dir)
 {
 }
 #endif
