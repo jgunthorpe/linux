@@ -291,6 +291,10 @@ static const struct dma_map_ops xen_grant_dma_ops = {
 	.map_sg = xen_grant_dma_map_sg,
 	.unmap_sg = xen_grant_dma_unmap_sg,
 	.dma_supported = xen_grant_dma_supported,
+
+	/* xen_grant_dma_map_sg just calls xen_grant_dma_map_page in a loop */
+	.map_rlist = generic_dma_map_rlist,
+	.unmap_rlist = generic_dma_unmap_rlist,
 };
 
 static struct device_node *xen_dt_get_node(struct device *dev)

@@ -429,6 +429,10 @@ static const struct dma_map_ops sbus_iommu_dma_gflush_ops = {
 	.unmap_page		= sbus_iommu_unmap_page,
 	.map_sg			= sbus_iommu_map_sg_gflush,
 	.unmap_sg		= sbus_iommu_unmap_sg,
+
+	/* sbus_iommu_map_sg_gflush just calls sbus_iommu_map_page_gflush in a loop */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
 };
 
 static const struct dma_map_ops sbus_iommu_dma_pflush_ops = {
@@ -440,6 +444,10 @@ static const struct dma_map_ops sbus_iommu_dma_pflush_ops = {
 	.unmap_page		= sbus_iommu_unmap_page,
 	.map_sg			= sbus_iommu_map_sg_pflush,
 	.unmap_sg		= sbus_iommu_unmap_sg,
+
+	/* sbus_iommu_map_sg_pflush just calls sbus_iommu_map_page_pflush in a loop */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
 };
 
 void __init ld_mmu_iommu(void)

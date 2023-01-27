@@ -697,6 +697,17 @@ static const struct dma_map_ops ps3_sb_dma_ops = {
 	.get_sgtable = dma_common_get_sgtable,
 	.alloc_pages = dma_common_alloc_pages,
 	.free_pages = dma_common_free_pages,
+
+	/*
+	 * ps3_sb_map_sg just calls ps3_sb_map_page in a loop. map_sg passes in
+	 * a 0 iopte_flag but that is all dead code when
+	 * !CONFIG_PS3_DYNAMIC_DMA. Further !CONFIG_PS3_DYNAMIC_DMA BUG's
+	 * ps3_sb_map_sg, so no rlist support
+	 */
+#ifndef CONFIG_PS3_DYNAMIC_DMA
+	.map_rlist = generic_dma_map_rlist,
+	.unmap_rlist = generic_dma_unmap_rlist,
+#endif
 };
 
 static const struct dma_map_ops ps3_ioc0_dma_ops = {
@@ -711,6 +722,8 @@ static const struct dma_map_ops ps3_ioc0_dma_ops = {
 	.get_sgtable = dma_common_get_sgtable,
 	.alloc_pages = dma_common_alloc_pages,
 	.free_pages = dma_common_free_pages,
+
+	/* ps3_ioc0_map_sg triggers BUG so no rlist support either */
 };
 
 /**

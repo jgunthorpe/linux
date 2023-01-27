@@ -282,4 +282,8 @@ static const struct dma_map_ops iounit_dma_ops = {
 	.unmap_page		= iounit_unmap_page,
 	.map_sg			= iounit_map_sg,
 	.unmap_sg		= iounit_unmap_sg,
+
+	/* iounit_map_sg() just loops iounit_map_page() */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
 };

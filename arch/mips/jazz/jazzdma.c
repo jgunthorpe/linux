@@ -619,5 +619,11 @@ const struct dma_map_ops jazz_dma_ops = {
 	.get_sgtable		= dma_common_get_sgtable,
 	.alloc_pages		= dma_common_alloc_pages,
 	.free_pages		= dma_common_free_pages,
+
+	/* jazz_dma_map_sg just calls jazz_dma_map_page in a loop */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
+	.sync_rlist_for_cpu	= generic_dma_sync_rlist_for_cpu,
+	.sync_rlist_for_device	= generic_dma_sync_rlist_for_device,
 };
 EXPORT_SYMBOL(jazz_dma_ops);

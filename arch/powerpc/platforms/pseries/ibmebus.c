@@ -147,6 +147,10 @@ static const struct dma_map_ops ibmebus_dma_ops = {
 	.get_required_mask  = ibmebus_dma_get_required_mask,
 	.map_page           = ibmebus_map_page,
 	.unmap_page         = ibmebus_unmap_page,
+
+	/* This is just an open coded version of DMA direct */
+	.map_rlist          = generic_dma_map_rlist,
+	.unmap_rlist        = generic_dma_unmap_rlist,
 };
 
 static int ibmebus_match_path(struct device *dev, const void *data)
