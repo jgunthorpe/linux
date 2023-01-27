@@ -393,4 +393,24 @@ static inline void debug_dma_dump_mappings(struct device *dev)
 
 extern const struct dma_map_ops dma_dummy_ops;
 
+#ifdef CONFIG_RLIST
+int generic_dma_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			  struct rlist_dma *rdma,
+			  const struct rlist_dma_segmentation *segment,
+			  enum dma_data_direction dir, unsigned long attrs,
+			  gfp_t gfp);
+void generic_dma_unmap_rlist(struct device *dev, struct rlist_dma *rdma,
+			     enum dma_data_direction dir, unsigned long attrs);
+void generic_dma_sync_rlist_for_cpu(struct device *dev, struct rlist_dma *rdma,
+				    enum dma_data_direction dir);
+void generic_dma_sync_rlist_for_device(struct device *dev,
+				       struct rlist_dma *rdma,
+				       enum dma_data_direction dir);
+#else
+#define generic_dma_map_rlist NULL
+#define generic_dma_unmap_rlist NULL
+#define generic_dma_sync_rlist_for_cpu NULL
+#define generic_dma_sync_rlist_for_device NULL
+#endif
+
 #endif /* _LINUX_DMA_MAP_OPS_H */
