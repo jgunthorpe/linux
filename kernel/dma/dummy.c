@@ -25,6 +25,15 @@ static int dma_dummy_map_sg(struct device *dev, struct scatterlist *sgl,
 	return -EINVAL;
 }
 
+static int dma_dummy_map_rlist(struct device *dev, struct rlist_cpu *rcpu,
+			       struct rlist_dma *rdma,
+			       const struct rlist_dma_segmentation *segment,
+			       enum dma_data_direction dir, unsigned long attrs,
+			       gfp_t gfp)
+{
+	return -EINVAL;
+}
+
 static int dma_dummy_supported(struct device *hwdev, u64 mask)
 {
 	return 0;
@@ -34,5 +43,6 @@ const struct dma_map_ops dma_dummy_ops = {
 	.mmap                   = dma_dummy_mmap,
 	.map_page               = dma_dummy_map_page,
 	.map_sg                 = dma_dummy_map_sg,
+	.map_rlist		= dma_dummy_map_rlist,
 	.dma_supported          = dma_dummy_supported,
 };
