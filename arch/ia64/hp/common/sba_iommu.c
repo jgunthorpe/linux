@@ -2072,6 +2072,10 @@ static const struct dma_map_ops sba_dma_ops = {
 	.get_sgtable		= dma_common_get_sgtable,
 	.alloc_pages		= dma_common_alloc_pages,
 	.free_pages		= dma_common_free_pages,
+
+	/* sba_map_sg_attrs() calls sba_map_page() */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
 };
 
 static int __init

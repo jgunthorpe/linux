@@ -929,5 +929,9 @@ const struct dma_map_ops alpha_pci_ops = {
 	.get_sgtable		= dma_common_get_sgtable,
 	.alloc_pages		= dma_common_alloc_pages,
 	.free_pages		= dma_common_free_pages,
+
+	/* alpha_pci_map_sg() calls pci_map_single_1() the same as alpha_pci_map_page() */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
 };
 EXPORT_SYMBOL(alpha_pci_ops);

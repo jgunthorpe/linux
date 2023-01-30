@@ -1524,6 +1524,15 @@ static const struct dma_map_ops iommu_ops = {
 
 	.map_resource		= arm_iommu_map_resource,
 	.unmap_resource		= arm_iommu_unmap_resource,
+
+	/*
+	 * arm_iommu_map_page() uses alignment == order(size) when assigning
+	 * IOVA.
+	 */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
+	.sync_rlist_for_cpu	= generic_dma_sync_rlist_for_cpu,
+	.sync_rlist_for_device	= generic_dma_sync_rlist_for_device,
 };
 
 /**
