@@ -760,6 +760,16 @@ static const struct dma_map_ops sun4u_dma_ops = {
 	.sync_single_for_cpu	= dma_4u_sync_single_for_cpu,
 	.sync_sg_for_cpu	= dma_4u_sync_sg_for_cpu,
 	.dma_supported		= dma_4u_supported,
+
+	/*
+	 * dma_4u_map_page() and dma_4u_map_sg() both allocate IOVA via
+	 * iommu_tbl_range_alloc(). The allocation is aligned to the device's
+	 * segmentation boundary using iommu_area_alloc().
+	 */
+	.map_rlist		= generic_dma_map_rlist,
+	.unmap_rlist		= generic_dma_unmap_rlist,
+	.sync_rlist_for_cpu	= generic_dma_sync_rlist_for_cpu,
+	.sync_rlist_for_device	= generic_dma_sync_rlist_for_device,
 };
 
 const struct dma_map_ops *dma_ops = &sun4u_dma_ops;

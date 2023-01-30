@@ -678,6 +678,14 @@ static const struct dma_map_ops gart_dma_ops = {
 	.get_required_mask		= dma_direct_get_required_mask,
 	.alloc_pages			= dma_direct_alloc_pages,
 	.free_pages			= dma_direct_free_pages,
+
+	/*
+	 * gart_map_page() and gart_map_sg() both allocate IOVA via
+	 * alloc_iommu(). The allocation is aligned to the device's segmentation
+	 * boundary using iommu_area_alloc()
+	 */
+	.map_rlist			= generic_dma_map_rlist,
+	.unmap_rlist			= generic_dma_unmap_rlist,
 };
 
 static void gart_iommu_shutdown(void)

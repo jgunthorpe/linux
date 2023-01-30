@@ -690,6 +690,14 @@ static const struct dma_map_ops sun4v_dma_ops = {
 	.map_sg				= dma_4v_map_sg,
 	.unmap_sg			= dma_4v_unmap_sg,
 	.dma_supported			= dma_4v_supported,
+
+	/*
+	 * dma_4v_map_page() and dma_4v_map_sg() both allocate IOVA via
+	 * iommu_tbl_range_alloc(). The allocation is aligned to the device's
+	 * segmentation boundary using iommu_area_alloc().
+	 */
+	.map_rlist			= generic_dma_map_rlist,
+	.unmap_rlist			= generic_dma_unmap_rlist,
 };
 
 static void pci_sun4v_scan_bus(struct pci_pbm_info *pbm, struct device *parent)

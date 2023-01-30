@@ -613,6 +613,14 @@ static const struct dma_map_ops vio_dma_mapping_ops = {
 	.get_sgtable	   = dma_common_get_sgtable,
 	.alloc_pages	   = dma_common_alloc_pages,
 	.free_pages	   = dma_common_free_pages,
+
+	/*
+	 * vio_dma_iommu_map_page() and (vio_dma_iommu_map_sg() both allocate
+	 * IOVA via iommu_range_alloc(). The allocation is aligned to the
+	 * device's segmentation boundary using iommu_area_alloc().
+	 */
+	.map_rlist         = generic_dma_map_rlist,
+	.unmap_rlist       = generic_dma_unmap_rlist,
 };
 
 /**
