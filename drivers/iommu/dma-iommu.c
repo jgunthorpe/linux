@@ -28,6 +28,7 @@
 #include <linux/spinlock.h>
 #include <linux/swiotlb.h>
 #include <linux/vmalloc.h>
+#include <linux/p2pdma_provider.h>
 
 #include "dma-iommu.h"
 
@@ -1185,8 +1186,7 @@ static int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg,
 	struct iova_domain *iovad = &cookie->iovad;
 	struct scatterlist *s, *prev = NULL;
 	int prot = dma_info_to_prot(dir, dev_is_dma_coherent(dev), attrs);
-	struct pci_p2pdma_map_state p2pdma_state = {};
-	enum pci_p2pdma_map_type map;
+	struct p2pdma_provider_map_cache cache = {};
 	dma_addr_t iova;
 	size_t iova_len = 0;
 	unsigned long mask = dma_get_seg_boundary(dev);
@@ -1216,10 +1216,9 @@ static int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg,
 		size_t s_length = s->length;
 		size_t pad_len = (mask - iova_len + 1) & mask;
 
-		if (is_pci_p2pdma_page(sg_page(s))) {
-			map = pci_p2pdma_map_segment(&p2pdma_state, dev, s);
-			switch (map) {
-			case PCI_P2PDMA_MAP_BUS_ADDR:
+		ret = p2pdma_provider_map_sg(dev, sg, &cache);
+		if (ret) {
+			if (ret == P2P_MAP_FILLED_DMA) {
 				/*
 				 * iommu_map_sg() will skip this segment as
 				 * it is marked as a bus address,
@@ -1227,17 +1226,8 @@ static int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg,
 				 * into the output segment.
 				 */
 				continue;
-			case PCI_P2PDMA_MAP_THRU_HOST_BRIDGE:
-				/*
-				 * Mapping through host bridge should be
-				 * mapped with regular IOVAs, thus we
-				 * do nothing here and continue below.
-				 */
-				break;
-			default:
-				ret = -EREMOTEIO;
-				goto out_restore_sg;
 			}
+			goto out_restore_sg;
 		}
 
 		sg_dma_address(s) = s_iova_off;

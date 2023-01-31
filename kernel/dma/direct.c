@@ -13,6 +13,7 @@
 #include <linux/vmalloc.h>
 #include <linux/set_memory.h>
 #include <linux/slab.h>
+#include <linux/p2pdma_provider.h>
 #include "direct.h"
 
 /*
@@ -476,29 +477,16 @@ void dma_direct_unmap_sg(struct device *dev, struct scatterlist *sgl,
 int dma_direct_map_sg(struct device *dev, struct scatterlist *sgl, int nents,
 		enum dma_data_direction dir, unsigned long attrs)
 {
-	struct pci_p2pdma_map_state p2pdma_state = {};
-	enum pci_p2pdma_map_type map;
+	struct p2pdma_provider_map_cache cache = {};
 	struct scatterlist *sg;
 	int i, ret;
 
 	for_each_sg(sgl, sg, nents, i) {
-		if (is_pci_p2pdma_page(sg_page(sg))) {
-			map = pci_p2pdma_map_segment(&p2pdma_state, dev, sg);
-			switch (map) {
-			case PCI_P2PDMA_MAP_BUS_ADDR:
+		ret = p2pdma_provider_map_sg(dev, sg, &cache);
+		if (ret) {
+			if (ret == P2P_MAP_FILLED_DMA)
 				continue;
-			case PCI_P2PDMA_MAP_THRU_HOST_BRIDGE:
-				/*
-				 * Any P2P mapping that traverses the PCI
-				 * host bridge must be mapped with CPU physical
-				 * address and not PCI bus addresses. This is
-				 * done with dma_direct_map_page() below.
-				 */
-				break;
-			default:
-				ret = -EREMOTEIO;
-				goto out_unmap;
-			}
+			goto out_unmap;
 		}
 
 		sg->dma_address = dma_direct_map_page(dev, sg_page(sg),

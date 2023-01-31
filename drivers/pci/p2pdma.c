@@ -22,6 +22,40 @@
 #include <linux/xarray.h>
 #include <linux/p2pdma_provider.h>
 
+enum pci_p2pdma_map_type {
+	/*
+	 * PCI_P2PDMA_MAP_UNKNOWN: Used internally for indicating the mapping
+	 * type hasn't been calculated yet. Functions that return this enum
+	 * never return this value.
+	 */
+	PCI_P2PDMA_MAP_UNKNOWN = 0,
+
+	/*
+	 * PCI_P2PDMA_MAP_NOT_SUPPORTED: Indicates the transaction will
+	 * traverse the host bridge and the host bridge is not in the
+	 * allowlist. DMA Mapping routines should return an error when
+	 * this is returned.
+	 */
+	PCI_P2PDMA_MAP_NOT_SUPPORTED,
+
+	/*
+	 * PCI_P2PDMA_BUS_ADDR: Indicates that two devices can talk to
+	 * each other directly through a PCI switch and the transaction will
+	 * not traverse the host bridge. Such a mapping should program
+	 * the DMA engine with PCI bus addresses.
+	 */
+	PCI_P2PDMA_MAP_BUS_ADDR,
+
+	/*
+	 * PCI_P2PDMA_MAP_THRU_HOST_BRIDGE: Indicates two devices can talk
+	 * to each other, but the transaction traverses a host bridge on the
+	 * allowlist. In this case, a normal mapping either with CPU physical
+	 * addresses (in the case of dma-direct) or IOVA addresses (in the
+	 * case of IOMMUs) should be used to program the DMA engine.
+	 */
+	PCI_P2PDMA_MAP_THRU_HOST_BRIDGE,
+};
+
 struct pci_p2pdma {
 	struct gen_pool *pool;
 	bool p2pmem_published;
@@ -1006,40 +1040,60 @@ pci_p2pdma_map_type(struct p2pdma_provider *provider, struct device *dev)
 }
 
 /**
- * pci_p2pdma_map_segment - map an sg segment determining the mapping type
- * @state: State structure that should be declared outside of the for_each_sg()
- *	loop and initialized to zero.
- * @dev: DMA device that's doing the mapping operation
- * @sg: scatterlist segment to map
+ * p2pdma_provider_map - Help to map a physical address to a DMA address
+ * @consumer: Device that will do DMA
+ * @provider: Provider that owns base
+ * @base: Starting physical address
+ * @dma_out: DMA Address to use if P2P_MAP_FILLED_DMA is returned
+ * @cache: Inter-call storage to reduce computation
  *
- * This is a helper to be used by non-IOMMU dma_map_sg() implementations where
- * the sg segment is the same for the page_link and the dma_address.
+ * These function are intended to only be used by dma_map_ops implementations.
  *
- * Attempt to map a single segment in an SGL with the PCI bus address.
- * The segment must point to a PCI P2PDMA page and thus must be
- * wrapped in a is_pci_p2pdma_page(sg_page(sg)) check.
+ * The given address is evaluated to understand what kind of mapping operation
+ * is required. If this function returns 0 (P2P_MAP_NORMALLY) then the caller
+ * should treat base the same as any other CPU memory. Place it in the iommu,
+ * direct map it, etc.
  *
- * Returns the type of mapping used and maps the page if the type is
- * PCI_P2PDMA_MAP_BUS_ADDR.
+ * If -errno is returned then the MMIO cannot be accessed using this consumer,
+ * usually because the platform cannot support it.
+ *
+ * P2P_MAP_FILLED_DMA means that dma_out contains the DMA address to be used.
+ * This address will not be routed to the root port or IOMMU.
  */
-enum pci_p2pdma_map_type
-pci_p2pdma_map_segment(struct pci_p2pdma_map_state *state, struct device *dev,
-		       struct scatterlist *sg)
+int p2pdma_provider_map(struct device *dev, struct p2pdma_provider *provider,
+			phys_addr_t base, dma_addr_t *dma_out,
+			struct p2pdma_provider_map_cache *state)
 {
-	struct pci_p2pdma_pagemap *p2p_pgmap = to_p2p_pgmap(sg_page(sg)->pgmap);
+	if (!provider)
+		return -EINVAL;
 
-	if (state->mem != &p2p_pgmap->mem) {
-		state->mem = &p2p_pgmap->mem;
-		state->map = pci_p2pdma_map_type(&p2p_pgmap->mem, dev);
+	if (state->mem != provider) {
+		state->mem = provider;
+		state->map = pci_p2pdma_map_type(provider, dev);
 	}
 
-	if (state->map == PCI_P2PDMA_MAP_BUS_ADDR) {
-		sg->dma_address = sg_phys(sg) + p2p_pgmap->mem.bus_offset;
-		sg_dma_len(sg) = sg->length;
-		sg_dma_mark_bus_address(sg);
-	}
+	switch (state->map) {
+	case PCI_P2PDMA_MAP_BUS_ADDR:
+		*dma_out = base + provider->bus_offset;
+		return P2P_MAP_FILLED_DMA;
 
-	return state->map;
+	case PCI_P2PDMA_MAP_THRU_HOST_BRIDGE:
+		return P2P_MAP_NORMALLY;
+
+	case PCI_P2PDMA_MAP_UNKNOWN:
+	case PCI_P2PDMA_MAP_NOT_SUPPORTED:
+	default:
+		return -EREMOTEIO;
+	}
+}
+
+/* FIXME: This wants to be an inline but can't because to_p2p_pgmap is private */
+int __p2pdma_provider_map_page(struct device *dev, struct page *page,
+			       dma_addr_t *dma_out,
+			       struct p2pdma_provider_map_cache *cache)
+{
+	return p2pdma_provider_map(dev, &to_p2p_pgmap(page->pgmap)->mem,
+				   page_to_phys(page), dma_out, cache);
 }
 
 /**
