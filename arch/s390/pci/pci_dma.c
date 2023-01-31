@@ -710,6 +710,13 @@ const struct dma_map_ops s390_pci_dma_ops = {
 	.alloc_pages	= dma_common_alloc_pages,
 	.free_pages	= dma_common_free_pages,
 	/* dma_supported is unconditionally true without a callback */
+
+	/*
+	 * Uses iommu_area_alloc(), but this whole file should be deleted by
+	 * https://lore.kernel.org/linux-iommu/20230124125037.3201345-1-schnelle@linux.ibm.com
+	 */
+	.map_rlist = generic_dma_map_rlist,
+	.unmap_rlist = generic_dma_unmap_rlist,
 };
 EXPORT_SYMBOL_GPL(s390_pci_dma_ops);
 
