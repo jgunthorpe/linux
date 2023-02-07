@@ -18,6 +18,9 @@
 #include <linux/migrate.h>
 #include <linux/mm_inline.h>
 #include <linux/sched/mm.h>
+#ifdef CONFIG_RLIST
+#include <linux/rlist_cpu.h>
+#endif
 
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
@@ -3191,3 +3194,99 @@ long pin_user_pages_unlocked(unsigned long start, unsigned long nr_pages,
 	return get_user_pages_unlocked(start, nr_pages, pages, gup_flags);
 }
 EXPORT_SYMBOL(pin_user_pages_unlocked);
+
+#ifdef CONFIG_RLIST
+static int append_page_list(struct rlist_cpu_state_append *rlsa,
+			    struct page **pages, unsigned long npages,
+			    unsigned int first_offset, unsigned int last_length)
+{
+	struct page **end = pages + npages;
+	int ret;
+
+	while (pages != end) {
+		struct folio *folio = page_folio(*pages);
+		unsigned int offset = folio_page_idx(folio, *pages) * PAGE_SIZE;
+		unsigned int length = PAGE_SIZE;
+
+		offset += first_offset;
+		length -= first_offset;
+
+		pages++;
+		if (pages == end)
+			length = last_length;
+
+		/* FIXME check pin per page vs what rlist does */
+		ret = rlscpu_append_folio(rlsa, folio, offset, length,
+					  GFP_KERNEL);
+		if (ret)
+			return ret;
+		first_offset = 0;
+	}
+	return 0;
+}
+
+/*
+ * Pin pages and return them as an rlist_cpu
+ */
+
+ /* FIXME: this does not consider segmentation or segmentation limits. Perhaps
+  * it should take in a rlsa directly so the caller can set all that stuff up?
+  */
+int pin_user_pages_rlist(struct mm_struct *mm, struct rlist_cpu *rcpu,
+			 void __user *start, size_t bytes,
+			 unsigned int gup_flags, int *locked)
+{
+	struct page **page_list;
+	unsigned long cur = ALIGN_DOWN((unsigned long)start, PAGE_SIZE);
+	unsigned long end = ALIGN((unsigned long)(start + bytes), PAGE_SIZE);
+	unsigned long npages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
+	unsigned int first_offset = (unsigned long)start % PAGE_SIZE;
+	unsigned int last_length = (unsigned long)(start + bytes) % PAGE_SIZE;
+	struct rlist_cpu_state_append rlsa;
+	int ret;
+
+	page_list = (struct page **)__get_free_page(GFP_KERNEL);
+	if (!page_list)
+		return -ENOMEM;
+
+	ret = rlscpu_append_begin(&rlsa);
+	if (ret)
+		goto err_free;
+
+	while (npages) {
+		long pinned;
+
+		pinned = pin_user_pages_remote(
+			mm, cur,
+			min_t(unsigned long, npages,
+			      PAGE_SIZE / sizeof(struct page *)),
+			gup_flags, page_list, NULL, locked);
+		if (pinned < 0) {
+			ret = pinned;
+			goto err_abort;
+		}
+
+		ret = append_page_list(&rlsa, page_list, pinned, first_offset,
+				       npages == pinned ? last_length : 0);
+		if (ret)
+			goto err_abort;
+
+		cur += pinned * PAGE_SIZE;
+		npages -= pinned;
+		first_offset = 0;
+
+		cond_resched();
+	}
+	ret = rlscpu_append_end(&rlsa, GFP_KERNEL);
+	if (ret)
+		goto err_abort;
+	goto err_free;
+
+err_abort:
+	rlscpu_append_destroy_rlist(&rlsa);
+err_free:
+	free_page((unsigned long)page_list);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pin_user_pages_rlist);
+#endif

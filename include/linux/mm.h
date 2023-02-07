@@ -35,6 +35,7 @@ struct anon_vma;
 struct anon_vma_chain;
 struct user_struct;
 struct pt_regs;
+struct rlist_cpu;
 
 extern int sysctl_page_lock_unfairness;
 
@@ -2095,6 +2096,10 @@ int get_user_pages_fast(unsigned long start, int nr_pages,
 			unsigned int gup_flags, struct page **pages);
 int pin_user_pages_fast(unsigned long start, int nr_pages,
 			unsigned int gup_flags, struct page **pages);
+
+int pin_user_pages_rlist(struct mm_struct *mm, struct rlist_cpu *rcpu,
+			 void __user *start, size_t bytes,
+			 unsigned int gup_flags, int *locked);
 
 int account_locked_vm(struct mm_struct *mm, unsigned long pages, bool inc);
 int __account_locked_vm(struct mm_struct *mm, unsigned long pages, bool inc,
