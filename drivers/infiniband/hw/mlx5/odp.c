@@ -766,7 +766,7 @@ int mlx5_ib_init_odp_mr(struct mlx5_ib_mr *mr)
 	int ret;
 
 	ret = pagefault_real_mr(mr, to_ib_umem_odp(mr->umem), mr->umem->address,
-				mr->umem->length, NULL,
+				mr->ibmr.length, NULL,
 				MLX5_PF_FLAGS_SNAPSHOT | MLX5_PF_FLAGS_ENABLE);
 	return ret >= 0 ? 0 : ret;
 }
@@ -775,7 +775,7 @@ int mlx5_ib_init_dmabuf_mr(struct mlx5_ib_mr *mr)
 {
 	int ret;
 
-	ret = pagefault_dmabuf_mr(mr, mr->umem->length, NULL,
+	ret = pagefault_dmabuf_mr(mr, mr->ibmr.length, NULL,
 				  MLX5_PF_FLAGS_ENABLE);
 
 	return ret >= 0 ? 0 : ret;
