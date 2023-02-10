@@ -950,7 +950,7 @@ static struct mlx5_ib_mr *alloc_cacheable_mr(struct ib_pd *pd,
 	mr->ibmr.pd = pd;
 	mr->umem = umem;
 	mr->page_shift = order_base_2(page_size);
-	set_mr_fields(dev, mr, umem->length, access_flags, iova);
+	set_mr_fields(dev, mr, ib_umem_length(umem), access_flags, iova);
 
 	return mr;
 }
@@ -964,6 +964,7 @@ static struct mlx5_ib_mr *reg_create(struct ib_pd *pd, struct ib_umem *umem,
 				     unsigned int page_size, bool populate)
 {
 	struct mlx5_ib_dev *dev = to_mdev(pd->device);
+	size_t length = ib_umem_length(umem);
 	struct mlx5_ib_mr *mr;
 	__be64 *pas;
 	void *mkc;
@@ -1012,16 +1013,16 @@ static struct mlx5_ib_mr *reg_create(struct ib_pd *pd, struct ib_umem *umem,
 	MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_MTT);
 	MLX5_SET(mkc, mkc, umr_en, 1);
 
-	MLX5_SET64(mkc, mkc, len, umem->length);
+	MLX5_SET64(mkc, mkc, len, length);
 	MLX5_SET(mkc, mkc, bsf_octword_size, 0);
 	MLX5_SET(mkc, mkc, translations_octword_size,
-		 get_octo_len(iova, umem->length, mr->page_shift));
+		 get_octo_len(iova, length, mr->page_shift));
 	MLX5_SET(mkc, mkc, log_page_size, mr->page_shift);
 	if (mlx5_umem_needs_ats(dev, umem, access_flags))
 		MLX5_SET(mkc, mkc, ma_translation_mode, 1);
 	if (populate) {
 		MLX5_SET(create_mkey_in, in, translations_octword_actual_size,
-			 get_octo_len(iova, umem->length, mr->page_shift));
+			 get_octo_len(iova, length, mr->page_shift));
 	}
 
 	err = mlx5_ib_create_mkey(dev, &mr->mmkey, in, inlen);
@@ -1031,7 +1032,7 @@ static struct mlx5_ib_mr *reg_create(struct ib_pd *pd, struct ib_umem *umem,
 	}
 	mr->mmkey.type = MLX5_MKEY_MR;
 	mr->umem = umem;
-	set_mr_fields(dev, mr, umem->length, access_flags, iova);
+	set_mr_fields(dev, mr, length, access_flags, iova);
 	kvfree(in);
 
 	mlx5_ib_dbg(dev, "mkey = 0x%x\n", mr->mmkey.key);
@@ -1148,7 +1149,7 @@ static struct ib_mr *create_real_mr(struct ib_pd *pd, struct ib_umem *umem,
 	bool xlt_with_umr;
 	int err;
 
-	xlt_with_umr = mlx5r_umr_can_load_pas(dev, umem->length);
+	xlt_with_umr = mlx5r_umr_can_load_pas(dev, ib_umem_length(umem));
 	if (xlt_with_umr) {
 		mr = alloc_cacheable_mr(pd, umem, iova, access_flags);
 	} else {
@@ -1365,7 +1366,7 @@ static bool can_use_umr_rereg_pas(struct mlx5_ib_mr *mr,
 	/* We only track the allocated sizes of MRs from the cache */
 	if (!mr->mmkey.cache_ent)
 		return false;
-	if (!mlx5r_umr_can_load_pas(dev, new_umem->length))
+	if (!mlx5r_umr_can_load_pas(dev, ib_umem_length(new_umem)))
 		return false;
 
 	*page_size =
@@ -1404,7 +1405,7 @@ static int umr_rereg_pas(struct mlx5_ib_mr *mr, struct ib_pd *pd,
 	}
 
 	mr->ibmr.iova = iova;
-	mr->ibmr.length = new_umem->length;
+	mr->ibmr.length = ib_umem_length(new_umem);
 	mr->page_shift = order_base_2(page_size);
 	mr->umem = new_umem;
 	err = mlx5r_umr_update_mr_pas(mr, upd_flags);

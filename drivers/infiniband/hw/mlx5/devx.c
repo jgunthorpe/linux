@@ -2200,13 +2200,14 @@ static unsigned int devx_umem_find_best_pgsize(struct ib_umem *umem,
 					       unsigned long pgsz_bitmap)
 {
 	unsigned long page_size;
+	unsigned long length = ib_umem_length(umem);
 
 	/* Don't bother checking larger page sizes as offset must be zero and
 	 * total DEVX umem length must be equal to total umem length.
 	 */
-	pgsz_bitmap &= GENMASK_ULL(max_t(u64, order_base_2(umem->length),
-					 PAGE_SHIFT),
-				   MLX5_ADAPTER_PAGE_SHIFT);
+		pgsz_bitmap &=
+		GENMASK_ULL(max_t(u64, order_base_2(length), PAGE_SHIFT),
+			    MLX5_ADAPTER_PAGE_SHIFT);
 	if (!pgsz_bitmap)
 		return 0;
 
@@ -2221,7 +2222,7 @@ static unsigned int devx_umem_find_best_pgsize(struct ib_umem *umem,
 	 * page list. Reduce the page size until one of these cases is true.
 	 */
 	while ((ib_umem_dma_offset(umem, page_size) != 0 ||
-		(umem->length % page_size) != 0) &&
+		(length % page_size) != 0) &&
 		page_size > PAGE_SIZE)
 		page_size /= 2;
 
