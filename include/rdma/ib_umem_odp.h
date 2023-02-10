@@ -13,6 +13,7 @@ struct ib_umem_odp {
 	struct ib_umem umem;
 	struct mmu_interval_notifier notifier;
 	struct pid *tgid;
+	size_t length;
 
 	/* An array of the pfns included in the on-demand paging umem. */
 	unsigned long *pfn_list;

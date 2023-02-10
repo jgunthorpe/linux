@@ -14,54 +14,30 @@ MODULE_IMPORT_NS(DMA_BUF);
 
 int ib_umem_dmabuf_map_pages(struct ib_umem_dmabuf *umem_dmabuf)
 {
-	struct sg_table *sgt;
-	struct scatterlist *sg;
-	unsigned long start, end, cur = 0;
-	unsigned int nmap = 0;
 	long ret;
-	int i;
 
 	dma_resv_assert_held(umem_dmabuf->attach->dmabuf->resv);
 
-	if (umem_dmabuf->sgt)
+	if (!rlist_cpu_empty(&umem_dmabuf->umem.rcpu))
 		goto wait_fence;
 
-	sgt = dma_buf_map_attachment(umem_dmabuf->attach,
-				     DMA_BIDIRECTIONAL);
-	if (IS_ERR(sgt))
-		return PTR_ERR(sgt);
+	ret = dma_buf_map_attachment_rlist(umem_dmabuf->attach,
+					   umem_dmabuf->umem.address,
+					   umem_dmabuf->length,
+					   &umem_dmabuf->umem.rcpu,
+					   DMA_BIDIRECTIONAL);
+	if (ret)
+		return ret;
 
-	/* modify the sg list in-place to match umem address and length */
-
-	start = ALIGN_DOWN(umem_dmabuf->umem.address, PAGE_SIZE);
-	end = ALIGN(umem_dmabuf->umem.address + umem_dmabuf->umem.length,
-		    PAGE_SIZE);
-	for_each_sgtable_dma_sg(sgt, sg, i) {
-		if (start < cur + sg_dma_len(sg) && cur < end)
-			nmap++;
-		if (cur <= start && start < cur + sg_dma_len(sg)) {
-			unsigned long offset = start - cur;
-
-			umem_dmabuf->first_sg = sg;
-			umem_dmabuf->first_sg_offset = offset;
-			sg_dma_address(sg) += offset;
-			sg_dma_len(sg) -= offset;
-			cur += offset;
-		}
-		if (cur < end && end <= cur + sg_dma_len(sg)) {
-			unsigned long trim = cur + sg_dma_len(sg) - end;
-
-			umem_dmabuf->last_sg = sg;
-			umem_dmabuf->last_sg_trim = trim;
-			sg_dma_len(sg) -= trim;
-			break;
-		}
-		cur += sg_dma_len(sg);
+	ret = ib_dma_map_rlist(umem_dmabuf->umem.ibdev, &umem_dmabuf->umem.rcpu,
+			       &umem_dmabuf->umem.rdma, &rlist_no_segmentation,
+			       DMA_BIDIRECTIONAL, 0, GFP_KERNEL);
+	if (ret) {
+		dma_buf_unmap_attachment_rlist(umem_dmabuf->attach,
+					       &umem_dmabuf->umem.rcpu,
+					       DMA_BIDIRECTIONAL);
+		return ret;
 	}
-
-	umem_dmabuf->umem.sgt_append.sgt.sgl = umem_dmabuf->first_sg;
-	umem_dmabuf->umem.sgt_append.sgt.nents = nmap;
-	umem_dmabuf->sgt = sgt;
 
 wait_fence:
 	/*
@@ -84,29 +60,15 @@ void ib_umem_dmabuf_unmap_pages(struct ib_umem_dmabuf *umem_dmabuf)
 {
 	dma_resv_assert_held(umem_dmabuf->attach->dmabuf->resv);
 
-	if (!umem_dmabuf->sgt)
+	if (rlist_cpu_empty(&umem_dmabuf->umem.rcpu))
 		return;
 
-	/* retore the original sg list */
-	if (umem_dmabuf->first_sg) {
-		sg_dma_address(umem_dmabuf->first_sg) -=
-			umem_dmabuf->first_sg_offset;
-		sg_dma_len(umem_dmabuf->first_sg) +=
-			umem_dmabuf->first_sg_offset;
-		umem_dmabuf->first_sg = NULL;
-		umem_dmabuf->first_sg_offset = 0;
-	}
-	if (umem_dmabuf->last_sg) {
-		sg_dma_len(umem_dmabuf->last_sg) +=
-			umem_dmabuf->last_sg_trim;
-		umem_dmabuf->last_sg = NULL;
-		umem_dmabuf->last_sg_trim = 0;
-	}
-
-	dma_buf_unmap_attachment(umem_dmabuf->attach, umem_dmabuf->sgt,
-				 DMA_BIDIRECTIONAL);
-
-	umem_dmabuf->sgt = NULL;
+	ib_dma_unmap_rlist(umem_dmabuf->umem.ibdev, &umem_dmabuf->umem.rdma,
+			   DMA_BIDIRECTIONAL, 0);
+	dma_buf_unmap_attachment_rlist(umem_dmabuf->attach,
+				       &umem_dmabuf->umem.rcpu,
+				       DMA_BIDIRECTIONAL);
+	WARN_ON(!rlist_cpu_empty(&umem_dmabuf->umem.rcpu));
 }
 EXPORT_SYMBOL(ib_umem_dmabuf_unmap_pages);
 
@@ -142,7 +104,7 @@ struct ib_umem_dmabuf *ib_umem_dmabuf_get(struct ib_device *device,
 
 	umem = &umem_dmabuf->umem;
 	umem->ibdev = device;
-	umem->length = size;
+	umem_dmabuf->length = size;
 	umem->address = offset;
 	umem->writable = ib_access_writable(access);
 	umem->is_dmabuf = 1;
@@ -152,6 +114,7 @@ struct ib_umem_dmabuf *ib_umem_dmabuf_get(struct ib_device *device,
 
 	umem_dmabuf->attach = dma_buf_dynamic_attach(
 					dmabuf,
+					/* FIXME: device should never be used in rlist mode */
 					device->dma_device,
 					ops,
 					umem_dmabuf);

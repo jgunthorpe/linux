@@ -63,7 +63,7 @@ static inline int ib_init_umem_odp(struct ib_umem_odp *umem_odp,
 
 		start = ALIGN_DOWN(umem_odp->umem.address, page_size);
 		if (check_add_overflow(umem_odp->umem.address,
-				       (unsigned long)umem_odp->umem.length,
+				       (unsigned long)umem_odp->length,
 				       &end))
 			return -EOVERFLOW;
 		end = ALIGN(end, page_size);
@@ -175,7 +175,7 @@ ib_umem_odp_alloc_child(struct ib_umem_odp *root, unsigned long addr,
 		return ERR_PTR(-ENOMEM);
 	umem = &odp_data->umem;
 	umem->ibdev = root->umem.ibdev;
-	umem->length     = size;
+	odp_data->length = size;
 	umem->address    = addr;
 	umem->writable   = root->umem.writable;
 	umem->owning_mm  = root->umem.owning_mm;
@@ -235,7 +235,7 @@ struct ib_umem_odp *ib_umem_odp_get(struct ib_device *device,
 		return ERR_PTR(-ENOMEM);
 
 	umem_odp->umem.ibdev = device;
-	umem_odp->umem.length = size;
+	umem_odp->length = size;
 	umem_odp->umem.address = addr;
 	umem_odp->umem.writable = ib_access_writable(access);
 	umem_odp->umem.owning_mm = current->mm;
