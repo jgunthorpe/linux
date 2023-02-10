@@ -49,6 +49,7 @@ int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context, unsigned long virt,
 			struct mlx5_db *db)
 {
 	struct mlx5_ib_user_db_page *page;
+	struct ib_block_iter biter;
 	int err = 0;
 
 	mutex_lock(&context->db_page_mutex);
@@ -79,8 +80,9 @@ int mlx5_ib_db_map_user(struct mlx5_ib_ucontext *context, unsigned long virt,
 	list_add(&page->list, &context->db_page_list);
 
 found:
-	db->dma = sg_dma_address(page->umem->sgt_append.sgt.sgl) +
-		  (virt & ~PAGE_MASK);
+	rdma_umem_for_each_dma_block(page->umem, &biter, PAGE_SIZE)
+		db->dma = rdma_block_iter_dma_address(&biter) +
+			  (virt & ~PAGE_MASK);
 	db->u.user_page = page;
 	++page->refcnt;
 

@@ -46,6 +46,7 @@ int mlx4_ib_db_map_user(struct ib_udata *udata, unsigned long virt,
 			struct mlx4_db *db)
 {
 	struct mlx4_ib_user_db_page *page;
+	struct ib_block_iter biter;
 	int err = 0;
 	struct mlx4_ib_ucontext *context = rdma_udata_to_drv_context(
 		udata, struct mlx4_ib_ucontext, ibucontext);
@@ -75,8 +76,9 @@ int mlx4_ib_db_map_user(struct ib_udata *udata, unsigned long virt,
 	list_add(&page->list, &context->db_page_list);
 
 found:
-	db->dma = sg_dma_address(page->umem->sgt_append.sgt.sgl) +
-		  (virt & ~PAGE_MASK);
+	rdma_umem_for_each_dma_block(page->umem, &biter, PAGE_SIZE)
+		db->dma = rdma_block_iter_dma_address(&biter) +
+			  (virt & ~PAGE_MASK);
 	db->u.user_page = page;
 	++page->refcnt;
 
