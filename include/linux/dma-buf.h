@@ -625,6 +625,28 @@ void dma_buf_unmap_attachment_unlocked(struct dma_buf_attachment *attach,
 				       struct sg_table *sg_table,
 				       enum dma_data_direction direction);
 
+/* The following members of attach would not be used:
+ * sgt, dev, dir, peer2peer
+ */
+static inline int
+dma_buf_map_attachment_rlist(struct dma_buf_attachment *attach,
+			     unsigned long offset, unsigned long length,
+			     struct rlist_cpu *rcpu,
+			     enum dma_data_direction direction)
+{
+	/* FIXME */
+	return -EINVAL;
+}
+
+static inline int
+dma_buf_unmap_attachment_rlist(struct dma_buf_attachment *attach,
+			     struct rlist_cpu *rcpu,
+			     enum dma_data_direction direction)
+{
+	/* FIXME */
+	return -EINVAL;
+}
+
 int dma_buf_mmap(struct dma_buf *, struct vm_area_struct *,
 		 unsigned long);
 int dma_buf_vmap(struct dma_buf *dmabuf, struct iosys_map *map);
