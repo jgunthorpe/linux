@@ -4195,6 +4195,35 @@ static inline void ib_dma_unmap_sg(struct ib_device *dev,
 	ib_dma_unmap_sg_attrs(dev, sg, nents, direction, 0);
 }
 
+int ib_dma_virt_map_rlist(struct rlist_cpu *rcpu, struct rlist_dma *rdma);
+
+static inline int ib_dma_map_rlist(struct ib_device *dev,
+				   struct rlist_cpu *rcpu,
+				   struct rlist_dma *rdma,
+				   const struct rlist_dma_segmentation *segment,
+				   enum dma_data_direction dir,
+				   unsigned long attrs, gfp_t gfp)
+{
+	if (ib_uses_virt_dma(dev))
+		return ib_dma_virt_map_rlist(rcpu, rdma);
+	return dma_map_rlist(dev->dma_device, rcpu, rdma, segment, dir, attrs,
+			     gfp);
+}
+
+/* Prevent include explosion */
+void rlist_dma_destroy(struct rlist_dma *rdma);
+
+static inline void ib_dma_unmap_rlist(struct ib_device *dev,
+				      struct rlist_dma *rdma,
+				      enum dma_data_direction dir,
+				      unsigned long attrs)
+{
+	if (ib_uses_virt_dma(dev))
+		rlist_dma_destroy(rdma);
+	else
+		return dma_unmap_rlist(dev->dma_device, rdma, dir, attrs);
+}
+
 /**
  * ib_dma_max_seg_size - Return the size limit of a single DMA transfer
  * @dev: The device to query

@@ -46,6 +46,7 @@
 #include <rdma/ib_addr.h>
 #include <rdma/ib_cache.h>
 #include <rdma/rdma_counter.h>
+#include <linux/rlist_dma.h>
 
 #include "core_priv.h"
 #include "restrack.h"
@@ -2735,6 +2736,16 @@ int ib_dma_virt_map_sg(struct ib_device *dev, struct scatterlist *sg, int nents)
 	return nents;
 }
 EXPORT_SYMBOL(ib_dma_virt_map_sg);
+
+int ib_dma_virt_map_rlist(struct rlist_cpu *rcpu, struct rlist_dma *rdma)
+{
+	/* FIXME: has_p2pdma is just a hint it could be pessimistic */
+	if (rlist_cpu_has_p2pdma(rcpu))
+		return -EINVAL;
+	rlist_dma_init_identity_cpu(rdma, rcpu);
+	return 0;
+}
+EXPORT_SYMBOL(ib_dma_virt_map_rlist);
 #endif /* CONFIG_INFINIBAND_VIRT_DMA */
 
 static const struct rdma_nl_cbs ibnl_ls_cb_table[RDMA_NL_LS_NUM_OPS] = {
