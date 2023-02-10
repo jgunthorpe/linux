@@ -279,4 +279,7 @@ void rlscpu_append_destroy_rlist(struct rlist_cpu_state_append *rlsa);
 int rlscpu_append_folio(struct rlist_cpu_state_append *rlsa,
 			struct folio *folio, unsigned int offset, size_t length,
 			gfp_t gfp);
+int rlscpu_append_physical(struct rlist_cpu_state_append *rlsa,
+			   phys_addr_t base, u64 length,
+			   struct p2pdma_provider *provider, gfp_t gfp);
 #endif

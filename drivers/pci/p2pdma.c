@@ -22,6 +22,9 @@
 #include <linux/xarray.h>
 #include <linux/p2pdma_provider.h>
 
+static struct xarray p2pdma_providers =
+	XARRAY_INIT(p2pdma_providers, XA_FLAGS_ALLOC1);
+
 enum pci_p2pdma_map_type {
 	/*
 	 * PCI_P2PDMA_MAP_UNKNOWN: Used internally for indicating the mapping
@@ -1175,3 +1178,38 @@ ssize_t pci_p2pdma_enable_show(char *page, struct pci_dev *p2p_dev,
 	return sprintf(page, "%s\n", pci_name(p2p_dev));
 }
 EXPORT_SYMBOL_GPL(pci_p2pdma_enable_show);
+
+/**
+ * p2pdma_provider_register - Register a p2pdma_provider
+ * @provider: Provider to register
+ * @owner: The device that owns the provider
+ *
+ * Register a P2PDMA provider so it can be found indirectly.
+ *
+ * When the provider is associated with a struct page it will be stored
+ * in the pgmap and is easy to access.
+ *
+ * When the provider is used with non-struct page cases it will be referenced
+ * by a small ID that is stored along with the physical memory base/length.
+ */
+int p2pdma_provider_register(struct p2pdma_provider *provider,
+			     struct device *owner)
+{
+	provider->owner = owner;
+	return xa_alloc(&p2pdma_providers, &provider->provider_id, provider,
+			xa_limit_31b, GFP_KERNEL);
+}
+EXPORT_SYMBOL_GPL(p2pdma_provider_register);
+
+void p2pdma_provider_unregister(struct p2pdma_provider *provider)
+{
+	WARN_ON(xa_erase(&p2pdma_providers, provider->provider_id) != provider);
+	provider->provider_id = 0;
+}
+EXPORT_SYMBOL_GPL(p2pdma_provider_unregister);
+
+struct p2pdma_provider *p2pdma_provider_from_id(unsigned int provider_id)
+{
+	return xa_load(&p2pdma_providers, provider_id);
+}
+EXPORT_SYMBOL_GPL(p2pdma_provider_from_id);

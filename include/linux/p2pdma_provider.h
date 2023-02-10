@@ -17,6 +17,7 @@
 struct p2pdma_provider {
 	struct device *owner;
 	u64 bus_offset;
+	u32 provider_id;
 };
 
 /* Return code from p2pdma_provider_map*() functions */
@@ -31,23 +32,32 @@ struct p2pdma_provider_map_cache {
 	unsigned int map;
 };
 
+#ifdef CONFIG_PCI_P2PDMA
+int p2pdma_provider_register(struct p2pdma_provider *provider,
+			     struct device *owner);
+void p2pdma_provider_unregister(struct p2pdma_provider *provider);
+struct p2pdma_provider *p2pdma_provider_from_id(unsigned int provider_id);
+int p2pdma_provider_map(struct device *consumer,
+			struct p2pdma_provider *provider, phys_addr_t base,
+			dma_addr_t *dma_out,
+			struct p2pdma_provider_map_cache *cache);
+#else
 static inline int p2pdma_provider_register(struct p2pdma_provider *provider,
 					   struct device *owner)
 {
-	provider->owner = owner;
-	return 0;
+	return -EOPNOTSUPP;
 }
 
 static inline void p2pdma_provider_unregister(struct p2pdma_provider *provider)
 {
 }
 
-#ifdef CONFIG_PCI_P2PDMA
-int p2pdma_provider_map(struct device *consumer,
-			struct p2pdma_provider *provider, phys_addr_t base,
-			dma_addr_t *dma_out,
-			struct p2pdma_provider_map_cache *cache);
-#else
+static inline struct p2pdma_provider *
+p2pdma_provider_from_id(unsigned int provider_id)
+{
+	return NULL;
+}
+
 static inline int p2pdma_provider_map(struct device *consumer,
 				      struct p2pdma_provider *provider,
 				      phys_addr_t base, dma_addr_t *dma_out,

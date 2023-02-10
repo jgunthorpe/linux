@@ -4,6 +4,7 @@
 #include <linux/rlist_cpu.h>
 #include <linux/highmem.h>
 #include <linux/bio.h>
+#include <linux/p2pdma_provider.h>
 
 #define same_memory(struct_a, member_a, struct_b, member_b)              \
 	(offsetof(struct_a, member_a) == offsetof(struct_b, member_b) && \
@@ -746,3 +747,54 @@ int rlscpu_append_folio(struct rlist_cpu_state_append *rlsa,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(rlscpu_append_folio);
+
+static int rlscpu_append_phys_rlist(struct rlist_cpu_state_append *rlsa,
+				    phys_addr_t base, u64 length,
+				    struct p2pdma_provider *provider, gfp_t gfp)
+{
+	if (rlsa->cur.length) {
+		int ret;
+
+		ret = rlscpu_append_push_cur_rlist(rlsa, gfp);
+		if (ret)
+			return ret;
+		rlsa->cur.length = 0;
+	}
+
+	rlsa->cur = (struct rlist_cpu_entry){
+		.type = RLIST_CPU_MEM_PHYSICAL,
+		.length = length,
+		.phys = base,
+		.provider_index = provider->provider_id,
+	};
+	return rlscpu_append_push_cur_rlist(rlsa, gfp);
+}
+
+/*
+ * The caller must ensure the provider continues to exist as long as the
+ * rlist_cpu exists.
+ */
+int rlscpu_append_physical(struct rlist_cpu_state_append *rlsa,
+			   phys_addr_t base, u64 length,
+			   struct p2pdma_provider *provider, gfp_t gfp)
+{
+	int ret;
+
+	switch (rlsa->rlist_cpu->type) {
+	case RLIST_CPU:
+		ret = rlscpu_append_phys_rlist(rlsa, base, length, provider,
+					       gfp);
+		break;
+	case RLIST_CPU_PAGES:
+		return -EOPNOTSUPP;
+	default:
+		WARN(true, "Corrupt rlist_cpu");
+		return -EINVAL;
+	}
+	if (ret)
+		return ret;
+
+	rlsa->rlist_cpu->summary_flags |= RLIST_SUM_HAS_P2PDMA_PAGE;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rlscpu_append_physical);
