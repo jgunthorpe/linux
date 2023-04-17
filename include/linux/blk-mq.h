@@ -1149,6 +1149,9 @@ static inline int blk_rq_map_sg(struct request_queue *q, struct request *rq,
 }
 void blk_dump_rq_flags(struct request *, char *);
 
+int blk_rq_to_rlist(struct request_queue *q, struct request *rq,
+		    struct rlist_cpu *rcpu);
+
 #ifdef CONFIG_BLK_DEV_ZONED
 static inline unsigned int blk_rq_zone_no(struct request *rq)
 {

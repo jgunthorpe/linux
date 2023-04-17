@@ -10,6 +10,7 @@
 #include <linux/scatterlist.h>
 #include <linux/part_stat.h>
 #include <linux/blk-cgroup.h>
+#include <linux/rlist_cpu.h>
 
 #include <trace/events/block.h>
 
@@ -585,6 +586,22 @@ int __blk_rq_map_sg(struct request_queue *q, struct request *rq,
 	return nsegs;
 }
 EXPORT_SYMBOL(__blk_rq_map_sg);
+
+/* FIXME: inline? */
+int blk_rq_to_rlist(struct request_queue *q, struct request *rq,
+		    struct rlist_cpu *rcpu)
+{
+	if (rq->rq_flags & RQF_SPECIAL_PAYLOAD)
+		/* FIXME: this does a memory allocation, is it OK? */
+		return rlist_cpu_init_single_page(rcpu, rq->special_vec.bv_page,
+						  rq->special_vec.bv_offset,
+						  rq->special_vec.bv_len,
+						  GFP_ATOMIC);
+
+	rlist_cpu_init_bio(rcpu, rq->bio, blk_rq_bytes(rq));
+	return 0;
+}
+EXPORT_SYMBOL_GPL(blk_rq_to_rlist);
 
 static inline unsigned int blk_rq_get_max_segments(struct request *rq)
 {
