@@ -1043,24 +1043,28 @@ const struct ib_gid_attr *rdma_find_gid(struct ib_device *device,
 {
 	unsigned long mask = GID_ATTR_FIND_MASK_GID |
 			     GID_ATTR_FIND_MASK_GID_TYPE;
-	struct ib_gid_attr gid_attr_val = {.ndev = ndev, .gid_type = gid_type};
 	u32 p;
 
 	if (ndev)
 		mask |= GID_ATTR_FIND_MASK_NETDEV;
 
 	rdma_for_each_port(device, p) {
+		struct ib_gid_table_entry *entry;
 		struct ib_gid_table *table;
 		unsigned long flags;
-		int index;
+		unsigned long index;
 
 		table = device->port_data[p].cache.gid;
 		read_lock_irqsave(&table->rwlock, flags);
-		index = find_gid(table, gid, &gid_attr_val, false, mask, NULL);
-		if (index >= 0) {
+		xa_for_each(&table->entries, index, entry) {
 			const struct ib_gid_attr *attr;
-			// FIXME: OK to check state here? Did find_gid already do it?
-			struct ib_gid_table_entry *entry = get_valid_entry(table, index);
+
+			if (!is_gid_entry_valid(entry))
+				continue;
+			if (memcmp(gid, &entry->attr.gid, sizeof(*gid)) != 0 ||
+			    entry->attr.gid_type != gid_type ||
+			    (ndev && entry->attr.ndev != ndev))
+				continue;
 
 			get_gid_entry(entry);
 			attr = &entry->attr;
