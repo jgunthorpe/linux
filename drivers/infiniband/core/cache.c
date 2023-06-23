@@ -108,15 +108,15 @@ struct ib_gid_table {
 	 * (b) Delete it.
 	 *
 	 **/
-	/* Any writer to data_vec must hold this lock and the write side of
+	/* Any writer to entries must hold this lock and the write side of
 	 * rwlock. Readers must hold only rwlock. All writers must be in a
 	 * sleepable context.
 	 */
 	struct mutex			lock;
-	/* rwlock protects data_vec[ix]->state and entry pointer.
+	/* rwlock protects entriesc[ix]->state and entry pointer.
 	 */
 	rwlock_t			rwlock;
-	struct ib_gid_table_entry	**data_vec;
+	struct xarray			entries;
 	/* bit field, each bit indicates the index of default GID */
 	u32				default_gid_indices;
 };
@@ -251,8 +251,7 @@ static void free_gid_entry_locked(struct ib_gid_table_entry *entry)
 	 * If new entry in table is added by the time we free here,
 	 * don't overwrite the table entry.
 	 */
-	if (entry == table->data_vec[entry->attr.index])
-		table->data_vec[entry->attr.index] = NULL;
+	xa_cmpxchg(&table->entries, entry->attr.index, entry, NULL, GFP_KERNEL);
 	/* Now this index is ready to be allocated */
 	write_unlock_irq(&table->rwlock);
 
@@ -329,7 +328,7 @@ static void store_gid_entry(struct ib_gid_table *table,
 
 	lockdep_assert_held(&table->lock);
 	write_lock_irq(&table->rwlock);
-	table->data_vec[entry->attr.index] = entry;
+	xa_store(&table->entries, entry->attr.index, entry, GFP_KERNEL);
 	write_unlock_irq(&table->rwlock);
 }
 
@@ -370,6 +369,16 @@ static int add_roce_gid(struct ib_gid_table_entry *entry)
 	return 0;
 }
 
+struct ib_gid_table_entry *get_valid_entry(struct ib_gid_table *table,
+					   unsigned int index)
+{
+	struct ib_gid_table_entry *entry = xa_load(&table->entries, index);
+
+	if (!is_gid_entry_valid(entry))
+		return NULL;
+	return entry;
+}
+
 /**
  * del_gid - Delete GID table entry
  *
@@ -387,17 +396,18 @@ static void del_gid(struct ib_device *ib_dev, u32 port,
 
 	lockdep_assert_held(&table->lock);
 
+	entry = get_valid_entry(table, ix);
 	dev_dbg(&ib_dev->dev, "%s port=%u index=%d gid %pI6\n", __func__, port,
-		ix, table->data_vec[ix]->attr.gid.raw);
+		ix, entry->attr.gid.raw);
 
 	write_lock_irq(&table->rwlock);
-	entry = table->data_vec[ix];
 	entry->state = GID_TABLE_ENTRY_PENDING_DEL;
 	/*
 	 * For non RoCE protocol, GID entry slot is ready to use.
 	 */
 	if (!rdma_protocol_roce(ib_dev, port))
-		table->data_vec[ix] = NULL;
+		// FIXME use cmpxchg above
+		xa_erase(&table->entries, ix);
 	write_unlock_irq(&table->rwlock);
 
 	ndev_storage = entry->ndev_storage;
@@ -433,7 +443,7 @@ static int add_modify_gid(struct ib_gid_table *table,
 	 * Invalidate any old entry in the table to make it safe to write to
 	 * this index.
 	 */
-	if (is_gid_entry_valid(table->data_vec[attr->index]))
+	if (get_valid_entry(table, attr->index))
 		del_gid(attr->device, attr->port_num, table, attr->index);
 
 	/*
@@ -471,8 +481,9 @@ static int find_gid(struct ib_gid_table *table, const union ib_gid *gid,
 	int found = -1;
 	int empty = pempty ? -1 : 0;
 
+	// fixme xa_for_each, xa_alloc?
 	while (i < table->sz && (found < 0 || empty < 0)) {
-		struct ib_gid_table_entry *data = table->data_vec[i];
+		struct ib_gid_table_entry *data = xa_load(&table->entries, i);
 		struct ib_gid_attr *attr;
 		int curr_index = i;
 
@@ -650,8 +661,9 @@ int ib_cache_gid_del_all_netdev_gids(struct ib_device *ib_dev, u32 port,
 	mutex_lock(&table->lock);
 
 	for (ix = 0; ix < table->sz; ix++) {
-		if (is_gid_entry_valid(table->data_vec[ix]) &&
-		    table->data_vec[ix]->attr.ndev == ndev) {
+		struct ib_gid_table_entry *entry = get_valid_entry(table, ix);
+
+		if (entry && entry->attr.ndev == ndev) {
 			del_gid(ib_dev, port, table, ix);
 			deleted = true;
 		}
@@ -704,8 +716,12 @@ rdma_find_gid_by_port(struct ib_device *ib_dev,
 	read_lock_irqsave(&table->rwlock, flags);
 	local_index = find_gid(table, gid, &val, false, mask, NULL);
 	if (local_index >= 0) {
-		get_gid_entry(table->data_vec[local_index]);
-		attr = &table->data_vec[local_index]->attr;
+		// Is it OK to check the state here? Seems like it should be?
+		struct ib_gid_table_entry *entry =
+			get_valid_entry(table, local_index);
+
+		get_gid_entry(entry);
+		attr = &entry->attr;
 		read_unlock_irqrestore(&table->rwlock, flags);
 		return attr;
 	}
@@ -751,9 +767,9 @@ const struct ib_gid_attr *rdma_find_gid_by_filter(
 
 	read_lock_irqsave(&table->rwlock, flags);
 	for (i = 0; i < table->sz; i++) {
-		struct ib_gid_table_entry *entry = table->data_vec[i];
+		struct ib_gid_table_entry *entry = get_valid_entry(table, i);
 
-		if (!is_gid_entry_valid(entry))
+		if (!entry)
 			continue;
 
 		if (memcmp(gid, &entry->attr.gid, sizeof(*gid)))
@@ -776,19 +792,12 @@ static struct ib_gid_table *alloc_gid_table(int sz)
 	if (!table)
 		return NULL;
 
-	table->data_vec = kcalloc(sz, sizeof(*table->data_vec), GFP_KERNEL);
-	if (!table->data_vec)
-		goto err_free_table;
-
+	xa_init(&table->entries);
 	mutex_init(&table->lock);
 
 	table->sz = sz;
 	rwlock_init(&table->rwlock);
 	return table;
-
-err_free_table:
-	kfree(table);
-	return NULL;
 }
 
 static void release_gid_table(struct ib_device *device,
@@ -801,12 +810,14 @@ static void release_gid_table(struct ib_device *device,
 		return;
 
 	for (i = 0; i < table->sz; i++) {
-		if (is_gid_entry_free(table->data_vec[i]))
+		struct ib_gid_table_entry *entry = get_valid_entry(table, i);
+
+		if (!entry)
 			continue;
-		if (kref_read(&table->data_vec[i]->kref) > 1) {
+		if (kref_read(&entry->kref) > 1) {
 			dev_err(&device->dev,
 				"GID entry ref leak for index %d ref=%u\n", i,
-				kref_read(&table->data_vec[i]->kref));
+				kref_read(&entry->kref));
 			leak = true;
 		}
 	}
@@ -814,7 +825,7 @@ static void release_gid_table(struct ib_device *device,
 		return;
 
 	mutex_destroy(&table->lock);
-	kfree(table->data_vec);
+	WARN_ON(!xa_empty(&table->entries));
 	kfree(table);
 }
 
@@ -828,7 +839,9 @@ static void cleanup_gid_table_port(struct ib_device *ib_dev, u32 port,
 
 	mutex_lock(&table->lock);
 	for (i = 0; i < table->sz; ++i) {
-		if (is_gid_entry_valid(table->data_vec[i]))
+		struct ib_gid_table_entry *entry = get_valid_entry(table, i);
+
+		if (entry)
 			del_gid(ib_dev, port, table, i);
 	}
 	mutex_unlock(&table->lock);
@@ -953,6 +966,7 @@ static int gid_table_setup_one(struct ib_device *ib_dev)
 int rdma_query_gid(struct ib_device *device, u32 port_num,
 		   int index, union ib_gid *gid)
 {
+	struct ib_gid_table_entry *entry;
 	struct ib_gid_table *table;
 	unsigned long flags;
 	int res;
@@ -963,17 +977,13 @@ int rdma_query_gid(struct ib_device *device, u32 port_num,
 	table = rdma_gid_table(device, port_num);
 	read_lock_irqsave(&table->rwlock, flags);
 
-	if (index < 0 || index >= table->sz) {
-		res = -EINVAL;
-		goto done;
-	}
-
-	if (!is_gid_entry_valid(table->data_vec[index])) {
+	entry = get_valid_entry(table, index);
+	if (!entry) {
 		res = -ENOENT;
 		goto done;
 	}
 
-	memcpy(gid, &table->data_vec[index]->attr.gid, sizeof(*gid));
+	memcpy(gid, &entry->attr.gid, sizeof(*gid));
 	res = 0;
 
 done:
@@ -1035,9 +1045,11 @@ const struct ib_gid_attr *rdma_find_gid(struct ib_device *device,
 		index = find_gid(table, gid, &gid_attr_val, false, mask, NULL);
 		if (index >= 0) {
 			const struct ib_gid_attr *attr;
+			// FIXME: OK to check state here? Did find_gid already do it?
+			struct ib_gid_table_entry *entry = get_valid_entry(table, index);
 
-			get_gid_entry(table->data_vec[index]);
-			attr = &table->data_vec[index]->attr;
+			get_gid_entry(entry);
+			attr = &entry->attr;
 			read_unlock_irqrestore(&table->rwlock, flags);
 			return attr;
 		}
@@ -1219,6 +1231,7 @@ const struct ib_gid_attr *
 rdma_get_gid_attr(struct ib_device *device, u32 port_num, int index)
 {
 	const struct ib_gid_attr *attr = ERR_PTR(-ENODATA);
+	struct ib_gid_table_entry *entry;
 	struct ib_gid_table *table;
 	unsigned long flags;
 
@@ -1230,11 +1243,12 @@ rdma_get_gid_attr(struct ib_device *device, u32 port_num, int index)
 		return ERR_PTR(-EINVAL);
 
 	read_lock_irqsave(&table->rwlock, flags);
-	if (!is_gid_entry_valid(table->data_vec[index]))
+	entry = get_valid_entry(table, index);
+	if (!entry)
 		goto done;
 
-	get_gid_entry(table->data_vec[index]);
-	attr = &table->data_vec[index]->attr;
+	get_gid_entry(entry);
+	attr = &entry->attr;
 done:
 	read_unlock_irqrestore(&table->rwlock, flags);
 	return attr;
@@ -1265,14 +1279,17 @@ ssize_t rdma_query_gid_table(struct ib_device *device,
 		table = rdma_gid_table(device, port_num);
 		read_lock_irqsave(&table->rwlock, flags);
 		for (i = 0; i < table->sz; i++) {
-			if (!is_gid_entry_valid(table->data_vec[i]))
+			struct ib_gid_table_entry *entry =
+				get_valid_entry(table, i);
+
+			if (!entry)
 				continue;
 			if (num_entries >= max_entries) {
 				ret = -EINVAL;
 				goto err;
 			}
 
-			gid_attr = &table->data_vec[i]->attr;
+			gid_attr = &entry->attr;
 
 			memcpy(&entries->gid, &gid_attr->gid,
 			       sizeof(gid_attr->gid));
@@ -1358,13 +1375,11 @@ struct net_device *rdma_read_gid_attr_ndev_rcu(const struct ib_gid_attr *attr)
 	u32 port_num = entry->attr.port_num;
 	struct ib_gid_table *table;
 	unsigned long flags;
-	bool valid;
 
 	table = rdma_gid_table(device, port_num);
 
 	read_lock_irqsave(&table->rwlock, flags);
-	valid = is_gid_entry_valid(table->data_vec[attr->index]);
-	if (valid) {
+	if (get_valid_entry(table, attr->index)) {
 		ndev = rcu_dereference(attr->ndev);
 		if (!ndev)
 			ndev = ERR_PTR(-ENODEV);
