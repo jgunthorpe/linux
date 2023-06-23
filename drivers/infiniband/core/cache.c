@@ -608,45 +608,60 @@ int ib_cache_gid_add(struct ib_device *ib_dev, u32 port,
 	return __ib_cache_gid_add(ib_dev, port, gid, attr, mask, false);
 }
 
-static int
-_ib_cache_gid_del(struct ib_device *ib_dev, u32 port,
-		  union ib_gid *gid, struct ib_gid_attr *attr,
-		  unsigned long mask, bool default_gid)
-{
-	struct ib_gid_table *table;
-	int ret = 0;
-	int ix;
-
-	table = rdma_gid_table(ib_dev, port);
-
-	mutex_lock(&table->lock);
-
-	ix = find_gid(table, gid, attr, default_gid, mask, NULL);
-	if (ix < 0) {
-		ret = -EINVAL;
-		goto out_unlock;
-	}
-
-	del_gid(ib_dev, port, table, ix);
-	dispatch_gid_change_event(ib_dev, port);
-
-out_unlock:
-	mutex_unlock(&table->lock);
-	if (ret)
-		pr_debug("%s: can't delete gid %pI6 error=%d\n",
-			 __func__, gid->raw, ret);
-	return ret;
-}
-
 int ib_cache_gid_del(struct ib_device *ib_dev, u32 port,
 		     union ib_gid *gid, struct ib_gid_attr *attr)
 {
-	unsigned long mask = GID_ATTR_FIND_MASK_GID	  |
-			     GID_ATTR_FIND_MASK_GID_TYPE |
-			     GID_ATTR_FIND_MASK_DEFAULT  |
-			     GID_ATTR_FIND_MASK_NETDEV;
+	struct ib_gid_table *table = rdma_gid_table(ib_dev, port);
+	struct ib_gid_table_entry *entry;
+	unsigned long index;
+	int ret = 0;
 
-	return _ib_cache_gid_del(ib_dev, port, gid, attr, mask, false);
+	mutex_lock(&table->lock);
+	xa_for_each(&table->entries, index, entry) {
+		if (!is_gid_entry_valid(entry))
+			continue;
+		if (memcmp(gid, &entry->attr.gid, sizeof(*gid)) != 0 ||
+		    entry->attr.gid_type != attr->gid_type ||
+		    is_gid_index_default(table, index) != false ||
+		    entry->attr.ndev != attr->ndev)
+			continue;
+
+		del_gid(ib_dev, port, table, index);
+		dispatch_gid_change_event(ib_dev, port);
+		goto out_unlock;
+	}
+	pr_debug("%s: can't delete gid %pI6, not found\n", __func__, gid->raw);
+	ret = -ENOENT;
+
+out_unlock:
+	mutex_unlock(&table->lock);
+	return ret;
+}
+
+static void ib_cache_gid_del_default(struct ib_device *ib_dev, u32 port,
+				     struct net_device *ndev,
+				     unsigned int gid_type)
+{
+	struct ib_gid_table *table = rdma_gid_table(ib_dev, port);
+	struct ib_gid_table_entry *entry;
+	unsigned long index;
+
+	mutex_lock(&table->lock);
+	xa_for_each(&table->entries, index, entry) {
+		if (!is_gid_entry_valid(entry))
+			continue;
+		if (entry->attr.gid_type != gid_type ||
+		    is_gid_index_default(table, index) != false ||
+		    entry->attr.ndev != ndev)
+			continue;
+
+		del_gid(ib_dev, port, table, index);
+		dispatch_gid_change_event(ib_dev, port);
+		goto out_unlock;
+	}
+	pr_debug("%s: can't delete default gid, not found\n", __func__);
+out_unlock:
+	mutex_unlock(&table->lock);
 }
 
 int ib_cache_gid_del_all_netdev_gids(struct ib_device *ib_dev, u32 port,
@@ -874,8 +889,7 @@ void ib_cache_gid_set_default_gid(struct ib_device *ib_dev, u32 port,
 			__ib_cache_gid_add(ib_dev, port, &gid,
 					   &gid_attr, mask, true);
 		} else if (mode == IB_CACHE_GID_DEFAULT_MODE_DELETE) {
-			_ib_cache_gid_del(ib_dev, port, &gid,
-					  &gid_attr, mask, true);
+			ib_cache_gid_del_default(ib_dev, port, ndev, gid_type);
 		}
 	}
 }
