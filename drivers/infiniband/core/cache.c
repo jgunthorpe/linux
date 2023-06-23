@@ -692,6 +692,36 @@ int ib_cache_gid_del_all_netdev_gids(struct ib_device *ib_dev, u32 port,
 	return 0;
 }
 
+static const struct ib_gid_attr *
+_rdma_find_gid_by_port(struct ib_device *ib_dev, const union ib_gid *gid,
+		       enum ib_gid_type gid_type, u32 port,
+		       struct net_device *ndev)
+{
+	struct ib_gid_table *table = rdma_gid_table(ib_dev, port);
+	struct ib_gid_table_entry *entry;
+	unsigned long index;
+	unsigned long flags;
+
+	read_lock_irqsave(&table->rwlock, flags);
+	xa_for_each(&table->entries, index, entry) {
+		const struct ib_gid_attr *attr;
+
+		if (!is_gid_entry_valid(entry))
+			continue;
+		if (memcmp(gid, &entry->attr.gid, sizeof(*gid)) != 0 ||
+		    entry->attr.gid_type != gid_type ||
+		    (ndev && entry->attr.ndev != ndev))
+			continue;
+
+		get_gid_entry(entry);
+		attr = &entry->attr;
+		read_unlock_irqrestore(&table->rwlock, flags);
+		return attr;
+	}
+	read_unlock_irqrestore(&table->rwlock, flags);
+	return ERR_PTR(-ENOENT);
+}
+
 /**
  * rdma_find_gid_by_port - Returns the GID entry attributes when it finds
  * a valid GID entry for given search parameters. It searches for the specified
@@ -712,37 +742,9 @@ rdma_find_gid_by_port(struct ib_device *ib_dev,
 		      enum ib_gid_type gid_type,
 		      u32 port, struct net_device *ndev)
 {
-	int local_index;
-	struct ib_gid_table *table;
-	unsigned long mask = GID_ATTR_FIND_MASK_GID |
-			     GID_ATTR_FIND_MASK_GID_TYPE;
-	struct ib_gid_attr val = {.ndev = ndev, .gid_type = gid_type};
-	const struct ib_gid_attr *attr;
-	unsigned long flags;
-
 	if (!rdma_is_port_valid(ib_dev, port))
 		return ERR_PTR(-ENOENT);
-
-	table = rdma_gid_table(ib_dev, port);
-
-	if (ndev)
-		mask |= GID_ATTR_FIND_MASK_NETDEV;
-
-	read_lock_irqsave(&table->rwlock, flags);
-	local_index = find_gid(table, gid, &val, false, mask, NULL);
-	if (local_index >= 0) {
-		// Is it OK to check the state here? Seems like it should be?
-		struct ib_gid_table_entry *entry =
-			get_valid_entry(table, local_index);
-
-		get_gid_entry(entry);
-		attr = &entry->attr;
-		read_unlock_irqrestore(&table->rwlock, flags);
-		return attr;
-	}
-
-	read_unlock_irqrestore(&table->rwlock, flags);
-	return ERR_PTR(-ENOENT);
+	return _rdma_find_gid_by_port(ib_dev,gid, gid_type, port, ndev);
 }
 EXPORT_SYMBOL(rdma_find_gid_by_port);
 
@@ -1041,37 +1043,15 @@ const struct ib_gid_attr *rdma_find_gid(struct ib_device *device,
 					enum ib_gid_type gid_type,
 					struct net_device *ndev)
 {
-	unsigned long mask = GID_ATTR_FIND_MASK_GID |
-			     GID_ATTR_FIND_MASK_GID_TYPE;
 	u32 p;
 
-	if (ndev)
-		mask |= GID_ATTR_FIND_MASK_NETDEV;
-
 	rdma_for_each_port(device, p) {
-		struct ib_gid_table_entry *entry;
-		struct ib_gid_table *table;
-		unsigned long flags;
-		unsigned long index;
+		const struct ib_gid_attr *ret;
 
-		table = device->port_data[p].cache.gid;
-		read_lock_irqsave(&table->rwlock, flags);
-		xa_for_each(&table->entries, index, entry) {
-			const struct ib_gid_attr *attr;
-
-			if (!is_gid_entry_valid(entry))
-				continue;
-			if (memcmp(gid, &entry->attr.gid, sizeof(*gid)) != 0 ||
-			    entry->attr.gid_type != gid_type ||
-			    (ndev && entry->attr.ndev != ndev))
-				continue;
-
-			get_gid_entry(entry);
-			attr = &entry->attr;
-			read_unlock_irqrestore(&table->rwlock, flags);
-			return attr;
-		}
-		read_unlock_irqrestore(&table->rwlock, flags);
+		ret = _rdma_find_gid_by_port(device, gid,gid_type, p, ndev);
+		if (IS_ERR(ret))
+			continue;
+		return ret;
 	}
 
 	return ERR_PTR(-ENOENT);
