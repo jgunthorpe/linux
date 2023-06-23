@@ -117,8 +117,7 @@ struct ib_gid_table {
 	 */
 	rwlock_t			rwlock;
 	struct xarray			entries;
-	/* bit field, each bit indicates the index of default GID */
-	u32				default_gid_indices;
+	unsigned int num_default_gids;
 };
 
 static void dispatch_gid_change_event(struct ib_device *ib_dev, u32 port)
@@ -170,7 +169,7 @@ EXPORT_SYMBOL(rdma_is_zero_gid);
 static bool is_gid_index_default(const struct ib_gid_table *table,
 				 unsigned int index)
 {
-	return index < 32 && (BIT(index) & table->default_gid_indices);
+	return index < table->num_default_gids;
 }
 
 int ib_cache_gid_parse_type_str(const char *buf)
@@ -200,11 +199,6 @@ EXPORT_SYMBOL(ib_cache_gid_parse_type_str);
 static struct ib_gid_table *rdma_gid_table(struct ib_device *device, u32 port)
 {
 	return device->port_data[port].cache.gid;
-}
-
-static bool is_gid_entry_free(const struct ib_gid_table_entry *entry)
-{
-	return !entry;
 }
 
 static bool is_gid_entry_valid(const struct ib_gid_table_entry *entry)
@@ -472,82 +466,6 @@ done:
 	return ret;
 }
 
-/* rwlock should be read locked, or lock should be held */
-static int find_gid(struct ib_gid_table *table, const union ib_gid *gid,
-		    const struct ib_gid_attr *val, bool default_gid,
-		    unsigned long mask, int *pempty)
-{
-	int i = 0;
-	int found = -1;
-	int empty = pempty ? -1 : 0;
-
-	// fixme xa_for_each, xa_alloc?
-	while (i < table->sz && (found < 0 || empty < 0)) {
-		struct ib_gid_table_entry *data = xa_load(&table->entries, i);
-		struct ib_gid_attr *attr;
-		int curr_index = i;
-
-		i++;
-
-		/* find_gid() is used during GID addition where it is expected
-		 * to return a free entry slot which is not duplicate.
-		 * Free entry slot is requested and returned if pempty is set,
-		 * so lookup free slot only if requested.
-		 */
-		if (pempty && empty < 0) {
-			if (is_gid_entry_free(data) &&
-			    default_gid ==
-				is_gid_index_default(table, curr_index)) {
-				/*
-				 * Found an invalid (free) entry; allocate it.
-				 * If default GID is requested, then our
-				 * found slot must be one of the DEFAULT
-				 * reserved slots or we fail.
-				 * This ensures that only DEFAULT reserved
-				 * slots are used for default property GIDs.
-				 */
-				empty = curr_index;
-			}
-		}
-
-		/*
-		 * Additionally find_gid() is used to find valid entry during
-		 * lookup operation; so ignore the entries which are marked as
-		 * pending for removal and the entries which are marked as
-		 * invalid.
-		 */
-		if (!is_gid_entry_valid(data))
-			continue;
-
-		if (found >= 0)
-			continue;
-
-		attr = &data->attr;
-		if (mask & GID_ATTR_FIND_MASK_GID_TYPE &&
-		    attr->gid_type != val->gid_type)
-			continue;
-
-		if (mask & GID_ATTR_FIND_MASK_GID &&
-		    memcmp(gid, &data->attr.gid, sizeof(*gid)))
-			continue;
-
-		if (mask & GID_ATTR_FIND_MASK_NETDEV &&
-		    attr->ndev != val->ndev)
-			continue;
-
-		if (mask & GID_ATTR_FIND_MASK_DEFAULT &&
-		    is_gid_index_default(table, curr_index) != default_gid)
-			continue;
-
-		found = curr_index;
-	}
-
-	if (pempty)
-		*pempty = empty;
-
-	return found;
-}
-
 static void make_default_gid(struct  net_device *dev, union ib_gid *gid)
 {
 	gid->global.subnet_prefix = cpu_to_be64(0xfe80000000000000LL);
@@ -558,10 +476,12 @@ static int __ib_cache_gid_add(struct ib_device *ib_dev, u32 port,
 			      union ib_gid *gid, struct ib_gid_attr *attr,
 			      unsigned long mask, bool default_gid)
 {
-	struct ib_gid_table *table;
+	struct ib_gid_table *table = rdma_gid_table(ib_dev, port);
+	struct ib_gid_table_entry *entry;
+	struct xa_limit limit;
+	unsigned long index;
+	u32 free_index;
 	int ret = 0;
-	int empty;
-	int ix;
 
 	/* Do not allow adding zero GID in support of
 	 * IB spec version 1.3 section 4.1.1 point (6) and
@@ -570,20 +490,44 @@ static int __ib_cache_gid_add(struct ib_device *ib_dev, u32 port,
 	if (rdma_is_zero_gid(gid))
 		return -EINVAL;
 
-	table = rdma_gid_table(ib_dev, port);
-
 	mutex_lock(&table->lock);
 
-	ix = find_gid(table, gid, attr, default_gid, mask, &empty);
-	if (ix >= 0)
-		goto out_unlock;
+	xa_for_each(&table->entries, index, entry) {
+		if (memcmp(gid, &entry->attr.gid, sizeof(*gid)) != 0 ||
+		    entry->attr.gid_type != attr->gid_type ||
+		    is_gid_index_default(table, index) != default_gid ||
+		    entry->attr.ndev != attr->ndev)
+			continue;
 
-	if (empty < 0) {
-		ret = -ENOSPC;
+		/* Found an existing entry */
+		if (!is_gid_entry_valid(entry)) {
+			/* FIXME try get the kref here it can race to be zero */
+			/* FIXME: make it valid again */
+			ret = add_roce_gid(entry);
+			if (ret)
+				break;
+			entry->state = GID_TABLE_ENTRY_VALID;
+		}
+		ret = 0;
 		goto out_unlock;
 	}
+
+	/* FIXME: integrate the xa_alloc with add_modify gid and the ib path */
+	if (default_gid)
+		limit = XA_LIMIT(0, table->num_default_gids - 1);
+	else
+		// fixme : max with u16_max
+		limit = XA_LIMIT(table->num_default_gids,
+				 ib_dev->port_data[port].immutable.gid_tbl_len -
+					 1);
+
+	ret = xa_alloc(&table->entries, &free_index, XA_ZERO_ENTRY, limit,
+		       GFP_KERNEL);
+	if (ret)
+		goto out_unlock;
+
 	attr->device = ib_dev;
-	attr->index = empty;
+	attr->index = free_index;
 	attr->port_num = port;
 	attr->gid = *gid;
 	ret = add_modify_gid(table, attr);
@@ -899,15 +843,10 @@ void ib_cache_gid_set_default_gid(struct ib_device *ib_dev, u32 port,
 static void gid_table_reserve_default(struct ib_device *ib_dev, u32 port,
 				      struct ib_gid_table *table)
 {
-	unsigned int i;
 	unsigned long roce_gid_type_mask;
-	unsigned int num_default_gids;
 
 	roce_gid_type_mask = roce_gid_type_mask_support(ib_dev, port);
-	num_default_gids = hweight_long(roce_gid_type_mask);
-	/* Reserve starting indices for default GIDs */
-	for (i = 0; i < num_default_gids && i < table->sz; i++)
-		table->default_gid_indices |= BIT(i);
+	table->num_default_gids = hweight_long(roce_gid_type_mask);
 }
 
 
