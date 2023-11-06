@@ -23,6 +23,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/tboot.h>
 #include <uapi/linux/iommufd.h>
+#include <linux/io-pgtable.h>
 
 #include "iommu.h"
 #include "../dma-iommu.h"
@@ -54,6 +55,20 @@
 #define DOMAIN_MAX_PFN(gaw)	((unsigned long) min_t(uint64_t, \
 				__DOMAIN_MAX_PFN(gaw), (unsigned long)-1))
 #define DOMAIN_MAX_ADDR(gaw)	(((uint64_t)__DOMAIN_MAX_PFN(gaw)) << VTD_PAGE_SHIFT)
+
+#define io_pgtable_cfg_to_dmar_pgtable(x) \
+	container_of((x), struct dmar_io_pgtable, pgtbl_cfg)
+
+#define io_pgtable_to_dmar_pgtable(x) \
+	container_of((x), struct dmar_io_pgtable, iop)
+
+#define io_pgtable_to_dmar_domain(x) \
+	container_of(io_pgtable_to_dmar_pgtable(x), \
+		struct dmar_domain, dmar_iop)
+
+#define io_pgtable_ops_to_dmar_domain(x) \
+	container_of(io_pgtable_to_dmar_pgtable(io_pgtable_ops_to_pgtable(x)), \
+		struct dmar_domain, dmar_iop)
 
 static void __init check_tylersburg_isoch(void);
 static int rwbf_quirk;
@@ -4915,3 +4930,82 @@ err:
 
 	return ret;
 }
+
+static void flush_all(void *cookie)
+{
+}
+
+static void flush_walk(unsigned long iova, size_t size,
+		       size_t granule, void *cookie)
+{
+}
+
+static void add_page(struct iommu_iotlb_gather *gather,
+		     unsigned long iova, size_t granule,
+		     void *cookie)
+{
+}
+
+static const struct iommu_flush_ops flush_ops = {
+	.tlb_flush_all  = flush_all,
+	.tlb_flush_walk = flush_walk,
+	.tlb_add_page   = add_page,
+};
+
+static void free_pgtable(struct io_pgtable *iop)
+{
+	struct dmar_domain *dmar_domain = io_pgtable_to_dmar_domain(iop);
+
+	if (dmar_domain->pgd) {
+		LIST_HEAD(freelist);
+
+		domain_unmap(dmar_domain, 0, DOMAIN_MAX_PFN(dmar_domain->gaw), &freelist);
+		put_pages_list(&freelist);
+	}
+}
+
+static int pgtable_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
+			     phys_addr_t paddr, size_t pgsize, size_t pgcount,
+			     int iommu_prot, gfp_t gfp, size_t *mapped)
+{
+	struct dmar_domain *dmar_domain = io_pgtable_ops_to_dmar_domain(ops);
+
+	return intel_iommu_map_pages(&dmar_domain->domain, iova, paddr, pgsize,
+				     pgcount, iommu_prot, gfp, mapped);
+}
+
+static size_t pgtable_unmap_pages(struct io_pgtable_ops *ops, unsigned long iova,
+				  size_t pgsize, size_t pgcount,
+				  struct iommu_iotlb_gather *gather)
+{
+	struct dmar_domain *dmar_domain = io_pgtable_ops_to_dmar_domain(ops);
+
+	return intel_iommu_unmap_pages(&dmar_domain->domain, iova, pgsize,
+				       pgcount, gather);
+}
+
+static phys_addr_t pgtable_iova_to_phys(struct io_pgtable_ops *ops,
+					unsigned long iova)
+{
+	struct dmar_domain *dmar_domain = io_pgtable_ops_to_dmar_domain(ops);
+
+	return intel_iommu_iova_to_phys(&dmar_domain->domain, iova);
+}
+
+static struct io_pgtable *alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
+{
+	struct dmar_io_pgtable *pgtable = io_pgtable_cfg_to_dmar_pgtable(cfg);
+
+	pgtable->iop.ops.map_pages = pgtable_map_pages;
+	pgtable->iop.ops.unmap_pages = pgtable_unmap_pages;
+	pgtable->iop.ops.iova_to_phys = pgtable_iova_to_phys;
+
+	cfg->tlb = &flush_ops;
+
+	return &pgtable->iop;
+}
+
+struct io_pgtable_init_fns io_pgtable_intel_iommu_init_fns = {
+	.alloc = alloc_pgtable,
+	.free  = free_pgtable,
+};
