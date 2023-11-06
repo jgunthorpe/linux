@@ -176,6 +176,12 @@ struct io_pgtable_cfg {
 		struct {
 			int nid;
 		} amd;
+
+		struct {
+			u64 cap_reg;
+			u64 ecap_reg;
+			u64 pgd;
+		} vtd_cfg;
 	};
 };
 
