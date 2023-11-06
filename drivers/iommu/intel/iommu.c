@@ -4992,17 +4992,79 @@ static phys_addr_t pgtable_iova_to_phys(struct io_pgtable_ops *ops,
 	return intel_iommu_iova_to_phys(&dmar_domain->domain, iova);
 }
 
+static void __iommu_calculate_cfg(struct io_pgtable_cfg *cfg)
+{
+	unsigned long fl_sagaw, sl_sagaw, sagaw;
+	int agaw, addr_width;
+
+	fl_sagaw = BIT(2) | (cap_fl5lp_support(cfg->vtd_cfg.cap_reg) ? BIT(3) : 0);
+	sl_sagaw = cap_sagaw(cfg->vtd_cfg.cap_reg);
+	sagaw = fl_sagaw & sl_sagaw;
+
+	for (agaw = width_to_agaw(DEFAULT_DOMAIN_ADDRESS_WIDTH); agaw >= 0; agaw--) {
+		if (test_bit(agaw, &sagaw))
+			break;
+	}
+
+	addr_width = agaw_to_width(agaw);
+	if (cfg->ias > addr_width)
+		cfg->ias = addr_width;
+	if (cfg->oas != addr_width)
+		cfg->oas = addr_width;
+}
+
 static struct io_pgtable *alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie)
 {
-	struct dmar_io_pgtable *pgtable = io_pgtable_cfg_to_dmar_pgtable(cfg);
+	struct dmar_io_pgtable *pgtable;
+	struct dmar_domain *domain;
+	int adjust_width;
 
+	/* Platform must have nested translation support */
+	if (!ecap_nest(cfg->vtd_cfg.ecap_reg))
+		return NULL;
+
+	domain = kzalloc(sizeof(*domain), GFP_KERNEL);
+	if (!domain)
+		return NULL;
+
+	domain->nid = NUMA_NO_NODE;
+	domain->use_first_level = true;
+	INIT_LIST_HEAD(&domain->devices);
+	spin_lock_init(&domain->lock);
+	xa_init(&domain->iommu_array);
+
+	/* calculate AGAW */
+	__iommu_calculate_cfg(cfg);
+	domain->gaw = cfg->ias;
+	adjust_width = guestwidth_to_adjustwidth(domain->gaw);
+	domain->agaw = width_to_agaw(adjust_width);
+
+	domain->iommu_coherency = ecap_smpwc(cfg->vtd_cfg.ecap_reg);
+	domain->force_snooping = true;
+	domain->iommu_superpage = cap_fl1gp_support(cfg->vtd_cfg.ecap_reg) ? 2 : 1;
+	domain->max_addr = 0;
+
+	cfg->coherent_walk = domain->iommu_coherency;
+
+	pgtable = &domain->dmar_iop;
+
+	/* always allocate the top pgd */
+	domain->pgd = iommu_alloc_page_node(domain->nid, GFP_KERNEL);
+	if (!domain->pgd)
+		goto out_free_domain;
+	domain_flush_cache(domain, domain->pgd, PAGE_SIZE);
+
+	cfg->vtd_cfg.pgd = virt_to_phys(domain->pgd);
+	cfg->tlb = &flush_ops;
 	pgtable->iop.ops.map_pages = pgtable_map_pages;
 	pgtable->iop.ops.unmap_pages = pgtable_unmap_pages;
 	pgtable->iop.ops.iova_to_phys = pgtable_iova_to_phys;
 
-	cfg->tlb = &flush_ops;
-
 	return &pgtable->iop;
+
+out_free_domain:
+	kfree(domain);
+	return NULL;
 }
 
 struct io_pgtable_init_fns io_pgtable_intel_iommu_init_fns = {
