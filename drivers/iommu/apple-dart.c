@@ -268,10 +268,10 @@ struct apple_dart_domain {
 };
 
 /*
- * This structure is attached to devices with dev_iommu_priv_set() on of_xlate
- * and contains a list of streams bound to this device.
- * So far the worst case seen is a single device with two streams
- * from different darts, such that this simple static array is enough.
+ * This structure is attached to devices with dev_iommu_priv_set() on
+ * probe_device and contains a list of streams bound to this device. So far the
+ * worst case seen is a single device with two streams from different darts,
+ * such that this simple static array is enough.
  *
  * @streams: streams for this device
  */
@@ -294,6 +294,9 @@ struct apple_dart_master_cfg {
 
 static struct platform_driver apple_dart_driver;
 static const struct iommu_ops apple_dart_iommu_ops;
+
+static int apple_dart_of_xlate(struct iommu_device *iommu,
+			       struct of_phandle_args *args, void *priv);
 
 static struct apple_dart_domain *to_dart_domain(struct iommu_domain *dom)
 {
@@ -721,21 +724,34 @@ static struct iommu_domain apple_dart_blocked_domain = {
 	.ops = &apple_dart_blocked_ops,
 };
 
-static struct iommu_device *apple_dart_probe_device(struct device *dev)
+static struct iommu_device *
+apple_dart_probe_device(struct iommu_probe_info *pinf)
 {
-	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
+	struct device *dev = pinf->dev;
+	struct apple_dart_master_cfg *cfg;
 	struct apple_dart_stream_map *stream_map;
+	int ret;
 	int i;
 
+	cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
 	if (!cfg)
-		return ERR_PTR(-ENODEV);
+		return ERR_PTR(-ENOMEM);
+	ret = iommu_of_xlate(pinf, &apple_dart_iommu_ops, 1,
+			     &apple_dart_of_xlate, cfg);
+	if (ret)
+		goto err_free;
 
 	for_each_stream_map(i, cfg, stream_map)
 		device_link_add(
 			dev, stream_map->dart->dev,
 			DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_SUPPLIER);
 
+	dev_iommu_priv_set(dev, cfg);
 	return &cfg->stream_maps[0].dart->iommu;
+
+err_free:
+	kfree(cfg);
+	return ERR_PTR(ret);
 }
 
 static void apple_dart_release_device(struct device *dev)
@@ -778,25 +794,15 @@ static void apple_dart_domain_free(struct iommu_domain *domain)
 	kfree(dart_domain);
 }
 
-static int apple_dart_of_xlate(struct device *dev, struct of_phandle_args *args)
+static int apple_dart_of_xlate(struct iommu_device *iommu,
+			       struct of_phandle_args *args, void *priv)
 {
-	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
-	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
-	struct apple_dart *dart = platform_get_drvdata(iommu_pdev);
-	struct apple_dart *cfg_dart;
-	int i, sid;
+	struct apple_dart *dart = container_of(iommu, struct apple_dart, iommu);
+	struct apple_dart_master_cfg *cfg = priv;
+	struct apple_dart *cfg_dart = cfg->stream_maps[0].dart;
+	int sid = args->args[0];
+	int i;
 
-	if (args->args_count != 1)
-		return -EINVAL;
-	sid = args->args[0];
-
-	if (!cfg)
-		cfg = kzalloc(sizeof(*cfg), GFP_KERNEL);
-	if (!cfg)
-		return -ENOMEM;
-	dev_iommu_priv_set(dev, cfg);
-
-	cfg_dart = cfg->stream_maps[0].dart;
 	if (cfg_dart) {
 		if (cfg_dart->supports_bypass != dart->supports_bypass)
 			return -EINVAL;
@@ -978,10 +984,10 @@ static const struct iommu_ops apple_dart_iommu_ops = {
 	.identity_domain = &apple_dart_identity_domain,
 	.blocked_domain = &apple_dart_blocked_domain,
 	.domain_alloc_paging = apple_dart_domain_alloc_paging,
-	.probe_device = apple_dart_probe_device,
+	.probe_device_pinf = apple_dart_probe_device,
 	.release_device = apple_dart_release_device,
 	.device_group = apple_dart_device_group,
-	.of_xlate = apple_dart_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.def_domain_type = apple_dart_def_domain_type,
 	.get_resv_regions = apple_dart_get_resv_regions,
 	.pgsize_bitmap = -1UL, /* Restricted during dart probe */
