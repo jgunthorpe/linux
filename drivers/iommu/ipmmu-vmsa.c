@@ -17,6 +17,7 @@
 #include <linux/iopoll.h>
 #include <linux/io-pgtable.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
@@ -37,6 +38,8 @@
 #define IPMMU_CTX_INVALID	-1
 
 #define IPMMU_UTLB_MAX		64U
+
+static const struct iommu_ops ipmmu_ops;
 
 struct ipmmu_features {
 	bool use_ns_alias_offset;
@@ -67,6 +70,12 @@ struct ipmmu_vmsa_device {
 	struct dma_iommu_mapping *mapping;
 };
 
+struct ipmmu_vmsa_master {
+	struct ipmmu_vmsa_device *iommu;
+	unsigned int num_ids;
+	u32 ids[] __counted_by(num_ids);
+};
+
 struct ipmmu_vmsa_domain {
 	struct ipmmu_vmsa_device *mmu;
 	struct iommu_domain io_domain;
@@ -81,11 +90,6 @@ struct ipmmu_vmsa_domain {
 static struct ipmmu_vmsa_domain *to_vmsa_domain(struct iommu_domain *dom)
 {
 	return container_of(dom, struct ipmmu_vmsa_domain, io_domain);
-}
-
-static struct ipmmu_vmsa_device *to_ipmmu(struct device *dev)
-{
-	return dev_iommu_priv_get(dev);
 }
 
 #define TLB_LOOP_TIMEOUT		100	/* 100us */
@@ -591,9 +595,9 @@ static void ipmmu_domain_free(struct iommu_domain *io_domain)
 static int ipmmu_attach_device(struct iommu_domain *io_domain,
 			       struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
+	struct ipmmu_vmsa_master *master = dev_iommu_priv_get(dev);
 	struct ipmmu_vmsa_domain *domain = to_vmsa_domain(io_domain);
+	struct ipmmu_vmsa_device *mmu = master->iommu;
 	unsigned int i;
 	int ret = 0;
 
@@ -629,8 +633,8 @@ static int ipmmu_attach_device(struct iommu_domain *io_domain,
 	if (ret < 0)
 		return ret;
 
-	for (i = 0; i < fwspec->num_ids; ++i)
-		ipmmu_utlb_enable(domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; ++i)
+		ipmmu_utlb_enable(domain, master->ids[i]);
 
 	return 0;
 }
@@ -639,7 +643,7 @@ static int ipmmu_iommu_identity_attach(struct iommu_domain *identity_domain,
 				       struct device *dev)
 {
 	struct iommu_domain *io_domain = iommu_get_domain_for_dev(dev);
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct ipmmu_vmsa_master *master = dev_iommu_priv_get(dev);
 	struct ipmmu_vmsa_domain *domain;
 	unsigned int i;
 
@@ -647,8 +651,8 @@ static int ipmmu_iommu_identity_attach(struct iommu_domain *identity_domain,
 		return 0;
 
 	domain = to_vmsa_domain(io_domain);
-	for (i = 0; i < fwspec->num_ids; ++i)
-		ipmmu_utlb_disable(domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; ++i)
+		ipmmu_utlb_disable(domain, master->ids[i]);
 
 	/*
 	 * TODO: Optimize by disabling the context when no device is attached.
@@ -708,20 +712,6 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 	return domain->iop->iova_to_phys(domain->iop, iova);
 }
 
-static int ipmmu_init_platform_device(struct device *dev,
-				      struct of_phandle_args *args)
-{
-	struct platform_device *ipmmu_pdev;
-
-	ipmmu_pdev = of_find_device_by_node(args->np);
-	if (!ipmmu_pdev)
-		return -ENODEV;
-
-	dev_iommu_priv_set(dev, platform_get_drvdata(ipmmu_pdev));
-
-	return 0;
-}
-
 static const struct soc_device_attribute soc_needs_opt_in[] = {
 	{ .family = "R-Car Gen3", },
 	{ .family = "R-Car Gen4", },
@@ -772,24 +762,10 @@ static bool ipmmu_device_is_allowed(struct device *dev)
 	return false;
 }
 
-static int ipmmu_of_xlate(struct device *dev,
-			  struct of_phandle_args *spec)
-{
-	if (!ipmmu_device_is_allowed(dev))
-		return -ENODEV;
-
-	iommu_fwspec_add_ids(dev, spec->args, 1);
-
-	/* Initialize once - xlate() will call multiple times */
-	if (to_ipmmu(dev))
-		return 0;
-
-	return ipmmu_init_platform_device(dev, spec);
-}
-
 static int ipmmu_init_arm_mapping(struct device *dev)
 {
-	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
+	struct ipmmu_vmsa_master *master = dev_iommu_priv_get(dev);
+	struct ipmmu_vmsa_device *mmu = master->iommu;
 	int ret;
 
 	/*
@@ -831,15 +807,26 @@ error:
 	return ret;
 }
 
-static struct iommu_device *ipmmu_probe_device(struct device *dev)
+static struct iommu_device *ipmmu_probe_device(struct iommu_probe_info *pinf)
 {
-	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
+	struct device *dev = pinf->dev;
+	struct ipmmu_vmsa_master *master;
+	struct ipmmu_vmsa_device *mmu;
 
-	/*
-	 * Only let through devices that have been verified in xlate()
-	 */
-	if (!mmu)
+	if (!ipmmu_device_is_allowed(dev))
 		return ERR_PTR(-ENODEV);
+
+	mmu = iommu_of_get_single_iommu(pinf, &ipmmu_ops, -1,
+					struct ipmmu_vmsa_device, iommu);
+	if (IS_ERR(mmu))
+		return ERR_CAST(mmu);
+
+	master = iommu_fw_alloc_per_device_ids(pinf, master);
+	if (IS_ERR(master))
+		return ERR_CAST(master);
+	master->iommu = mmu;
+
+	dev_iommu_priv_set(dev, master);
 
 	return &mmu->iommu;
 }
@@ -857,24 +844,25 @@ static void ipmmu_probe_finalize(struct device *dev)
 
 static void ipmmu_release_device(struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
+	struct ipmmu_vmsa_master *master = dev_iommu_priv_get(dev);
+	struct ipmmu_vmsa_device *mmu = master->iommu;
 	unsigned int i;
 
-	for (i = 0; i < fwspec->num_ids; ++i) {
-		unsigned int utlb = fwspec->ids[i];
+	for (i = 0; i < master->num_ids; ++i) {
+		unsigned int utlb = master->ids[i];
 
 		ipmmu_imuctr_write(mmu, utlb, 0);
 		mmu->utlb_ctx[utlb] = IPMMU_CTX_INVALID;
 	}
 
 	arm_iommu_release_mapping(mmu->mapping);
+	kfree(master);
 }
 
 static const struct iommu_ops ipmmu_ops = {
 	.identity_domain = &ipmmu_iommu_identity_domain,
 	.domain_alloc_paging = ipmmu_domain_alloc_paging,
-	.probe_device = ipmmu_probe_device,
+	.probe_device_pinf = ipmmu_probe_device,
 	.release_device = ipmmu_release_device,
 	.probe_finalize = ipmmu_probe_finalize,
 	/*
@@ -884,7 +872,7 @@ static const struct iommu_ops ipmmu_ops = {
 	.device_group = IS_ENABLED(CONFIG_ARM) && !IS_ENABLED(CONFIG_IOMMU_DMA)
 			? generic_device_group : generic_single_device_group,
 	.pgsize_bitmap = SZ_1G | SZ_2M | SZ_4K,
-	.of_xlate = ipmmu_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= ipmmu_attach_device,
 		.map_pages	= ipmmu_map,
