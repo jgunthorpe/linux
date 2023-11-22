@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/iopoll.h>
 #include <linux/list.h>
 #include <linux/mm.h>
@@ -123,6 +124,7 @@ struct rk_iommudata {
 static struct device *dma_dev;
 static const struct rk_iommu_ops *rk_ops;
 static struct iommu_domain rk_identity_domain;
+static const struct iommu_ops rk_iommu_ops;
 
 static inline void rk_table_flush(struct rk_iommu_domain *dom, dma_addr_t dma,
 				  unsigned int count)
@@ -896,13 +898,6 @@ static size_t rk_iommu_unmap(struct iommu_domain *domain, unsigned long _iova,
 	return unmap_size;
 }
 
-static struct rk_iommu *rk_iommu_from_dev(struct device *dev)
-{
-	struct rk_iommudata *data = dev_iommu_priv_get(dev);
-
-	return data ? data->iommu : NULL;
-}
-
 /* Must be called with iommu powered on and attached */
 static void rk_iommu_disable(struct rk_iommu *iommu)
 {
@@ -958,15 +953,11 @@ out_disable_clocks:
 static int rk_iommu_identity_attach(struct iommu_domain *identity_domain,
 				    struct device *dev)
 {
-	struct rk_iommu *iommu;
+	struct rk_iommudata *data = dev_iommu_priv_get(dev);
+	struct rk_iommu *iommu = data->iommu;
 	struct rk_iommu_domain *rk_domain;
 	unsigned long flags;
 	int ret;
-
-	/* Allow 'virtual devices' (eg drm) to detach from domain */
-	iommu = rk_iommu_from_dev(dev);
-	if (!iommu)
-		return -ENODEV;
 
 	rk_domain = to_rk_domain(iommu->domain);
 
@@ -1003,18 +994,11 @@ static struct iommu_domain rk_identity_domain = {
 static int rk_iommu_attach_device(struct iommu_domain *domain,
 		struct device *dev)
 {
-	struct rk_iommu *iommu;
+	struct rk_iommudata *data = dev_iommu_priv_get(dev);
+	struct rk_iommu *iommu = data->iommu;
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	unsigned long flags;
 	int ret;
-
-	/*
-	 * Allow 'virtual devices' (e.g., drm) to attach to domain.
-	 * Such a device does not belong to an iommu group.
-	 */
-	iommu = rk_iommu_from_dev(dev);
-	if (!iommu)
-		return 0;
 
 	dev_dbg(dev, "Attaching to iommu domain\n");
 
@@ -1115,19 +1099,29 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 	kfree(rk_domain);
 }
 
-static struct iommu_device *rk_iommu_probe_device(struct device *dev)
+static struct iommu_device *rk_iommu_probe_device(struct iommu_probe_info *pinf)
 {
+	struct device *dev = pinf->dev;
 	struct rk_iommudata *data;
 	struct rk_iommu *iommu;
 
-	data = dev_iommu_priv_get(dev);
-	if (!data)
-		return ERR_PTR(-ENODEV);
+	iommu = iommu_of_get_single_iommu(pinf, &rk_iommu_ops, -1,
+					  struct rk_iommu, iommu);
+	if (IS_ERR(iommu))
+		return ERR_CAST(iommu);
+	if (iommu_of_num_ids(pinf) != 1)
+		return ERR_PTR(-EINVAL);
 
-	iommu = rk_iommu_from_dev(dev);
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return ERR_PTR(-ENOMEM);
+	data->iommu = iommu;
+	data->iommu->domain = &rk_identity_domain;
 
 	data->link = device_link_add(dev, iommu->dev,
 				     DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME);
+
+	dev_iommu_priv_set(dev, data);
 
 	return &iommu->iommu;
 }
@@ -1137,37 +1131,17 @@ static void rk_iommu_release_device(struct device *dev)
 	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
 	device_link_del(data->link);
-}
-
-static int rk_iommu_of_xlate(struct device *dev,
-			     struct of_phandle_args *args)
-{
-	struct platform_device *iommu_dev;
-	struct rk_iommudata *data;
-
-	data = devm_kzalloc(dma_dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
-
-	iommu_dev = of_find_device_by_node(args->np);
-
-	data->iommu = platform_get_drvdata(iommu_dev);
-	data->iommu->domain = &rk_identity_domain;
-	dev_iommu_priv_set(dev, data);
-
-	platform_device_put(iommu_dev);
-
-	return 0;
+	kfree(data);
 }
 
 static const struct iommu_ops rk_iommu_ops = {
 	.identity_domain = &rk_identity_domain,
 	.domain_alloc_paging = rk_iommu_domain_alloc_paging,
-	.probe_device = rk_iommu_probe_device,
+	.probe_device_pinf = rk_iommu_probe_device,
 	.release_device = rk_iommu_release_device,
 	.device_group = generic_single_device_group,
 	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
-	.of_xlate = rk_iommu_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= rk_iommu_attach_device,
 		.map_pages	= rk_iommu_map,
