@@ -12,6 +12,7 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/iopoll.h>
 #include <linux/ioport.h>
 #include <linux/log2.h>
@@ -95,6 +96,8 @@
 
 #define SPAGE_SIZE			4096
 
+static const struct iommu_ops sun50i_iommu_ops;
+
 struct sun50i_iommu {
 	struct iommu_device iommu;
 
@@ -108,6 +111,10 @@ struct sun50i_iommu {
 
 	struct iommu_domain *domain;
 	struct kmem_cache *pt_pool;
+};
+
+struct sun50i_iommu_device {
+	struct sun50i_iommu *iommu;
 };
 
 struct sun50i_iommu_domain {
@@ -126,11 +133,6 @@ struct sun50i_iommu_domain {
 static struct sun50i_iommu_domain *to_sun50i_domain(struct iommu_domain *domain)
 {
 	return container_of(domain, struct sun50i_iommu_domain, domain);
-}
-
-static struct sun50i_iommu *sun50i_iommu_from_dev(struct device *dev)
-{
-	return dev_iommu_priv_get(dev);
 }
 
 static u32 iommu_read(struct sun50i_iommu *iommu, u32 offset)
@@ -760,7 +762,8 @@ static void sun50i_iommu_detach_domain(struct sun50i_iommu *iommu,
 static int sun50i_iommu_identity_attach(struct iommu_domain *identity_domain,
 					struct device *dev)
 {
-	struct sun50i_iommu *iommu = dev_iommu_priv_get(dev);
+	struct sun50i_iommu_device *sdev = dev_iommu_priv_get(dev);
+	struct sun50i_iommu *iommu = sdev->iommu;
 	struct sun50i_iommu_domain *sun50i_domain;
 
 	dev_dbg(dev, "Detaching from IOMMU domain\n");
@@ -786,12 +789,9 @@ static struct iommu_domain sun50i_iommu_identity_domain = {
 static int sun50i_iommu_attach_device(struct iommu_domain *domain,
 				      struct device *dev)
 {
+	struct sun50i_iommu_device *sdev = dev_iommu_priv_get(dev);
 	struct sun50i_iommu_domain *sun50i_domain = to_sun50i_domain(domain);
-	struct sun50i_iommu *iommu;
-
-	iommu = sun50i_iommu_from_dev(dev);
-	if (!iommu)
-		return -ENODEV;
+	struct sun50i_iommu *iommu = sdev->iommu;
 
 	dev_dbg(dev, "Attaching to IOMMU domain\n");
 
@@ -807,26 +807,37 @@ static int sun50i_iommu_attach_device(struct iommu_domain *domain,
 	return 0;
 }
 
-static struct iommu_device *sun50i_iommu_probe_device(struct device *dev)
+static struct iommu_device *
+sun50i_iommu_probe_device(struct iommu_probe_info *pinf)
 {
+	struct sun50i_iommu_device *sdev;
 	struct sun50i_iommu *iommu;
 
-	iommu = sun50i_iommu_from_dev(dev);
-	if (!iommu)
-		return ERR_PTR(-ENODEV);
+	iommu = iommu_of_get_single_iommu(pinf, &sun50i_iommu_ops, 1,
+					 struct sun50i_iommu, iommu);
+	if (IS_ERR(iommu))
+		return ERR_CAST(iommu);
 
+	/*
+	 * The ids are ignored because the all the devices are placed in a
+	 * single group and the core code will enforce the same translation for
+	 * all ids.
+	 */
+
+	sdev = kzalloc(sizeof(*sdev), GFP_KERNEL);
+	if (!sdev)
+		return ERR_PTR(-ENOMEM);
+	sdev->iommu = iommu;
+
+	dev_iommu_priv_set(pinf->dev, sdev);
 	return &iommu->iommu;
 }
 
-static int sun50i_iommu_of_xlate(struct device *dev,
-				 struct of_phandle_args *args)
+static void sun50i_iommu_release_device(struct device *dev)
 {
-	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
-	unsigned id = args->args[0];
+	struct sun50i_iommu_device *sdev = dev_iommu_priv_get(dev);
 
-	dev_iommu_priv_set(dev, platform_get_drvdata(iommu_pdev));
-
-	return iommu_fwspec_add_ids(dev, &id, 1);
+	kfree(sdev);
 }
 
 static const struct iommu_ops sun50i_iommu_ops = {
@@ -834,8 +845,9 @@ static const struct iommu_ops sun50i_iommu_ops = {
 	.pgsize_bitmap	= SZ_4K,
 	.device_group	= generic_single_device_group,
 	.domain_alloc_paging = sun50i_iommu_domain_alloc_paging,
-	.of_xlate	= sun50i_iommu_of_xlate,
-	.probe_device	= sun50i_iommu_probe_device,
+	.of_xlate = iommu_dummy_of_xlate,
+	.probe_device_pinf	= sun50i_iommu_probe_device,
+	.release_device = sun50i_iommu_release_device,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= sun50i_iommu_attach_device,
 		.flush_iotlb_all = sun50i_iommu_flush_iotlb_all,
