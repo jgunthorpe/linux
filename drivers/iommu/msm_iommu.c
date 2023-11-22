@@ -16,6 +16,7 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/clk.h>
 #include <linux/err.h>
 
@@ -36,6 +37,15 @@ __asm__ __volatile__ (							\
 static DEFINE_SPINLOCK(msm_iommu_lock);
 static LIST_HEAD(qcom_iommu_devices);
 static struct iommu_ops msm_iommu_ops;
+
+struct msm_xlate_args {
+	struct device *dev;
+	struct msm_iommu_ctx_dev *master;
+	struct msm_iommu_dev *iommu;
+};
+
+static int msm_iommu_of_xlate(struct iommu_device *core_iommu,
+			      struct of_phandle_args *args, void *priv);
 
 struct msm_priv {
 	struct list_head list_attached;
@@ -357,38 +367,17 @@ static int msm_iommu_domain_config(struct msm_priv *priv)
 	return 0;
 }
 
-/* Must be called under msm_iommu_lock */
-static struct msm_iommu_dev *find_iommu_for_dev(struct device *dev)
+static struct iommu_device *
+msm_iommu_probe_device(struct iommu_probe_info *pinf)
 {
-	struct msm_iommu_dev *iommu, *ret = NULL;
-	struct msm_iommu_ctx_dev *master;
+	struct msm_xlate_args args = { .dev = pinf->dev };
+	int ret;
 
-	list_for_each_entry(iommu, &qcom_iommu_devices, dev_node) {
-		master = list_first_entry(&iommu->ctx_list,
-					  struct msm_iommu_ctx_dev,
-					  list);
-		if (master->of_node == dev->of_node) {
-			ret = iommu;
-			break;
-		}
-	}
-
-	return ret;
-}
-
-static struct iommu_device *msm_iommu_probe_device(struct device *dev)
-{
-	struct msm_iommu_dev *iommu;
-	unsigned long flags;
-
-	spin_lock_irqsave(&msm_iommu_lock, flags);
-	iommu = find_iommu_for_dev(dev);
-	spin_unlock_irqrestore(&msm_iommu_lock, flags);
-
-	if (!iommu)
-		return ERR_PTR(-ENODEV);
-
-	return &iommu->iommu;
+	ret = iommu_of_xlate(pinf, &msm_iommu_ops, -1, &msm_iommu_of_xlate,
+			     &args);
+	if (ret)
+		return ERR_PTR(ret);
+	return &args.iommu->iommu;
 }
 
 static int msm_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
@@ -596,22 +585,26 @@ static void print_ctx_regs(void __iomem *base, int ctx)
 	       GET_SCTLR(base, ctx), GET_ACTLR(base, ctx));
 }
 
-static int insert_iommu_master(struct device *dev,
-				struct msm_iommu_dev **iommu,
-				struct of_phandle_args *spec)
+static int insert_iommu_master(struct msm_xlate_args *args,
+			       struct msm_iommu_dev *iommu,
+			       struct of_phandle_args *spec)
 {
-	struct msm_iommu_ctx_dev *master = dev_iommu_priv_get(dev);
+	struct msm_iommu_ctx_dev *master = args->master;
+	struct device *dev = args->dev;
 	int sid;
 
-	if (list_empty(&(*iommu)->ctx_list)) {
+	if (!args->iommu)
+		args->iommu = iommu;
+
+	if (list_empty(&iommu->ctx_list)) {
 		master = kzalloc(sizeof(*master), GFP_ATOMIC);
 		if (!master) {
 			dev_err(dev, "Failed to allocate iommu_master\n");
 			return -ENOMEM;
 		}
 		master->of_node = dev->of_node;
-		list_add(&master->list, &(*iommu)->ctx_list);
-		dev_iommu_priv_set(dev, master);
+		list_add(&master->list, &iommu->ctx_list);
+		args->master = master;
 	}
 
 	for (sid = 0; sid < master->num_mids; sid++)
@@ -625,28 +618,16 @@ static int insert_iommu_master(struct device *dev,
 	return 0;
 }
 
-static int qcom_iommu_of_xlate(struct device *dev,
-			       struct of_phandle_args *spec)
+static int msm_iommu_of_xlate(struct iommu_device *core_iommu,
+			      struct of_phandle_args *args, void *priv)
 {
-	struct msm_iommu_dev *iommu = NULL, *iter;
+	struct msm_iommu_dev *iommu =
+		container_of(core_iommu, struct msm_iommu_dev, iommu);
 	unsigned long flags;
 	int ret = 0;
 
 	spin_lock_irqsave(&msm_iommu_lock, flags);
-	list_for_each_entry(iter, &qcom_iommu_devices, dev_node) {
-		if (iter->dev->of_node == spec->np) {
-			iommu = iter;
-			break;
-		}
-	}
-
-	if (!iommu) {
-		ret = -ENODEV;
-		goto fail;
-	}
-
-	ret = insert_iommu_master(dev, &iommu, spec);
-fail:
+	ret = insert_iommu_master(priv, iommu, args);
 	spin_unlock_irqrestore(&msm_iommu_lock, flags);
 
 	return ret;
@@ -690,10 +671,10 @@ fail:
 static struct iommu_ops msm_iommu_ops = {
 	.identity_domain = &msm_iommu_identity_domain,
 	.domain_alloc_paging = msm_iommu_domain_alloc_paging,
-	.probe_device = msm_iommu_probe_device,
+	.probe_device_pinf = msm_iommu_probe_device,
 	.device_group = generic_device_group,
 	.pgsize_bitmap = MSM_IOMMU_PGSIZES,
-	.of_xlate = qcom_iommu_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= msm_iommu_attach_dev,
 		.map_pages	= msm_iommu_map,
