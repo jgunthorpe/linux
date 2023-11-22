@@ -16,6 +16,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/iopoll.h>
 #include <linux/list.h>
 #include <linux/module.h>
@@ -106,6 +107,12 @@ struct mtk_iommu_v1_data {
 	struct mtk_smi_larb_iommu	larb_imu[MTK_LARB_NR_MAX];
 
 	struct mtk_iommu_v1_suspend_reg	reg;
+};
+
+struct mtk_iommu_v1_device {
+	struct mtk_iommu_v1_data *iommu;
+	unsigned int num_ids;
+	u32 ids[] __counted_by(num_ids);
 };
 
 struct mtk_iommu_v1_domain {
@@ -232,14 +239,14 @@ static irqreturn_t mtk_iommu_v1_isr(int irq, void *dev_id)
 static void mtk_iommu_v1_config(struct mtk_iommu_v1_data *data,
 				struct device *dev, bool enable)
 {
+	struct mtk_iommu_v1_device *mdev = dev_iommu_priv_get(dev);
 	struct mtk_smi_larb_iommu    *larb_mmu;
 	unsigned int                 larbid, portid;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	int i;
 
-	for (i = 0; i < fwspec->num_ids; ++i) {
-		larbid = mt2701_m4u_to_larb(fwspec->ids[i]);
-		portid = mt2701_m4u_to_port(fwspec->ids[i]);
+	for (i = 0; i < mdev->num_ids; ++i) {
+		larbid = mt2701_m4u_to_larb(mdev->ids[i]);
+		portid = mt2701_m4u_to_port(mdev->ids[i]);
 		larb_mmu = &data->larb_imu[larbid];
 
 		dev_dbg(dev, "%s iommu port: %d\n",
@@ -293,7 +300,8 @@ static void mtk_iommu_v1_domain_free(struct iommu_domain *domain)
 
 static int mtk_iommu_v1_attach_device(struct iommu_domain *domain, struct device *dev)
 {
-	struct mtk_iommu_v1_data *data = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_device *mdev = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_data *data = mdev->iommu;
 	struct mtk_iommu_v1_domain *dom = to_mtk_domain(domain);
 	struct dma_iommu_mapping *mtk_mapping;
 	int ret;
@@ -319,7 +327,8 @@ static int mtk_iommu_v1_attach_device(struct iommu_domain *domain, struct device
 static int mtk_iommu_v1_identity_attach(struct iommu_domain *identity_domain,
 					struct device *dev)
 {
-	struct mtk_iommu_v1_data *data = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_device *mdev = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_data *data = mdev->iommu;
 
 	mtk_iommu_v1_config(data, dev, false);
 	return 0;
@@ -394,128 +403,91 @@ static phys_addr_t mtk_iommu_v1_iova_to_phys(struct iommu_domain *domain, dma_ad
 
 static const struct iommu_ops mtk_iommu_v1_ops;
 
-/*
- * MTK generation one iommu HW only support one iommu domain, and all the client
- * sharing the same iova address space.
- */
-static int mtk_iommu_v1_create_mapping(struct device *dev, struct of_phandle_args *args)
+static struct iommu_device *
+mtk_iommu_v1_probe_device(struct iommu_probe_info *pinf)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct mtk_iommu_v1_data *data;
-	struct platform_device *m4updev;
 	struct dma_iommu_mapping *mtk_mapping;
+	struct mtk_iommu_v1_device *mdev;
+	struct device *dev = pinf->dev;
+	struct mtk_iommu_v1_data *data;
+	int idx, larbid, larbidx;
+	struct device_link *link;
+	struct device *larbdev;
 	int ret;
 
-	if (args->args_count != 1) {
-		dev_err(dev, "invalid #iommu-cells(%d) property for IOMMU\n",
-			args->args_count);
-		return -EINVAL;
-	}
+	iommu_of_allow_bus_probe(pinf);
+	data = iommu_of_get_single_iommu(pinf, &mtk_iommu_v1_ops, 1,
+					 struct mtk_iommu_v1_data, iommu);
+	if (IS_ERR(data))
+		return ERR_CAST(data);
 
-	if (!fwspec) {
-		ret = iommu_fwspec_init(dev, &args->np->fwnode, &mtk_iommu_v1_ops);
-		if (ret)
-			return ret;
-		fwspec = dev_iommu_fwspec_get(dev);
-	} else if (dev_iommu_fwspec_get(dev)->ops != &mtk_iommu_v1_ops) {
-		return -EINVAL;
-	}
+	mdev = iommu_fw_alloc_per_device_ids(pinf, mdev);
+	if (IS_ERR(mdev))
+		return ERR_CAST(mdev);
+	mdev->iommu = data;
 
-	if (!dev_iommu_priv_get(dev)) {
-		/* Get the m4u device */
-		m4updev = of_find_device_by_node(args->np);
-		if (WARN_ON(!m4updev))
-			return -EINVAL;
-
-		dev_iommu_priv_set(dev, platform_get_drvdata(m4updev));
-	}
-
-	ret = iommu_fwspec_add_ids(dev, args->args, 1);
-	if (ret)
-		return ret;
-
-	data = dev_iommu_priv_get(dev);
+	/*
+	 * MTK generation one iommu HW only support one iommu domain, and all
+	 * the client sharing the same iova address space.
+	 */
 	mtk_mapping = data->mapping;
 	if (!mtk_mapping) {
 		/* MTK iommu support 4GB iova address space. */
 		mtk_mapping = arm_iommu_create_mapping(&platform_bus_type,
 						0, 1ULL << 32);
-		if (IS_ERR(mtk_mapping))
-			return PTR_ERR(mtk_mapping);
+		if (IS_ERR(mtk_mapping)) {
+			ret = PTR_ERR(mtk_mapping);
+			goto err_free;
+		}
 
 		data->mapping = mtk_mapping;
 	}
 
-	return 0;
-}
-
-static struct iommu_device *mtk_iommu_v1_probe_device(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct of_phandle_args iommu_spec;
-	struct mtk_iommu_v1_data *data;
-	int err, idx = 0, larbid, larbidx;
-	struct device_link *link;
-	struct device *larbdev;
-
-	/*
-	 * In the deferred case, free the existed fwspec.
-	 * Always initialize the fwspec internally.
-	 */
-	if (fwspec) {
-		iommu_fwspec_free(dev);
-		fwspec = dev_iommu_fwspec_get(dev);
-	}
-
-	while (!of_parse_phandle_with_args(dev->of_node, "iommus",
-					   "#iommu-cells",
-					   idx, &iommu_spec)) {
-
-		err = mtk_iommu_v1_create_mapping(dev, &iommu_spec);
-		of_node_put(iommu_spec.np);
-		if (err)
-			return ERR_PTR(err);
-
-		/* dev->iommu_fwspec might have changed */
-		fwspec = dev_iommu_fwspec_get(dev);
-		idx++;
-	}
-
-	data = dev_iommu_priv_get(dev);
-
 	/* Link the consumer device with the smi-larb device(supplier) */
-	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
-	if (larbid >= MT2701_LARB_NR_MAX)
-		return ERR_PTR(-EINVAL);
+	larbid = mt2701_m4u_to_larb(mdev->ids[0]);
+	if (larbid >= MT2701_LARB_NR_MAX) {
+		ret = -EINVAL;
+		goto err_mapping;
+	}
 
-	for (idx = 1; idx < fwspec->num_ids; idx++) {
-		larbidx = mt2701_m4u_to_larb(fwspec->ids[idx]);
+	for (idx = 1; idx < mdev->num_ids; idx++) {
+		larbidx = mt2701_m4u_to_larb(mdev->ids[idx]);
 		if (larbid != larbidx) {
 			dev_err(dev, "Can only use one larb. Fail@larb%d-%d.\n",
 				larbid, larbidx);
-			return ERR_PTR(-EINVAL);
+			ret = -EINVAL;
+			goto err_mapping;
 		}
 	}
 
 	larbdev = data->larb_imu[larbid].dev;
-	if (!larbdev)
-		return ERR_PTR(-EINVAL);
+	if (!larbdev) {
+		ret = -EINVAL;
+		goto err_mapping;
+	}
 
 	link = device_link_add(dev, larbdev,
 			       DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
 	if (!link)
 		dev_err(dev, "Unable to link %s\n", dev_name(larbdev));
 
+	dev_iommu_priv_set(pinf->dev, mdev);
 	return &data->iommu;
+
+err_mapping:
+	arm_iommu_release_mapping(mtk_mapping);
+err_free:
+	kfree(mdev);
+	return ERR_PTR(ret);
 }
 
 static void mtk_iommu_v1_probe_finalize(struct device *dev)
 {
+	struct mtk_iommu_v1_device *mdev = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_data *data = mdev->iommu;
 	struct dma_iommu_mapping *mtk_mapping;
-	struct mtk_iommu_v1_data *data;
 	int err;
 
-	data        = dev_iommu_priv_get(dev);
 	mtk_mapping = data->mapping;
 
 	err = arm_iommu_attach_device(dev, mtk_mapping);
@@ -525,15 +497,15 @@ static void mtk_iommu_v1_probe_finalize(struct device *dev)
 
 static void mtk_iommu_v1_release_device(struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct mtk_iommu_v1_data *data;
+	struct mtk_iommu_v1_device *mdev = dev_iommu_priv_get(dev);
+	struct mtk_iommu_v1_data *data = mdev->iommu;
 	struct device *larbdev;
 	unsigned int larbid;
 
-	data = dev_iommu_priv_get(dev);
-	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
+	larbid = mt2701_m4u_to_larb(mdev->ids[0]);
 	larbdev = data->larb_imu[larbid].dev;
 	device_link_remove(dev, larbdev);
+	kfree(mdev);
 }
 
 static int mtk_iommu_v1_hw_init(const struct mtk_iommu_v1_data *data)
@@ -580,7 +552,7 @@ static int mtk_iommu_v1_hw_init(const struct mtk_iommu_v1_data *data)
 static const struct iommu_ops mtk_iommu_v1_ops = {
 	.identity_domain = &mtk_iommu_v1_identity_domain,
 	.domain_alloc_paging = mtk_iommu_v1_domain_alloc_paging,
-	.probe_device	= mtk_iommu_v1_probe_device,
+	.probe_device_pinf = mtk_iommu_v1_probe_device,
 	.probe_finalize = mtk_iommu_v1_probe_finalize,
 	.release_device	= mtk_iommu_v1_release_device,
 	.device_group	= generic_device_group,
