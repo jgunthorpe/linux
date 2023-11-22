@@ -285,6 +285,8 @@ struct parse_info {
 	struct iommu_probe_info *pinf;
 	const struct iommu_ops *ops;
 	int num_cells;
+	iommu_of_xlate_fn xlate_fn;
+	void *priv;
 };
 
 static struct iommu_device *parse_iommu(struct parse_info *info,
@@ -336,3 +338,59 @@ struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
 	return iommu_fw_finish_get_single(pinf);
 }
 EXPORT_SYMBOL_GPL(__iommu_of_get_single_iommu);
+
+static int parse_of_xlate(struct of_phandle_args *iommu_spec, void *_info)
+{
+	struct parse_info *info = _info;
+	struct iommu_device *iommu;
+
+	iommu = parse_iommu(info, iommu_spec);
+	if (IS_ERR(iommu))
+		return PTR_ERR(iommu);
+	info->pinf->num_ids++;
+	return info->xlate_fn(iommu, iommu_spec, info->priv);
+}
+
+/**
+ * iommu_of_xlate - Parse all OF ids for an IOMMU
+ * @pinf: The iommu_probe_info
+ * @ops: The ops the iommu instance must have
+ * @num_cells: #iommu-cells value to enforce, -1 is no check
+ * @fn: Call for each Instance and ID
+ * @priv: Opaque cookie for fn
+ *
+ * Drivers that support multiple iommu instances must call this function to
+ * parse each instance from the OF table. fn will be called with the driver's
+ * iommu_driver instance and the raw of_phandle_args that contains the ID.
+ *
+ * Drivers that need to parse a complex ID format should also use this function.
+ */
+int iommu_of_xlate(struct iommu_probe_info *pinf, const struct iommu_ops *ops,
+		   int num_cells, iommu_of_xlate_fn fn, void *priv)
+{
+	struct parse_info info = { .pinf = pinf,
+				   .ops = ops,
+				   .num_cells = num_cells,
+				   .xlate_fn = fn,
+				   .priv = priv };
+
+	pinf->num_ids = 0;
+	return of_iommu_for_each_id(pinf->dev, pinf->of_master_np,
+				    pinf->of_map_id, parse_of_xlate, &info);
+}
+EXPORT_SYMBOL_GPL(iommu_of_xlate);
+
+/*
+ * Temporary approach to allow drivers to opt into the bus probe. It configures
+ * the iommu_probe_info to probe the dev->of_node. This is a bit hacky because
+ * it mutates the iommu_probe_info and thus assumes there is only one op in the
+ * system. Remove when we call probe from the bus always anyhow.
+ */
+void iommu_of_allow_bus_probe(struct iommu_probe_info *pinf)
+{
+	if (pinf->is_dma_configure)
+		return;
+	pinf->of_master_np = pinf->dev->of_node;
+	pinf->is_dma_configure = true;
+}
+EXPORT_SYMBOL_GPL(iommu_of_allow_bus_probe);

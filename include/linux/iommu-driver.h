@@ -60,8 +60,15 @@ iommu_device_from_fwnode_pinf(struct iommu_probe_info *pinf,
 			      struct fwnode_handle *fwnode);
 struct iommu_device *iommu_fw_finish_get_single(struct iommu_probe_info *pinf);
 
+typedef int (*iommu_of_xlate_fn)(struct iommu_device *iommu,
+				struct of_phandle_args *args, void *priv);
+void iommu_of_allow_bus_probe(struct iommu_probe_info *pinf);
+
 #if IS_ENABLED(CONFIG_OF_IOMMU)
 void of_iommu_get_resv_regions(struct device *dev, struct list_head *list);
+
+int iommu_of_xlate(struct iommu_probe_info *pinf, const struct iommu_ops *ops,
+		   int num_cells, iommu_of_xlate_fn fn, void *priv);
 
 struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
 						 const struct iommu_ops *ops,
@@ -70,6 +77,12 @@ struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
 static inline void of_iommu_get_resv_regions(struct device *dev,
 					     struct list_head *list)
 {
+}
+static inline int iommu_of_xlate(struct iommu_probe_info *pinf,
+				 const struct iommu_ops *ops, int num_cells,
+				 iommu_of_xlate_fn fn, void *priv)
+{
+	return -ENODEV;
 }
 static inline
 struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
