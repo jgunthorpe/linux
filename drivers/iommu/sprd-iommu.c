@@ -11,6 +11,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of_platform.h>
@@ -383,32 +384,27 @@ static phys_addr_t sprd_iommu_iova_to_phys(struct iommu_domain *domain,
 	return pa;
 }
 
-static struct iommu_device *sprd_iommu_probe_device(struct device *dev)
+static struct iommu_device *sprd_iommu_probe_device(struct iommu_probe_info *pinf)
 {
-	struct sprd_iommu_device *sdev = dev_iommu_priv_get(dev);
+	struct sprd_iommu_device *sdev;
+
+	sdev = iommu_of_get_single_iommu(pinf, &sprd_iommu_ops, -1,
+					 struct sprd_iommu_device, iommu);
+	if (IS_ERR(sdev))
+		return ERR_CAST(sdev);
+	if (iommu_of_num_ids(pinf) != 1)
+		return ERR_PTR(-EINVAL);
+
+	dev_iommu_priv_set(pinf->dev, sdev);
 
 	return &sdev->iommu;
 }
 
-static int sprd_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
-{
-	struct platform_device *pdev;
-
-	if (!dev_iommu_priv_get(dev)) {
-		pdev = of_find_device_by_node(args->np);
-		dev_iommu_priv_set(dev, platform_get_drvdata(pdev));
-		platform_device_put(pdev);
-	}
-
-	return 0;
-}
-
-
 static const struct iommu_ops sprd_iommu_ops = {
 	.domain_alloc_paging = sprd_iommu_domain_alloc_paging,
-	.probe_device	= sprd_iommu_probe_device,
+	.probe_device_pinf = sprd_iommu_probe_device,
 	.device_group	= generic_single_device_group,
-	.of_xlate	= sprd_iommu_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.pgsize_bitmap	= SPRD_IOMMU_PAGE_SIZE,
 	.owner		= THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
