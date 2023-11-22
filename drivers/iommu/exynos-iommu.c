@@ -13,6 +13,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/interrupt.h>
 #include <linux/kmemleak.h>
 #include <linux/list.h>
@@ -25,6 +26,9 @@
 typedef u32 sysmmu_iova_t;
 typedef u32 sysmmu_pte_t;
 static struct iommu_domain exynos_identity_domain;
+
+static int exynos_iommu_of_xlate(struct iommu_device *iommu,
+				 struct of_phandle_args *args, void *priv);
 
 /* We do not consider super section mapping (16MB) */
 #define SECT_ORDER 20
@@ -167,8 +171,6 @@ static u32 lv2ent_offset(sysmmu_iova_t iova)
 #define REG_V7_CAPA0		0x870
 #define REG_V7_CAPA1		0x874
 #define REG_V7_CTRL_VM		0x8000
-
-#define has_sysmmu(dev)		(dev_iommu_priv_get(dev) != NULL)
 
 static struct device *dma_dev;
 static struct kmem_cache *lv2table_kmem_cache;
@@ -778,8 +780,6 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 				     dev_name(data->sysmmu));
 	if (ret)
 		return ret;
-
-	platform_set_drvdata(pdev, data);
 
 	if (PG_ENT_SHIFT < 0) {
 		if (MMU_MAJ_VER(data->version) < 5) {
@@ -1393,15 +1393,29 @@ static phys_addr_t exynos_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
 	return phys;
 }
 
-static struct iommu_device *exynos_iommu_probe_device(struct device *dev)
+static struct iommu_device *
+exynos_iommu_probe_device(struct iommu_probe_info *pinf)
 {
-	struct exynos_iommu_owner *owner = dev_iommu_priv_get(dev);
+	struct exynos_iommu_owner *owner;
+	struct device *dev = pinf->dev;
 	struct sysmmu_drvdata *data;
+	int ret;
 
-	if (!has_sysmmu(dev))
-		return ERR_PTR(-ENODEV);
+	owner = kzalloc(sizeof(*owner), GFP_KERNEL);
+	if (!owner)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&owner->controllers);
+	mutex_init(&owner->rpm_lock);
+	owner->domain = &exynos_identity_domain;
+
+	ret = iommu_of_xlate(pinf, &exynos_iommu_ops, -1,
+			     &exynos_iommu_of_xlate, owner);
+	if (ret)
+		goto err_free;
 
 	list_for_each_entry(data, &owner->controllers, owner_node) {
+		data->master = dev;
 		/*
 		 * SYSMMU will be runtime activated via device link
 		 * (dependency) to its master device, so there are no
@@ -1412,11 +1426,17 @@ static struct iommu_device *exynos_iommu_probe_device(struct device *dev)
 					     DL_FLAG_PM_RUNTIME);
 	}
 
-	/* There is always at least one entry, see exynos_iommu_of_xlate() */
+	/* iommu_of_xlate() fails if there are no entries */
 	data = list_first_entry(&owner->controllers,
 				struct sysmmu_drvdata, owner_node);
 
+	dev_iommu_priv_set(dev, owner);
+
 	return &data->iommu;
+
+err_free:
+	kfree(owner);
+	return ERR_PTR(ret);
 }
 
 static void exynos_iommu_release_device(struct device *dev)
@@ -1430,42 +1450,19 @@ static void exynos_iommu_release_device(struct device *dev)
 		device_link_del(data->link);
 }
 
-static int exynos_iommu_of_xlate(struct device *dev,
-				 struct of_phandle_args *spec)
+static int exynos_iommu_of_xlate(struct iommu_device *iommu,
+				 struct of_phandle_args *args, void *priv)
 {
-	struct platform_device *sysmmu = of_find_device_by_node(spec->np);
-	struct exynos_iommu_owner *owner = dev_iommu_priv_get(dev);
-	struct sysmmu_drvdata *data, *entry;
+	struct sysmmu_drvdata *data =
+		container_of(iommu, struct sysmmu_drvdata, iommu);
+	struct exynos_iommu_owner *owner = priv;
+	struct sysmmu_drvdata *entry;
 
-	if (!sysmmu)
-		return -ENODEV;
-
-	data = platform_get_drvdata(sysmmu);
-	if (!data) {
-		put_device(&sysmmu->dev);
-		return -ENODEV;
-	}
-
-	if (!owner) {
-		owner = kzalloc(sizeof(*owner), GFP_KERNEL);
-		if (!owner) {
-			put_device(&sysmmu->dev);
-			return -ENOMEM;
-		}
-
-		INIT_LIST_HEAD(&owner->controllers);
-		mutex_init(&owner->rpm_lock);
-		owner->domain = &exynos_identity_domain;
-		dev_iommu_priv_set(dev, owner);
-	}
-
+	/* FIXME this relies on iommu_probe_device_lock */
 	list_for_each_entry(entry, &owner->controllers, owner_node)
 		if (entry == data)
 			return 0;
-
 	list_add_tail(&data->owner_node, &owner->controllers);
-	data->master = dev;
-
 	return 0;
 }
 
@@ -1473,10 +1470,10 @@ static const struct iommu_ops exynos_iommu_ops = {
 	.identity_domain = &exynos_identity_domain,
 	.domain_alloc_paging = exynos_iommu_domain_alloc_paging,
 	.device_group = generic_device_group,
-	.probe_device = exynos_iommu_probe_device,
+	.probe_device_pinf = exynos_iommu_probe_device,
 	.release_device = exynos_iommu_release_device,
 	.pgsize_bitmap = SECT_SIZE | LPAGE_SIZE | SPAGE_SIZE,
-	.of_xlate = exynos_iommu_of_xlate,
+	.of_xlate = iommu_dummy_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= exynos_iommu_attach_device,
 		.map_pages	= exynos_iommu_map,
