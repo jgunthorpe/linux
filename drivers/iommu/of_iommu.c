@@ -17,9 +17,9 @@
 #include <linux/slab.h>
 #include <linux/fsl/mc.h>
 
-static int of_iommu_xlate(struct device *dev,
-			  struct of_phandle_args *iommu_spec)
+static int of_iommu_xlate(struct of_phandle_args *iommu_spec, void *info)
 {
+	struct device *dev = info;
 	const struct iommu_ops *ops;
 	struct fwnode_handle *fwnode = &iommu_spec->np->fwnode;
 	int ret;
@@ -48,26 +48,27 @@ static int of_iommu_xlate(struct device *dev,
 	return ret;
 }
 
-static int of_iommu_configure_dev_id(struct device_node *master_np,
-				     struct device *dev,
-				     const u32 *id)
+typedef int (*of_for_each_fn)(struct of_phandle_args *args, void *info);
+
+static int __for_each_map_id(struct device_node *master_np, u32 id,
+			     of_for_each_fn fn, void *info)
 {
 	struct of_phandle_args iommu_spec = { .args_count = 1 };
 	int err;
 
-	err = of_map_id(master_np, *id, "iommu-map",
+	err = of_map_id(master_np, id, "iommu-map",
 			 "iommu-map-mask", &iommu_spec.np,
 			 iommu_spec.args);
 	if (err)
 		return err;
 
-	err = of_iommu_xlate(dev, &iommu_spec);
+	err = fn(&iommu_spec, info);
 	of_node_put(iommu_spec.np);
 	return err;
 }
 
-static int of_iommu_configure_dev(struct device_node *master_np,
-				  struct device *dev)
+static int __for_each_iommus(struct device_node *master_np, of_for_each_fn fn,
+			     void *info)
 {
 	struct of_phandle_args iommu_spec;
 	int err = -ENODEV, idx = 0;
@@ -75,7 +76,7 @@ static int of_iommu_configure_dev(struct device_node *master_np,
 	while (!of_parse_phandle_with_args(master_np, "iommus",
 					   "#iommu-cells",
 					   idx, &iommu_spec)) {
-		err = of_iommu_xlate(dev, &iommu_spec);
+		err = fn(&iommu_spec, info);
 		of_node_put(iommu_spec.np);
 		idx++;
 		if (err)
@@ -86,23 +87,46 @@ static int of_iommu_configure_dev(struct device_node *master_np,
 }
 
 struct of_pci_iommu_alias_info {
-	struct device *dev;
 	struct device_node *np;
+	of_for_each_fn fn;
+	void *info;
 };
 
-static int of_pci_iommu_init(struct pci_dev *pdev, u16 alias, void *data)
+static int __for_each_map_pci(struct pci_dev *pdev, u16 alias, void *data)
 {
-	struct of_pci_iommu_alias_info *info = data;
-	u32 input_id = alias;
+	struct of_pci_iommu_alias_info *pci_info = data;
 
-	return of_iommu_configure_dev_id(info->np, info->dev, &input_id);
+	return __for_each_map_id(pci_info->np, alias, pci_info->fn,
+				 pci_info->info);
 }
 
-static int of_iommu_configure_device(struct device_node *master_np,
-				     struct device *dev, const u32 *id)
+static int of_iommu_for_each_id(struct device *dev,
+				struct device_node *master_np, const u32 *id,
+				of_for_each_fn fn, void *info)
 {
-	return (id) ? of_iommu_configure_dev_id(master_np, dev, id) :
-		      of_iommu_configure_dev(master_np, dev);
+	/*
+	 * We don't currently walk up the tree looking for a parent IOMMU.
+	 * See the `Notes:' section of
+	 * Documentation/devicetree/bindings/iommu/iommu.txt
+	 */
+	if (dev_is_pci(dev)) {
+		struct of_pci_iommu_alias_info pci_info = {
+			.np = master_np,
+			.fn = fn,
+			.info = info,
+		};
+
+		/* In PCI mode the ID comes from the RID */
+		if (WARN_ON(id))
+			return -EINVAL;
+
+		return pci_for_each_dma_alias(to_pci_dev(dev),
+					     __for_each_map_pci, &pci_info);
+	}
+
+	if (id)
+		return __for_each_map_id(master_np, *id, fn, info);
+	return __for_each_iommus(master_np, fn, info);
 }
 
 /*
@@ -133,25 +157,11 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 		iommu_fwspec_free(dev);
 	}
 
-	/*
-	 * We don't currently walk up the tree looking for a parent IOMMU.
-	 * See the `Notes:' section of
-	 * Documentation/devicetree/bindings/iommu/iommu.txt
-	 */
-	if (dev_is_pci(dev)) {
-		struct of_pci_iommu_alias_info info = {
-			.dev = dev,
-			.np = master_np,
-		};
-
+	if (dev_is_pci(dev))
 		pci_request_acs();
-		err = pci_for_each_dma_alias(to_pci_dev(dev),
-					     of_pci_iommu_init, &info);
-	} else {
-		err = of_iommu_configure_device(master_np, dev, id);
-	}
-	mutex_unlock(&iommu_probe_device_lock);
 
+	err = of_iommu_for_each_id(dev, master_np, id, of_iommu_xlate, dev);
+	mutex_unlock(&iommu_probe_device_lock);
 	if (err == -ENODEV || err == -EPROBE_DEFER)
 		return err;
 	if (err)
