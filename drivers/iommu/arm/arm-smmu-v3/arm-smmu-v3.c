@@ -26,9 +26,9 @@
 #include <linux/pci.h>
 #include <linux/pci-ats.h>
 #include <linux/platform_device.h>
+#include <linux/iommu-driver.h>
 
 #include "arm-smmu-v3.h"
-#include "../../dma-iommu.h"
 #include "../../iommu-sva.h"
 
 static bool disable_bypass = true;
@@ -2255,12 +2255,11 @@ static bool arm_smmu_ats_supported(struct arm_smmu_master *master)
 {
 	struct device *dev = master->dev;
 	struct arm_smmu_device *smmu = master->smmu;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	if (!(smmu->features & ARM_SMMU_FEAT_ATS))
 		return false;
 
-	if (!(fwspec->flags & IOMMU_FWSPEC_PCI_RC_ATS))
+	if (!master->pci_rc_ats)
 		return false;
 
 	return dev_is_pci(dev) && pci_ats_supported(to_pci_dev(dev));
@@ -2382,13 +2381,9 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
 	int ret = 0;
 	unsigned long flags;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct arm_smmu_device *smmu;
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 	struct arm_smmu_master *master;
-
-	if (!fwspec)
-		return -ENOENT;
 
 	master = dev_iommu_priv_get(dev);
 	smmu = master->smmu;
@@ -2529,15 +2524,6 @@ arm_smmu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 
 static struct platform_driver arm_smmu_driver;
 
-static
-struct arm_smmu_device *arm_smmu_get_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct device *dev = driver_find_device_by_fwnode(&arm_smmu_driver.driver,
-							  fwnode);
-	put_device(dev);
-	return dev ? dev_get_drvdata(dev) : NULL;
-}
-
 static bool arm_smmu_sid_in_range(struct arm_smmu_device *smmu, u32 sid)
 {
 	unsigned long limit = smmu->strtab_cfg.num_l1_ents;
@@ -2568,17 +2554,16 @@ static int arm_smmu_insert_master(struct arm_smmu_device *smmu,
 	int ret = 0;
 	struct arm_smmu_stream *new_stream, *cur_stream;
 	struct rb_node **new_node, *parent_node = NULL;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(master->dev);
 
-	master->streams = kcalloc(fwspec->num_ids, sizeof(*master->streams),
+	master->streams = kcalloc(master->num_ids, sizeof(*master->streams),
 				  GFP_KERNEL);
 	if (!master->streams)
 		return -ENOMEM;
-	master->num_streams = fwspec->num_ids;
+	master->num_streams = master->num_ids;
 
 	mutex_lock(&smmu->streams_mutex);
-	for (i = 0; i < fwspec->num_ids; i++) {
-		u32 sid = fwspec->ids[i];
+	for (i = 0; i < master->num_ids; i++) {
+		u32 sid = master->ids[i];
 
 		new_stream = &master->streams[i];
 		new_stream->id = sid;
@@ -2627,13 +2612,12 @@ static void arm_smmu_remove_master(struct arm_smmu_master *master)
 {
 	int i;
 	struct arm_smmu_device *smmu = master->smmu;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(master->dev);
 
 	if (!smmu || !master->streams)
 		return;
 
 	mutex_lock(&smmu->streams_mutex);
-	for (i = 0; i < fwspec->num_ids; i++)
+	for (i = 0; i < master->num_ids; i++)
 		rb_erase(&master->streams[i].node, &smmu->streams);
 	mutex_unlock(&smmu->streams_mutex);
 
@@ -2642,26 +2626,27 @@ static void arm_smmu_remove_master(struct arm_smmu_master *master)
 
 static struct iommu_ops arm_smmu_ops;
 
-static struct iommu_device *arm_smmu_probe_device(struct device *dev)
+static struct iommu_device *arm_smmu_probe_device(struct iommu_probe_info *pinf)
 {
 	int ret;
+	struct device *dev = pinf->dev;
 	struct arm_smmu_device *smmu;
 	struct arm_smmu_master *master;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct iort_params params;
 
-	if (WARN_ON_ONCE(dev_iommu_priv_get(dev)))
-		return ERR_PTR(-EBUSY);
+	smmu = iommu_iort_get_single_iommu(pinf, &arm_smmu_ops, &params,
+					   struct arm_smmu_device, iommu);
+	if (IS_ERR(smmu))
+		return ERR_CAST(smmu);
 
-	smmu = arm_smmu_get_by_fwnode(fwspec->iommu_fwnode);
-	if (!smmu)
-		return ERR_PTR(-ENODEV);
-
-	master = kzalloc(sizeof(*master), GFP_KERNEL);
-	if (!master)
-		return ERR_PTR(-ENOMEM);
+	master = iommu_fw_alloc_per_device_ids(pinf, master);
+	if (IS_ERR(master))
+		return ERR_CAST(master);
 
 	master->dev = dev;
 	master->smmu = smmu;
+	master->pci_rc_ats = params.pci_rc_ats;
+	master->acpi_fwnode = iommu_fw_acpi_fwnode(pinf);
 	INIT_LIST_HEAD(&master->bonds);
 	dev_iommu_priv_set(dev, master);
 
@@ -2670,7 +2655,8 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 		goto err_free_master;
 
 	device_property_read_u32(dev, "pasid-num-bits", &master->ssid_bits);
-	master->ssid_bits = min(smmu->ssid_bits, master->ssid_bits);
+	master->ssid_bits = min(smmu->ssid_bits,
+				max(params.pasid_num_bits, master->ssid_bits));
 
 	/*
 	 * Note that PASID must be enabled before, and disabled after ATS:
@@ -2687,7 +2673,8 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 					  CTXDESC_LINEAR_CDMAX);
 
 	if ((smmu->features & ARM_SMMU_FEAT_STALLS &&
-	     device_property_read_bool(dev, "dma-can-stall")) ||
+	     (device_property_read_bool(dev, "dma-can-stall") ||
+	      params.dma_can_stall)) ||
 	    smmu->features & ARM_SMMU_FEAT_STALL_FORCE)
 		master->stall_enabled = true;
 
@@ -2744,14 +2731,10 @@ static int arm_smmu_enable_nesting(struct iommu_domain *domain)
 	return ret;
 }
 
-static int arm_smmu_of_xlate(struct device *dev, struct of_phandle_args *args)
-{
-	return iommu_fwspec_add_ids(dev, args->args, 1);
-}
-
 static void arm_smmu_get_resv_regions(struct device *dev,
 				      struct list_head *head)
 {
+	struct arm_smmu_master *master = dev_iommu_priv_get(dev);
 	struct iommu_resv_region *region;
 	int prot = IOMMU_WRITE | IOMMU_NOEXEC | IOMMU_MMIO;
 
@@ -2762,7 +2745,10 @@ static void arm_smmu_get_resv_regions(struct device *dev,
 
 	list_add_tail(&region->list, head);
 
-	iommu_dma_get_resv_regions(dev, head);
+	if (master->acpi_fwnode)
+		iort_iommu_get_resv_regions(dev, head, master->acpi_fwnode,
+					    master->ids, master->num_ids);
+	of_iommu_get_resv_regions(dev, head);
 }
 
 static int arm_smmu_dev_enable_feature(struct device *dev,
@@ -2851,10 +2837,10 @@ static void arm_smmu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 static struct iommu_ops arm_smmu_ops = {
 	.capable		= arm_smmu_capable,
 	.domain_alloc		= arm_smmu_domain_alloc,
-	.probe_device		= arm_smmu_probe_device,
+	.probe_device_pinf	= arm_smmu_probe_device,
 	.release_device		= arm_smmu_release_device,
 	.device_group		= arm_smmu_device_group,
-	.of_xlate		= arm_smmu_of_xlate,
+	.of_xlate		= iommu_dummy_of_xlate,
 	.get_resv_regions	= arm_smmu_get_resv_regions,
 	.remove_dev_pasid	= arm_smmu_remove_dev_pasid,
 	.dev_enable_feat	= arm_smmu_dev_enable_feature,

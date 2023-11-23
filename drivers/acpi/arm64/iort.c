@@ -1297,8 +1297,6 @@ static void iort_named_component_init(struct device *dev,
 	props[0] = PROPERTY_ENTRY_U32("pasid-num-bits",
 				      FIELD_GET(ACPI_IORT_NC_PASID_BITS,
 						nc->node_flags));
-	if (nc->node_flags & ACPI_IORT_NC_STALL_SUPPORTED)
-		props[1] = PROPERTY_ENTRY_BOOL("dma-can-stall");
 
 	if (device_create_managed_software_node(dev, props, NULL))
 		dev_warn(dev, "Could not add device properties\n");

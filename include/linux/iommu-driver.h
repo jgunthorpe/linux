@@ -252,6 +252,6 @@ __iommu_iort_get_single_iommu(struct iommu_probe_info *pinf,
 						       pinf, ops, params),    \
 					       __iommu_of_get_single_iommu(   \
 						       pinf, ops, -1)),       \
-				 drv_struct, member)                          \
+				 drv_struct, member);                         \
 	})
 #endif

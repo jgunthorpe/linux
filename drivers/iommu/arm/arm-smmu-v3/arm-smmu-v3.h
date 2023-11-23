@@ -692,6 +692,7 @@ struct arm_smmu_stream {
 struct arm_smmu_master {
 	struct arm_smmu_device		*smmu;
 	struct device			*dev;
+	struct fwnode_handle            *acpi_fwnode;
 	struct arm_smmu_domain		*domain;
 	struct list_head		domain_head;
 	struct arm_smmu_stream		*streams;
@@ -702,8 +703,11 @@ struct arm_smmu_master {
 	bool				stall_enabled;
 	bool				sva_enabled;
 	bool				iopf_enabled;
+	bool				pci_rc_ats;
 	struct list_head		bonds;
 	unsigned int			ssid_bits;
+	unsigned int			num_ids;
+	u32				ids[] __counted_by(num_ids);
 };
 
 /* SMMU private data for an IOMMU domain */
