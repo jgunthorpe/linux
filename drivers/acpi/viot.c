@@ -21,6 +21,7 @@
 #include <linux/acpi_viot.h>
 #include <linux/fwnode.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/list.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -299,7 +300,7 @@ void __init acpi_viot_init(void)
 
 static int viot_dev_iommu_init(struct viot_iommu *viommu, u32 epid, void *info)
 {
-	const struct iommu_ops *ops;
+	struct iommu_device *iommu;
 	struct device *dev = info;
 
 	if (!viommu)
@@ -309,12 +310,12 @@ static int viot_dev_iommu_init(struct viot_iommu *viommu, u32 epid, void *info)
 	if (device_match_fwnode(dev, viommu->fwnode))
 		return -EINVAL;
 
-	ops = iommu_ops_from_fwnode(viommu->fwnode);
-	if (!ops)
+	iommu = iommu_device_from_fwnode(viommu->fwnode);
+	if (!iommu)
 		return IS_ENABLED(CONFIG_VIRTIO_IOMMU) ?
 			-EPROBE_DEFER : -ENODEV;
 
-	return acpi_iommu_fwspec_init(dev, epid, viommu->fwnode, ops);
+	return acpi_iommu_fwspec_init(dev, epid, viommu->fwnode, iommu->ops);
 }
 
 struct viot_pci_iommu_alias_info {

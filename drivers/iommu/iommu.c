@@ -520,13 +520,19 @@ static int __iommu_probe_device(struct iommu_probe_info *pinf)
 	 * ops for probing, and thus cheekily co-opt the same mechanism.
 	 */
 	fwspec = dev_iommu_fwspec_get(dev);
-	if (fwspec && fwspec->ops)
+	if (fwspec && fwspec->ops) {
 		ops = fwspec->ops;
-	else
-		ops = iommu_ops_from_fwnode(NULL);
+		if (!ops)
+			return -ENODEV;
+	} else {
+		struct iommu_device *iommu;
 
-	if (!ops)
-		return -ENODEV;
+		iommu = iommu_device_from_fwnode(NULL);
+		if (!iommu)
+			return -ENODEV;
+		ops = iommu->ops;
+	}
+
 	/*
 	 * Serialise to avoid races between IOMMU drivers registering in
 	 * parallel and/or the "replay" calls from ACPI/OF code via client
@@ -2997,7 +3003,7 @@ bool iommu_default_passthrough(void)
 }
 EXPORT_SYMBOL_GPL(iommu_default_passthrough);
 
-const struct iommu_ops *iommu_ops_from_fwnode(struct fwnode_handle *fwnode)
+struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode)
 {
 	struct iommu_device *iommu;
 
@@ -3005,7 +3011,7 @@ const struct iommu_ops *iommu_ops_from_fwnode(struct fwnode_handle *fwnode)
 
 	list_for_each_entry(iommu, &iommu_device_list, list)
 		if (iommu->fwnode == fwnode)
-			return iommu->ops;
+			return iommu;
 	return NULL;
 }
 

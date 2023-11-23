@@ -797,6 +797,8 @@ void acpi_configure_pmsi_domain(struct device *dev)
 }
 
 #ifdef CONFIG_IOMMU_API
+#include <linux/iommu-driver.h>
+
 static void iort_rmr_free(struct device *dev,
 			  struct iommu_resv_region *region)
 {
@@ -1242,7 +1244,7 @@ static int iort_iommu_xlate(struct acpi_iort_node *node, u32 streamid,
 			    void *info)
 {
 	struct device *dev = info;
-	const struct iommu_ops *ops;
+	struct iommu_device *iommu;
 	struct fwnode_handle *iort_fwnode;
 
 	if (!node)
@@ -1253,19 +1255,19 @@ static int iort_iommu_xlate(struct acpi_iort_node *node, u32 streamid,
 		return -ENODEV;
 
 	/*
-	 * If the ops look-up fails, this means that either
+	 * If the iommu look-up fails, this means that either
 	 * the SMMU drivers have not been probed yet or that
 	 * the SMMU drivers are not built in the kernel;
 	 * Depending on whether the SMMU drivers are built-in
 	 * in the kernel or not, defer the IOMMU configuration
 	 * or just abort it.
 	 */
-	ops = iommu_ops_from_fwnode(iort_fwnode);
-	if (!ops)
+	iommu = iommu_device_from_fwnode(iort_fwnode);
+	if (!iommu)
 		return iort_iommu_driver_enabled(node->type) ?
 		       -EPROBE_DEFER : -ENODEV;
 
-	return acpi_iommu_fwspec_init(dev, streamid, iort_fwnode, ops);
+	return acpi_iommu_fwspec_init(dev, streamid, iort_fwnode, iommu->ops);
 }
 
 struct iort_pci_alias_info {

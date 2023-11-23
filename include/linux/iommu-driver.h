@@ -14,6 +14,8 @@
 
 #include <linux/types.h>
 
+struct fwnode_handle;
+
 struct iommu_probe_info {
 	struct device *dev;
 	struct list_head *deferred_group_list;
@@ -21,5 +23,6 @@ struct iommu_probe_info {
 };
 
 int iommu_probe_device_pinf(struct iommu_probe_info *pinf);
+struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode);
 
 #endif
