@@ -17,6 +17,7 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/io-pgtable.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/iopoll.h>
 #include <linux/kconfig.h>
 #include <linux/init.h>
@@ -54,6 +55,12 @@ struct qcom_iommu_dev {
 	struct qcom_iommu_ctx	*ctxs[];   /* indexed by asid */
 };
 
+struct qcom_iommu_master {
+	struct qcom_iommu_dev *iommu;
+	unsigned int num_ids;
+	u32 ids[] __counted_by(num_ids);
+};
+
 struct qcom_iommu_ctx {
 	struct device		*dev;
 	void __iomem		*base;
@@ -68,8 +75,7 @@ struct qcom_iommu_domain {
 	spinlock_t		 pgtbl_lock;
 	struct mutex		 init_mutex; /* Protects iommu pointer */
 	struct iommu_domain	 domain;
-	struct qcom_iommu_dev	*iommu;
-	struct iommu_fwspec	*fwspec;
+	struct qcom_iommu_master *master;
 };
 
 static struct qcom_iommu_domain *to_qcom_iommu_domain(struct iommu_domain *dom)
@@ -81,7 +87,7 @@ static const struct iommu_ops qcom_iommu_ops;
 
 static struct qcom_iommu_ctx * to_ctx(struct qcom_iommu_domain *d, unsigned asid)
 {
-	struct qcom_iommu_dev *qcom_iommu = d->iommu;
+	struct qcom_iommu_dev *qcom_iommu = d->master->iommu;
 	if (!qcom_iommu)
 		return NULL;
 	return qcom_iommu->ctxs[asid];
@@ -114,11 +120,11 @@ iommu_readq(struct qcom_iommu_ctx *ctx, unsigned reg)
 static void qcom_iommu_tlb_sync(void *cookie)
 {
 	struct qcom_iommu_domain *qcom_domain = cookie;
-	struct iommu_fwspec *fwspec = qcom_domain->fwspec;
+	struct qcom_iommu_master *master = qcom_domain->master;
 	unsigned i;
 
-	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; i++) {
+		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, master->ids[i]);
 		unsigned int val, ret;
 
 		iommu_writel(ctx, ARM_SMMU_CB_TLBSYNC, 0);
@@ -133,11 +139,11 @@ static void qcom_iommu_tlb_sync(void *cookie)
 static void qcom_iommu_tlb_inv_context(void *cookie)
 {
 	struct qcom_iommu_domain *qcom_domain = cookie;
-	struct iommu_fwspec *fwspec = qcom_domain->fwspec;
+	struct qcom_iommu_master *master = qcom_domain->master;
 	unsigned i;
 
-	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; i++) {
+		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, master->ids[i]);
 		iommu_writel(ctx, ARM_SMMU_CB_S1_TLBIASID, ctx->asid);
 	}
 
@@ -148,13 +154,13 @@ static void qcom_iommu_tlb_inv_range_nosync(unsigned long iova, size_t size,
 					    size_t granule, bool leaf, void *cookie)
 {
 	struct qcom_iommu_domain *qcom_domain = cookie;
-	struct iommu_fwspec *fwspec = qcom_domain->fwspec;
+	struct qcom_iommu_master *master = qcom_domain->master;
 	unsigned i, reg;
 
 	reg = leaf ? ARM_SMMU_CB_S1_TLBIVAL : ARM_SMMU_CB_S1_TLBIVA;
 
-	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; i++) {
+		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, master->ids[i]);
 		size_t s = size;
 
 		iova = (iova >> 12) << 12;
@@ -218,14 +224,14 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 				  struct device *dev)
 {
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct qcom_iommu_master *master = dev_iommu_priv_get(dev);
 	struct io_pgtable_ops *pgtbl_ops;
 	struct io_pgtable_cfg pgtbl_cfg;
 	int i, ret = 0;
 	u32 reg;
 
 	mutex_lock(&qcom_domain->init_mutex);
-	if (qcom_domain->iommu)
+	if (qcom_domain->master)
 		goto out_unlock;
 
 	pgtbl_cfg = (struct io_pgtable_cfg) {
@@ -236,8 +242,7 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 		.iommu_dev	= qcom_iommu->dev,
 	};
 
-	qcom_domain->iommu = qcom_iommu;
-	qcom_domain->fwspec = fwspec;
+	qcom_domain->master = master;
 
 	pgtbl_ops = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &pgtbl_cfg, qcom_domain);
 	if (!pgtbl_ops) {
@@ -251,8 +256,8 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 	domain->geometry.aperture_end = (1ULL << pgtbl_cfg.ias) - 1;
 	domain->geometry.force_aperture = true;
 
-	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; i++) {
+		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, master->ids[i]);
 
 		if (!ctx->secure_init) {
 			ret = qcom_scm_restore_sec_cfg(qcom_iommu->sec_id, ctx->asid);
@@ -316,7 +321,7 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 	return 0;
 
 out_clear_iommu:
-	qcom_domain->iommu = NULL;
+	qcom_domain->master = NULL;
 out_unlock:
 	mutex_unlock(&qcom_domain->init_mutex);
 	return ret;
@@ -345,16 +350,16 @@ static void qcom_iommu_domain_free(struct iommu_domain *domain)
 {
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
 
-	if (qcom_domain->iommu) {
+	if (qcom_domain->master) {
 		/*
 		 * NOTE: unmap can be called after client device is powered
 		 * off, for example, with GPUs or anything involving dma-buf.
 		 * So we cannot rely on the device_link.  Make sure the IOMMU
 		 * is on to avoid unclocked accesses in the TLB inv path:
 		 */
-		pm_runtime_get_sync(qcom_domain->iommu->dev);
+		pm_runtime_get_sync(qcom_domain->master->iommu->dev);
 		free_io_pgtable_ops(qcom_domain->pgtbl_ops);
-		pm_runtime_put_sync(qcom_domain->iommu->dev);
+		pm_runtime_put_sync(qcom_domain->master->iommu->dev);
 	}
 
 	kfree(qcom_domain);
@@ -362,7 +367,8 @@ static void qcom_iommu_domain_free(struct iommu_domain *domain)
 
 static int qcom_iommu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
-	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
+	struct qcom_iommu_master *master = dev_iommu_priv_get(dev);
+	struct qcom_iommu_dev *qcom_iommu = master->iommu;
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
 	int ret;
 
@@ -382,7 +388,7 @@ static int qcom_iommu_attach_dev(struct iommu_domain *domain, struct device *dev
 	 * Sanity check the domain. We don't support domains across
 	 * different IOMMUs.
 	 */
-	if (qcom_domain->iommu != qcom_iommu)
+	if (qcom_domain->master->iommu != qcom_iommu)
 		return -EINVAL;
 
 	return 0;
@@ -393,20 +399,20 @@ static int qcom_iommu_identity_attach(struct iommu_domain *identity_domain,
 {
 	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
 	struct qcom_iommu_domain *qcom_domain;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
+	struct qcom_iommu_master *master = dev_iommu_priv_get(dev);
+	struct qcom_iommu_dev *qcom_iommu = master->iommu;
 	unsigned int i;
 
 	if (domain == identity_domain || !domain)
 		return 0;
 
 	qcom_domain = to_qcom_iommu_domain(domain);
-	if (WARN_ON(!qcom_domain->iommu))
+	if (WARN_ON(!qcom_domain->master))
 		return -EINVAL;
 
 	pm_runtime_get_sync(qcom_iommu->dev);
-	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+	for (i = 0; i < master->num_ids; i++) {
+		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, master->ids[i]);
 
 		/* Disable the context bank: */
 		iommu_writel(ctx, ARM_SMMU_CB_SCTLR, 0);
@@ -461,11 +467,11 @@ static size_t qcom_iommu_unmap(struct iommu_domain *domain, unsigned long iova,
 	 * cannot rely on the device_link.  Make sure the IOMMU is on to
 	 * avoid unclocked accesses in the TLB inv path:
 	 */
-	pm_runtime_get_sync(qcom_domain->iommu->dev);
+	pm_runtime_get_sync(qcom_domain->master->iommu->dev);
 	spin_lock_irqsave(&qcom_domain->pgtbl_lock, flags);
 	ret = ops->unmap_pages(ops, iova, pgsize, pgcount, gather);
 	spin_unlock_irqrestore(&qcom_domain->pgtbl_lock, flags);
-	pm_runtime_put_sync(qcom_domain->iommu->dev);
+	pm_runtime_put_sync(qcom_domain->master->iommu->dev);
 
 	return ret;
 }
@@ -478,9 +484,9 @@ static void qcom_iommu_flush_iotlb_all(struct iommu_domain *domain)
 	if (!qcom_domain->pgtbl_ops)
 		return;
 
-	pm_runtime_get_sync(qcom_domain->iommu->dev);
+	pm_runtime_get_sync(qcom_domain->master->iommu->dev);
 	qcom_iommu_tlb_sync(pgtable->cookie);
-	pm_runtime_put_sync(qcom_domain->iommu->dev);
+	pm_runtime_put_sync(qcom_domain->master->iommu->dev);
 }
 
 static void qcom_iommu_iotlb_sync(struct iommu_domain *domain,
@@ -523,13 +529,38 @@ static bool qcom_iommu_capable(struct device *dev, enum iommu_cap cap)
 	}
 }
 
-static struct iommu_device *qcom_iommu_probe_device(struct device *dev)
+static struct iommu_device *
+qcom_iommu_probe_device(struct iommu_probe_info *pinf)
 {
-	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
+	struct qcom_iommu_dev *qcom_iommu;
+	struct qcom_iommu_master *master;
+	struct device *dev = pinf->dev;
 	struct device_link *link;
+	int ret;
+	int i;
 
-	if (!qcom_iommu)
-		return ERR_PTR(-ENODEV);
+	qcom_iommu = iommu_of_get_single_iommu(pinf, &qcom_iommu_ops, 1,
+					       struct qcom_iommu_dev, iommu);
+	if (IS_ERR(qcom_iommu))
+		return ERR_CAST(qcom_iommu);
+
+	master = iommu_fw_alloc_per_device_ids(pinf, master);
+	if (IS_ERR(master))
+		return ERR_CAST(master);
+
+	for (i = 0; i != master->num_ids; i++) {
+		u32 asid = master->ids[i];
+
+		/*
+		 * Make sure the asid specified in dt is valid, so we don't have
+		 * to sanity check this elsewhere:
+		 */
+		if (WARN_ON(asid > qcom_iommu->max_asid) ||
+		    WARN_ON(qcom_iommu->ctxs[asid] == NULL)) {
+			ret = -EINVAL;
+			goto err_free;
+		}
+	}
 
 	/*
 	 * Establish the link between iommu and master, so that the
@@ -540,63 +571,33 @@ static struct iommu_device *qcom_iommu_probe_device(struct device *dev)
 	if (!link) {
 		dev_err(qcom_iommu->dev, "Unable to create device link between %s and %s\n",
 			dev_name(qcom_iommu->dev), dev_name(dev));
-		return ERR_PTR(-ENODEV);
+		ret = -ENODEV;
+		goto err_free;
 	}
 
+	dev_iommu_priv_set(dev, master);
 	return &qcom_iommu->iommu;
+
+err_free:
+	kfree(master);
+	return ERR_PTR(ret);
 }
 
-static int qcom_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
+static void qcom_iommu_release_device(struct device *dev)
 {
-	struct qcom_iommu_dev *qcom_iommu;
-	struct platform_device *iommu_pdev;
-	unsigned asid = args->args[0];
+	struct qcom_iommu_master *master = dev_iommu_priv_get(dev);
 
-	if (args->args_count != 1) {
-		dev_err(dev, "incorrect number of iommu params found for %s "
-			"(found %d, expected 1)\n",
-			args->np->full_name, args->args_count);
-		return -EINVAL;
-	}
-
-	iommu_pdev = of_find_device_by_node(args->np);
-	if (WARN_ON(!iommu_pdev))
-		return -EINVAL;
-
-	qcom_iommu = platform_get_drvdata(iommu_pdev);
-
-	/* make sure the asid specified in dt is valid, so we don't have
-	 * to sanity check this elsewhere:
-	 */
-	if (WARN_ON(asid > qcom_iommu->max_asid) ||
-	    WARN_ON(qcom_iommu->ctxs[asid] == NULL)) {
-		put_device(&iommu_pdev->dev);
-		return -EINVAL;
-	}
-
-	if (!dev_iommu_priv_get(dev)) {
-		dev_iommu_priv_set(dev, qcom_iommu);
-	} else {
-		/* make sure devices iommus dt node isn't referring to
-		 * multiple different iommu devices.  Multiple context
-		 * banks are ok, but multiple devices are not:
-		 */
-		if (WARN_ON(qcom_iommu != dev_iommu_priv_get(dev))) {
-			put_device(&iommu_pdev->dev);
-			return -EINVAL;
-		}
-	}
-
-	return iommu_fwspec_add_ids(dev, &asid, 1);
+	kfree(master);
 }
 
 static const struct iommu_ops qcom_iommu_ops = {
 	.identity_domain = &qcom_iommu_identity_domain,
 	.capable	= qcom_iommu_capable,
 	.domain_alloc_paging = qcom_iommu_domain_alloc_paging,
-	.probe_device	= qcom_iommu_probe_device,
+	.probe_device_pinf = qcom_iommu_probe_device,
+	.release_device = qcom_iommu_release_device,
 	.device_group	= generic_device_group,
-	.of_xlate	= qcom_iommu_of_xlate,
+	.of_xlate	= iommu_dummy_of_xlate,
 	.pgsize_bitmap	= SZ_4K | SZ_64K | SZ_1M | SZ_16M,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= qcom_iommu_attach_dev,
