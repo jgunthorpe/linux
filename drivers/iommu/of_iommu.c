@@ -332,8 +332,26 @@ static int parse_single_iommu(struct of_phandle_args *iommu_spec, void *_info)
 	iommu = parse_iommu(info, iommu_spec);
 	if (IS_ERR(iommu))
 		return PTR_ERR(iommu);
-	info->pinf->num_ids++;
+	iommu_fw_cache_id(info->pinf, iommu_spec->args[0]);
 	return 0;
+}
+
+static int parse_read_ids(struct of_phandle_args *iommu_spec, void *_info)
+{
+	struct parse_info *info = _info;
+	u32 *ids = info->priv;
+
+	*ids = iommu_spec->args[0];
+	info->priv = ids + 1;
+	return 0;
+}
+
+static int iommu_of_get_u32_ids(struct iommu_probe_info *pinf, u32 *ids)
+{
+	struct parse_info info = { .pinf = pinf, .priv = ids };
+
+	return of_iommu_for_each_id(pinf->dev, pinf->of_master_np,
+				    pinf->of_map_id, parse_read_ids, &info);
 }
 
 struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
@@ -353,6 +371,7 @@ struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
 				   pinf->of_map_id, parse_single_iommu, &info);
 	if (err)
 		return ERR_PTR(err);
+	pinf->get_u32_ids = iommu_of_get_u32_ids;
 	return iommu_fw_finish_get_single(pinf);
 }
 EXPORT_SYMBOL_GPL(__iommu_of_get_single_iommu);

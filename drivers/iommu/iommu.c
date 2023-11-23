@@ -3067,6 +3067,27 @@ struct iommu_device *iommu_fw_finish_get_single(struct iommu_probe_info *pinf)
 	return pinf->cached_iommu;
 }
 
+/*
+ * This function shouldn't be called directly without a pretty good reason,
+ * prefer to structure the driver to use iommu_fw_alloc_per_device_ids()
+ * instead.
+ */
+int iommu_fw_get_u32_ids(struct iommu_probe_info *pinf, u32 *ids)
+{
+	if (WARN_ON(!pinf->get_u32_ids))
+		return -EINVAL;
+
+	/*
+	 * We pre-parse a small number if IDs and keep it on the stack. If that
+	 * isn't enough then just reparse again.
+	 */
+	if (pinf->num_ids > ARRAY_SIZE(pinf->cached_ids))
+		return pinf->get_u32_ids(pinf, ids);
+	memcpy(ids, pinf->cached_ids, pinf->num_ids * sizeof(*ids));
+	return 0;
+}
+EXPORT_SYMBOL_GPL(iommu_fw_get_u32_ids);
+
 int iommu_fwspec_init(struct device *dev, struct fwnode_handle *iommu_fwnode,
 		      const struct iommu_ops *ops)
 {

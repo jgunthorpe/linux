@@ -40,7 +40,9 @@ struct iommu_probe_info {
 	struct iommu_device *cached_iommu;
 	struct device_node *of_master_np;
 	const u32 *of_map_id;
+	int (*get_u32_ids)(struct iommu_probe_info *pinf, u32 *ids);
 	unsigned int num_ids;
+	u32 cached_ids[8];
 	bool defer_setup : 1;
 	bool is_dma_configure : 1;
 	bool cached_single_iommu : 1;
@@ -122,6 +124,60 @@ static inline unsigned int iommu_of_num_ids(struct iommu_probe_info *pinf)
 {
 	return pinf->num_ids;
 }
+
+unsigned int iommu_of_num_ids(struct iommu_probe_info *pinf);
+int iommu_fw_get_u32_ids(struct iommu_probe_info *pinf, u32 *ids);
+
+static inline void iommu_fw_cache_id(struct iommu_probe_info *pinf, u32 id)
+{
+	if (pinf->num_ids < ARRAY_SIZE(pinf->cached_ids))
+		pinf->cached_ids[pinf->num_ids] = id;
+	pinf->num_ids++;
+}
+
+static inline void *
+__iommu_fw_alloc_per_device_ids(struct iommu_probe_info *pinf, void *mem,
+				unsigned int num_ids, unsigned int *num_ids_p,
+				u32 *ids_p)
+{
+	int ret;
+
+	if (!mem)
+		return ERR_PTR(-ENOMEM);
+
+	ret = iommu_fw_get_u32_ids(pinf, ids_p);
+	if (ret) {
+		kfree(mem);
+		return ERR_PTR(ret);
+	}
+
+	*num_ids_p = num_ids;
+	return mem;
+}
+
+/**
+ * iommu_fw_alloc_per_device_ids - Allocate a per-device struct with ids
+ * @pinf: The iommu_probe_info
+ * @drv_struct: Name of a variable to a pointer of the driver structure
+ *
+ * Called by a driver during probe this helper allocates and initializes the
+ * driver struct that embeds the ids array with the trailing members:
+ *
+ *	unsigned int num_ids;
+ *	u32 ids[] __counted_by(num_ids);
+ *
+ * The helper allocates the driver struct with the right size flex array,
+ * and initializes both members. Returns the driver struct or ERR_PTR.
+ */
+#define iommu_fw_alloc_per_device_ids(pinf, drv_struct)                    \
+	({                                                                 \
+		unsigned int num_ids = iommu_of_num_ids(pinf);             \
+		typeof(drv_struct) drv;                                    \
+                                                                           \
+		drv = kzalloc(struct_size(drv, ids, num_ids), GFP_KERNEL); \
+		drv = __iommu_fw_alloc_per_device_ids(                     \
+			pinf, drv, num_ids, &drv->num_ids, drv->ids);      \
+	})
 
 /*
  * Used temporarily to indicate drivers that have moved to the new probe method.
