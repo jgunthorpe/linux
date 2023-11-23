@@ -378,7 +378,10 @@ struct arm_smmu_domain {
 
 struct arm_smmu_master_cfg {
 	struct arm_smmu_device		*smmu;
-	s16				smendx[];
+	struct fwnode_handle		*acpi_fwnode;
+	s16				*smendx;
+	unsigned int			num_ids;
+	u32				ids[] __counted_by(num_ids);
 };
 
 static inline u32 arm_smmu_lpae_tcr(const struct io_pgtable_cfg *cfg)
@@ -446,10 +449,10 @@ struct arm_smmu_impl {
 };
 
 #define INVALID_SMENDX			-1
-#define cfg_smendx(cfg, fw, i) \
-	(i >= fw->num_ids ? INVALID_SMENDX : cfg->smendx[i])
-#define for_each_cfg_sme(cfg, fw, i, idx) \
-	for (i = 0; idx = cfg_smendx(cfg, fw, i), i < fw->num_ids; ++i)
+#define cfg_smendx(cfg, i) \
+	(i >= cfg->num_ids ? INVALID_SMENDX : cfg->smendx[i])
+#define for_each_cfg_sme(cfg, i, idx) \
+	for (i = 0; idx = cfg_smendx(cfg, i), i < cfg->num_ids; ++i)
 
 static inline int __arm_smmu_alloc_bitmap(unsigned long *map, int start, int end)
 {

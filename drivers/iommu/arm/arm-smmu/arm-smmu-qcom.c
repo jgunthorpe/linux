@@ -101,15 +101,15 @@ static void qcom_adreno_smmu_resume_translation(const void *cookie, bool termina
 
 static bool qcom_adreno_smmu_is_gpu_device(struct device *dev)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct arm_smmu_master_cfg *cfg = dev_iommu_priv_get(dev);
 	int i;
 
 	/*
 	 * The GPU will always use SID 0 so that is a handy way to uniquely
 	 * identify it and configure it for per-instance pagetables
 	 */
-	for (i = 0; i < fwspec->num_ids; i++) {
-		u16 sid = FIELD_GET(ARM_SMMU_SMR_ID, fwspec->ids[i]);
+	for (i = 0; i < cfg->num_ids; i++) {
+		u16 sid = FIELD_GET(ARM_SMMU_SMR_ID, cfg->ids[i]);
 
 		if (sid == QCOM_ADRENO_SMMU_GPU_SID)
 			return true;
