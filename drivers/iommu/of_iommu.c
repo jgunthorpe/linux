@@ -7,6 +7,7 @@
 
 #include <linux/export.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -139,6 +140,9 @@ static int of_iommu_for_each_id(struct device *dev,
 int of_iommu_configure(struct device *dev, struct device_node *master_np,
 		       const u32 *id)
 {
+	struct iommu_probe_info pinf = {
+		.dev = dev,
+	};
 	struct iommu_fwspec *fwspec;
 	int err;
 
@@ -167,7 +171,7 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 	if (err)
 		goto err_log;
 
-	err = iommu_probe_device(dev);
+	err = iommu_probe_device_pinf(&pinf);
 	if (err)
 		goto err_log;
 	return 0;

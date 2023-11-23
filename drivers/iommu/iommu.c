@@ -18,6 +18,7 @@
 #include <linux/errno.h>
 #include <linux/host1x_context_bus.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/idr.h>
 #include <linux/err.h>
 #include <linux/pci.h>
@@ -399,8 +400,10 @@ EXPORT_SYMBOL_GPL(dev_iommu_priv_set);
  * Init the dev->iommu and dev->iommu_group in the struct device and get the
  * driver probed
  */
-static int iommu_init_device(struct device *dev, const struct iommu_ops *ops)
+static int iommu_init_device(struct iommu_probe_info *pinf,
+			     const struct iommu_ops *ops)
 {
+	struct device *dev = pinf->dev;
 	struct iommu_device *iommu_dev;
 	struct iommu_group *group;
 	int ret;
@@ -413,7 +416,10 @@ static int iommu_init_device(struct device *dev, const struct iommu_ops *ops)
 		goto err_free;
 	}
 
-	iommu_dev = ops->probe_device(dev);
+	if (ops->probe_device_pinf)
+		iommu_dev = ops->probe_device_pinf(pinf);
+	else
+		iommu_dev = ops->probe_device(dev);
 	if (IS_ERR(iommu_dev)) {
 		ret = PTR_ERR(iommu_dev);
 		goto err_module_put;
@@ -496,8 +502,9 @@ static void iommu_deinit_device(struct device *dev)
 
 DEFINE_MUTEX(iommu_probe_device_lock);
 
-static int __iommu_probe_device(struct device *dev, struct list_head *group_list)
+static int __iommu_probe_device(struct iommu_probe_info *pinf)
 {
+	struct device *dev = pinf->dev;
 	const struct iommu_ops *ops;
 	struct iommu_fwspec *fwspec;
 	struct iommu_group *group;
@@ -533,7 +540,7 @@ static int __iommu_probe_device(struct device *dev, struct list_head *group_list
 	if (dev->iommu_group)
 		return 0;
 
-	ret = iommu_init_device(dev, ops);
+	ret = iommu_init_device(pinf, ops);
 	if (ret)
 		return ret;
 
@@ -557,7 +564,7 @@ static int __iommu_probe_device(struct device *dev, struct list_head *group_list
 		ret = __iommu_device_set_domain(group, dev, group->domain, 0);
 		if (ret)
 			goto err_remove_gdev;
-	} else if (!group->default_domain && !group_list) {
+	} else if (!group->default_domain && !pinf->defer_setup) {
 		ret = iommu_setup_default_domain(group, 0);
 		if (ret)
 			goto err_remove_gdev;
@@ -568,7 +575,7 @@ static int __iommu_probe_device(struct device *dev, struct list_head *group_list
 		 * that need further setup.
 		 */
 		if (list_empty(&group->entry))
-			list_add_tail(&group->entry, group_list);
+			list_add_tail(&group->entry, pinf->deferred_group_list);
 	}
 	mutex_unlock(&group->mutex);
 
@@ -588,13 +595,14 @@ err_put_group:
 	return ret;
 }
 
-int iommu_probe_device(struct device *dev)
+int iommu_probe_device_pinf(struct iommu_probe_info *pinf)
 {
+	struct device *dev = pinf->dev;
 	const struct iommu_ops *ops;
 	int ret;
 
 	mutex_lock(&iommu_probe_device_lock);
-	ret = __iommu_probe_device(dev, NULL);
+	ret = __iommu_probe_device(pinf);
 	mutex_unlock(&iommu_probe_device_lock);
 	if (ret)
 		return ret;
@@ -604,6 +612,13 @@ int iommu_probe_device(struct device *dev)
 		ops->probe_finalize(dev);
 
 	return 0;
+}
+
+int iommu_probe_device(struct device *dev)
+{
+	struct iommu_probe_info pinf = {.dev = dev};
+
+	return iommu_probe_device_pinf(&pinf);
 }
 
 static void __iommu_group_free_device(struct iommu_group *group,
@@ -1830,11 +1845,12 @@ struct iommu_domain *iommu_group_default_domain(struct iommu_group *group)
 
 static int probe_iommu_group(struct device *dev, void *data)
 {
-	struct list_head *group_list = data;
+	struct iommu_probe_info *pinf = data;
 	int ret;
 
+	pinf->dev = dev;
 	mutex_lock(&iommu_probe_device_lock);
-	ret = __iommu_probe_device(dev, group_list);
+	ret = __iommu_probe_device(pinf);
 	mutex_unlock(&iommu_probe_device_lock);
 	if (ret == -ENODEV)
 		ret = 0;
@@ -1977,9 +1993,13 @@ int bus_iommu_probe(const struct bus_type *bus)
 {
 	struct iommu_group *group, *next;
 	LIST_HEAD(group_list);
+	struct iommu_probe_info pinf = {
+		.deferred_group_list = &group_list,
+		.defer_setup = true,
+	};
 	int ret;
 
-	ret = bus_for_each_dev(bus, NULL, &group_list, probe_iommu_group);
+	ret = bus_for_each_dev(bus, NULL, &pinf, probe_iommu_group);
 	if (ret)
 		return ret;
 
