@@ -1570,6 +1570,7 @@ static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 	const struct iommu_ops *ops;
 	struct iommu_probe_info pinf = {
 		.dev = dev,
+		.is_dma_configure = true,
 	};
 
 	/* Serialise to make dev->iommu stable under our potential fwspec */

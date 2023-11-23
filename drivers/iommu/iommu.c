@@ -3015,6 +3015,58 @@ struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode)
 	return NULL;
 }
 
+/*
+ * Helper for FW interfaces to parse the fwnode into an iommu_driver. This
+ * caches past search results to avoid re-searching the linked list and computes
+ * if the FW is describing a single or multi-instance ID list.
+ */
+struct iommu_device *
+iommu_device_from_fwnode_pinf(struct iommu_probe_info *pinf,
+			      const struct iommu_ops *ops,
+			      struct fwnode_handle *fwnode)
+{
+	struct iommu_device *iommu = pinf->cached_iommu;
+
+	if (!pinf->num_ids)
+		pinf->cached_single_iommu = true;
+
+	if (!iommu || iommu->fwnode != fwnode) {
+		iommu = iommu_device_from_fwnode(fwnode);
+		if (!iommu)
+			return ERR_PTR(
+				driver_deferred_probe_check_state(pinf->dev));
+		pinf->cached_iommu = iommu;
+		if (pinf->num_ids)
+			pinf->cached_single_iommu = false;
+	}
+
+	/* NULL ops is used for the -EPROBE_DEFER check, match everything */
+	if (ops && iommu->ops != ops) {
+		if (!pinf->num_ids)
+			return ERR_PTR(-ENODEV);
+		dev_err(pinf->dev,
+			FW_BUG
+			"One device in the FW has iommu's with different Linux drivers, expecting %ps FW wants %ps.",
+			ops, iommu->ops);
+		return ERR_PTR(-EINVAL);
+	}
+	return iommu;
+}
+
+struct iommu_device *iommu_fw_finish_get_single(struct iommu_probe_info *pinf)
+{
+	if (WARN_ON(!pinf->num_ids || !pinf->cached_iommu))
+		return ERR_PTR(-EINVAL);
+	if (!pinf->cached_single_iommu) {
+		dev_err(pinf->dev,
+			FW_BUG
+			"The iommu driver %ps expects only one iommu instance, the FW has more.\n",
+			pinf->cached_iommu->ops);
+		return ERR_PTR(-EINVAL);
+	}
+	return pinf->cached_iommu;
+}
+
 int iommu_fwspec_init(struct device *dev, struct fwnode_handle *iommu_fwnode,
 		      const struct iommu_ops *ops)
 {

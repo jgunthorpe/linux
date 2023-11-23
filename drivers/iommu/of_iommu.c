@@ -138,6 +138,9 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 {
 	struct iommu_probe_info pinf = {
 		.dev = dev,
+		.of_master_np = master_np,
+		.of_map_id = id,
+		.is_dma_configure = true,
 	};
 	struct iommu_fwspec *fwspec;
 	int err;
@@ -277,3 +280,59 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 #endif
 }
 EXPORT_SYMBOL(of_iommu_get_resv_regions);
+
+struct parse_info {
+	struct iommu_probe_info *pinf;
+	const struct iommu_ops *ops;
+	int num_cells;
+};
+
+static struct iommu_device *parse_iommu(struct parse_info *info,
+					struct of_phandle_args *iommu_spec)
+{
+	if (!of_device_is_available(iommu_spec->np))
+		return ERR_PTR(-ENODEV);
+
+	if (info->num_cells != -1 && iommu_spec->args_count != info->num_cells) {
+		dev_err(info->pinf->dev,
+			FW_BUG
+			"Driver %ps expects number of cells %u but DT has %u\n",
+			info->ops, info->num_cells, iommu_spec->args_count);
+		return ERR_PTR(-EINVAL);
+	}
+	return iommu_device_from_fwnode_pinf(info->pinf, info->ops,
+					     &iommu_spec->np->fwnode);
+}
+
+static int parse_single_iommu(struct of_phandle_args *iommu_spec, void *_info)
+{
+	struct parse_info *info = _info;
+	struct iommu_device *iommu;
+
+	iommu = parse_iommu(info, iommu_spec);
+	if (IS_ERR(iommu))
+		return PTR_ERR(iommu);
+	info->pinf->num_ids++;
+	return 0;
+}
+
+struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
+						 const struct iommu_ops *ops,
+						 int num_cells)
+{
+	struct parse_info info = { .pinf = pinf,
+				   .ops = ops,
+				   .num_cells = num_cells };
+	int err;
+
+	if (!pinf->is_dma_configure || !pinf->of_master_np)
+		return ERR_PTR(-ENODEV);
+
+	iommu_fw_clear_cache(pinf);
+	err = of_iommu_for_each_id(pinf->dev, pinf->of_master_np,
+				   pinf->of_map_id, parse_single_iommu, &info);
+	if (err)
+		return ERR_PTR(err);
+	return iommu_fw_finish_get_single(pinf);
+}
+EXPORT_SYMBOL_GPL(__iommu_of_get_single_iommu);
