@@ -20,6 +20,7 @@
 #include <linux/interrupt.h>
 #include <linux/io-pgtable.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -31,8 +32,6 @@
 #include <linux/slab.h>
 #include <linux/swab.h>
 #include <linux/types.h>
-
-#include "dma-iommu.h"
 
 #define DART_MAX_STREAMS 256
 #define DART_MAX_TTBR 4
@@ -972,7 +971,7 @@ static void apple_dart_get_resv_regions(struct device *dev,
 		list_add_tail(&region->list, head);
 	}
 
-	iommu_dma_get_resv_regions(dev, head);
+	of_iommu_get_resv_regions(dev, head);
 }
 
 static const struct iommu_ops apple_dart_iommu_ops = {

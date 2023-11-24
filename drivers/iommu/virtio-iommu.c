@@ -12,6 +12,7 @@
 #include <linux/freezer.h>
 #include <linux/interval_tree.h>
 #include <linux/iommu.h>
+#include <linux/iommu-driver.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pci.h>
@@ -21,8 +22,6 @@
 #include <linux/wait.h>
 
 #include <uapi/linux/virtio_iommu.h>
-
-#include "dma-iommu.h"
 
 #define MSI_IOVA_BASE			0x8000000
 #define MSI_IOVA_LENGTH			0x100000
@@ -969,7 +968,7 @@ static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
 		list_add_tail(&msi->list, head);
 	}
 
-	iommu_dma_get_resv_regions(dev, head);
+	of_iommu_get_resv_regions(dev, head);
 }
 
 static struct iommu_ops viommu_ops;

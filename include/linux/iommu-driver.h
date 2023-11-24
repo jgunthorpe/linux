@@ -25,4 +25,13 @@ struct iommu_probe_info {
 int iommu_probe_device_pinf(struct iommu_probe_info *pinf);
 struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode);
 
+#if IS_ENABLED(CONFIG_OF_IOMMU)
+void of_iommu_get_resv_regions(struct device *dev, struct list_head *list);
+#else
+static inline void of_iommu_get_resv_regions(struct device *dev,
+					     struct list_head *list)
+{
+}
+#endif
+
 #endif

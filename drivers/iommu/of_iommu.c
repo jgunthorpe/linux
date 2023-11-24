@@ -217,6 +217,9 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 	struct of_phandle_iterator it;
 	int err;
 
+	if (!dev->of_node)
+		return;
+
 	of_for_each_phandle(&it, err, dev->of_node, "memory-region", NULL, 0) {
 		const __be32 *maps, *end;
 		struct resource phys;
