@@ -29,6 +29,18 @@ void iort_deregister_domain_token(int trans_id);
 struct fwnode_handle *iort_find_domain_token(int trans_id);
 int iort_pmsi_get_dev_id(struct device *dev, u32 *dev_id);
 
+struct iort_params {
+	unsigned int pasid_num_bits;
+	bool dma_can_stall : 1;
+	bool pci_rc_ats : 1;
+};
+
+typedef int (*iort_for_each_fn)(struct acpi_iort_node *iommu, u32 streamid,
+				void *info);
+int iort_iommu_for_each_id(struct device *dev, const u32 *id_in,
+			   struct iort_params *params, iort_for_each_fn fn,
+			   void *info);
+
 #ifdef CONFIG_ACPI_IORT
 u32 iort_msi_map_id(struct device *dev, u32 id);
 struct irq_domain *iort_get_device_domain(struct device *dev, u32 id,

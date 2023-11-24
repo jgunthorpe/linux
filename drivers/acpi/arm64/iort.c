@@ -1218,9 +1218,10 @@ static bool iort_pci_rc_supports_ats(struct acpi_iort_node *node)
 	return pci_rc->ats_attribute & ACPI_IORT_ATS_SUPPORTED;
 }
 
-static int iort_iommu_xlate(struct device *dev, struct acpi_iort_node *node,
-			    u32 streamid)
+static int iort_iommu_xlate(struct acpi_iort_node *node, u32 streamid,
+			    void *info)
 {
+	struct device *dev = info;
 	const struct iommu_ops *ops;
 	struct fwnode_handle *iort_fwnode;
 
@@ -1250,9 +1251,11 @@ static int iort_iommu_xlate(struct device *dev, struct acpi_iort_node *node,
 struct iort_pci_alias_info {
 	struct device *dev;
 	struct acpi_iort_node *node;
+	iort_for_each_fn fn;
+	void *info;
 };
 
-static int iort_pci_iommu_init(struct pci_dev *pdev, u16 alias, void *data)
+static int __for_each_pci_alias(struct pci_dev *pdev, u16 alias, void *data)
 {
 	struct iort_pci_alias_info *info = data;
 	struct acpi_iort_node *parent;
@@ -1260,7 +1263,7 @@ static int iort_pci_iommu_init(struct pci_dev *pdev, u16 alias, void *data)
 
 	parent = iort_node_map_id(info->node, alias, &streamid,
 				  IORT_IOMMU_TYPE);
-	return iort_iommu_xlate(info->dev, parent, streamid);
+	return info->fn(parent, streamid, info->info);
 }
 
 static void iort_named_component_init(struct device *dev,
@@ -1280,7 +1283,8 @@ static void iort_named_component_init(struct device *dev,
 		dev_warn(dev, "Could not add device properties\n");
 }
 
-static int iort_nc_iommu_map(struct device *dev, struct acpi_iort_node *node)
+static int __for_each_platform(struct acpi_iort_node *node, iort_for_each_fn fn,
+			       void *info)
 {
 	struct acpi_iort_node *parent;
 	int err = -ENODEV, i = 0;
@@ -1293,26 +1297,70 @@ static int iort_nc_iommu_map(struct device *dev, struct acpi_iort_node *node)
 						   i++);
 
 		if (parent)
-			err = iort_iommu_xlate(dev, parent, streamid);
+			err = fn(parent, streamid, info);
 	} while (parent && !err);
 
 	return err;
 }
 
-static int iort_nc_iommu_map_id(struct device *dev,
-				struct acpi_iort_node *node,
-				const u32 *in_id)
+int iort_iommu_for_each_id(struct device *dev, const u32 *id_in,
+			   struct iort_params *params, iort_for_each_fn fn,
+			   void *info)
 {
-	struct acpi_iort_node *parent;
-	u32 streamid;
+	struct acpi_iort_named_component *nc;
+	struct acpi_iort_node *node;
+	int err = -ENODEV;
 
-	parent = iort_node_map_id(node, *in_id, &streamid, IORT_IOMMU_TYPE);
-	if (parent)
-		return iort_iommu_xlate(dev, parent, streamid);
+	memset(params, 0, sizeof(*params));
+	if (dev_is_pci(dev)) {
+		struct pci_bus *bus = to_pci_dev(dev)->bus;
+		struct iort_pci_alias_info pci_info = { .dev = dev,
+							.fn = fn,
+							.info = info };
 
-	return -ENODEV;
+		node = iort_scan_node(ACPI_IORT_NODE_PCI_ROOT_COMPLEX,
+				      iort_match_node_callback, &bus->dev);
+		if (!node)
+			return -ENODEV;
+
+		pci_info.node = node;
+		err = pci_for_each_dma_alias(to_pci_dev(dev),
+					     __for_each_pci_alias, &pci_info);
+
+		if (iort_pci_rc_supports_ats(node))
+			params->pci_rc_ats = true;
+		return 0;
+	}
+
+	node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
+			      iort_match_node_callback, dev);
+	if (!node)
+		return -ENODEV;
+
+	if (id_in) {
+		struct acpi_iort_node *parent;
+		u32 streamid;
+
+		parent = iort_node_map_id(node, *id_in, &streamid,
+					  IORT_IOMMU_TYPE);
+		if (!parent)
+			return -ENODEV;
+		err = fn(parent, streamid, info);
+	} else {
+		err = __for_each_platform(node, fn, info);
+	}
+	if (err)
+		return err;
+
+	nc = (struct acpi_iort_named_component *)node->node_data;
+	params->pasid_num_bits = FIELD_GET(ACPI_IORT_NC_PASID_BITS,
+						nc->node_flags);
+	if (nc->node_flags & ACPI_IORT_NC_STALL_SUPPORTED)
+		params->dma_can_stall = true;
+
+	iort_named_component_init(dev, node);
+	return 0;
 }
-
 
 /**
  * iort_iommu_configure_id - Set-up IOMMU configuration for a device.
@@ -1324,40 +1372,22 @@ static int iort_nc_iommu_map_id(struct device *dev,
  */
 int iort_iommu_configure_id(struct device *dev, const u32 *id_in)
 {
-	struct acpi_iort_node *node;
-	int err = -ENODEV;
+	struct iort_params params;
+	int err;
 
-	if (dev_is_pci(dev)) {
+	err = iort_iommu_for_each_id(dev, id_in, &params, &iort_iommu_xlate,
+				     dev);
+	if (err)
+		return err;
+
+	if (params.pci_rc_ats) {
 		struct iommu_fwspec *fwspec;
-		struct pci_bus *bus = to_pci_dev(dev)->bus;
-		struct iort_pci_alias_info info = { .dev = dev };
-
-		node = iort_scan_node(ACPI_IORT_NODE_PCI_ROOT_COMPLEX,
-				      iort_match_node_callback, &bus->dev);
-		if (!node)
-			return -ENODEV;
-
-		info.node = node;
-		err = pci_for_each_dma_alias(to_pci_dev(dev),
-					     iort_pci_iommu_init, &info);
 
 		fwspec = dev_iommu_fwspec_get(dev);
-		if (fwspec && iort_pci_rc_supports_ats(node))
+		if (fwspec)
 			fwspec->flags |= IOMMU_FWSPEC_PCI_RC_ATS;
-	} else {
-		node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
-				      iort_match_node_callback, dev);
-		if (!node)
-			return -ENODEV;
-
-		err = id_in ? iort_nc_iommu_map_id(dev, node, id_in) :
-			      iort_nc_iommu_map(dev, node);
-
-		if (!err)
-			iort_named_component_init(dev, node);
 	}
-
-	return err;
+	return 0;
 }
 
 #else
