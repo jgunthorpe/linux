@@ -8,6 +8,7 @@
 #include <linux/export.h>
 #include <linux/iommu.h>
 #include <linux/iommu-driver.h>
+#include "iommu-priv.h"
 #include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -280,6 +281,23 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 #endif
 }
 EXPORT_SYMBOL(of_iommu_get_resv_regions);
+
+#if IS_ENABLED(CONFIG_TEGRA_IOMMU_SMMU) || IS_ENABLED(CONFIG_ARM_SMMU)
+/*
+ * Newer generations of Tegra SoCs require devices' stream IDs to be directly
+ * programmed into some registers. These are always paired with a Tegra SMMU or
+ * ARM SMMU which provides an implementation of this op.
+ */
+bool tegra_dev_iommu_get_stream_id(struct device *dev, u32 *stream_id)
+{
+	const struct iommu_ops *ops = dev_iommu_ops(dev);
+
+	if (!ops || !ops->tegra_dev_iommu_get_stream_id)
+		return false;
+	return ops->tegra_dev_iommu_get_stream_id(dev, stream_id);
+}
+EXPORT_SYMBOL_GPL(tegra_dev_iommu_get_stream_id);
+#endif
 
 struct parse_info {
 	struct iommu_probe_info *pinf;

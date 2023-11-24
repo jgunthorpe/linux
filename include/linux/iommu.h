@@ -412,6 +412,9 @@ struct iommu_ops {
 	int (*def_domain_type)(struct device *dev);
 	void (*remove_dev_pasid)(struct device *dev, ioasid_t pasid);
 
+	bool (*tegra_dev_iommu_get_stream_id)(struct device *dev,
+					      u32 *stream_id);
+
 	const struct iommu_domain_ops *default_domain_ops;
 	unsigned long pgsize_bitmap;
 	struct module *owner;
@@ -1309,26 +1312,16 @@ static inline void iommu_dma_compose_msi_msg(struct msi_desc *desc, struct msi_m
 
 #endif	/* CONFIG_IOMMU_DMA */
 
-/*
- * Newer generations of Tegra SoCs require devices' stream IDs to be directly programmed into
- * some registers. These are always paired with a Tegra SMMU or ARM SMMU, for which the contents
- * of the struct iommu_fwspec are known. Use this helper to formalize access to these internals.
- */
 #define TEGRA_STREAM_ID_BYPASS 0x7f
 
+#if IS_ENABLED(CONFIG_TEGRA_IOMMU_SMMU) || IS_ENABLED(CONFIG_ARM_SMMU)
+bool tegra_dev_iommu_get_stream_id(struct device *dev, u32 *stream_id);
+#else
 static inline bool tegra_dev_iommu_get_stream_id(struct device *dev, u32 *stream_id)
 {
-#ifdef CONFIG_IOMMU_API
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	if (fwspec && fwspec->num_ids == 1) {
-		*stream_id = fwspec->ids[0] & 0xffff;
-		return true;
-	}
-#endif
-
 	return false;
 }
+#endif
 
 #ifdef CONFIG_IOMMU_SVA
 static inline void mm_pasid_init(struct mm_struct *mm)

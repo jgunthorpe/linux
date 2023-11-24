@@ -989,6 +989,16 @@ static int tegra_smmu_def_domain_type(struct device *dev)
 	return IOMMU_DOMAIN_IDENTITY;
 }
 
+static bool tegra_smmu_get_stream_id(struct device *dev, u32 *stream_id)
+{
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+
+	if (fwspec->num_ids != 1)
+		return false;
+	*stream_id = fwspec->ids[0] & 0xffff;
+	return true;
+}
+
 static const struct iommu_ops tegra_smmu_ops = {
 	.identity_domain = &tegra_smmu_identity_domain,
 	.def_domain_type = &tegra_smmu_def_domain_type,
@@ -996,6 +1006,7 @@ static const struct iommu_ops tegra_smmu_ops = {
 	.probe_device = tegra_smmu_probe_device,
 	.device_group = tegra_smmu_device_group,
 	.of_xlate = tegra_smmu_of_xlate,
+	.tegra_dev_iommu_get_stream_id = tegra_smmu_get_stream_id,
 	.pgsize_bitmap = SZ_4K,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= tegra_smmu_attach_dev,
