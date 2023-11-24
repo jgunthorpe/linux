@@ -45,6 +45,7 @@ struct iommu_probe_info {
 	u32 cached_ids[8];
 	bool defer_setup : 1;
 	bool is_dma_configure : 1;
+	bool is_acpi : 1;
 	bool cached_single_iommu : 1;
 };
 
@@ -187,5 +188,29 @@ static inline int iommu_dummy_of_xlate(struct device *dev,
 {
 	return 0;
 }
+
+#define __iommu_first(a, b)                              \
+	({                                               \
+		struct iommu_device *a_dev = a;          \
+		a_dev != ERR_PTR(-ENODEV) ? a_dev : (b); \
+	})
+
+#if IS_ENABLED(CONFIG_ACPI_VIOT)
+struct iommu_device *
+__iommu_viot_get_single_iommu(struct iommu_probe_info *pinf,
+			      const struct iommu_ops *ops);
+#else
+static inline struct iommu_device *
+__iommu_viot_get_single_iommu(struct iommu_probe_info *pinf,
+			      const struct iommu_ops *ops)
+{
+	return ERR_PTR(-ENODEV);
+}
+#endif
+#define iommu_viot_get_single_iommu(pinf, ops, drv_struct, member)         \
+	container_of_err(                                                  \
+		__iommu_first(__iommu_viot_get_single_iommu(pinf, ops),    \
+			      __iommu_of_get_single_iommu(pinf, ops, -1)), \
+		drv_struct, member)
 
 #endif
