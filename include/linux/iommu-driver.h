@@ -50,6 +50,9 @@ struct iommu_probe_info {
 	bool is_dma_configure : 1;
 	bool is_acpi : 1;
 	bool cached_single_iommu : 1;
+	bool cached_checked_of : 1;
+	bool cached_checked_iort : 1;
+	bool cached_checked_viot : 1;
 };
 
 static inline void iommu_fw_clear_cache(struct iommu_probe_info *pinf)

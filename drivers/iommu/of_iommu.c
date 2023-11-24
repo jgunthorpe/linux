@@ -367,6 +367,7 @@ struct iommu_device *__iommu_of_get_single_iommu(struct iommu_probe_info *pinf,
 		return ERR_PTR(-ENODEV);
 
 	iommu_fw_clear_cache(pinf);
+	pinf->cached_checked_of = true;
 	err = of_iommu_for_each_id(pinf->dev, pinf->of_master_np,
 				   pinf->of_map_id, parse_single_iommu, &info);
 	if (err)
@@ -412,6 +413,7 @@ int iommu_of_xlate(struct iommu_probe_info *pinf, const struct iommu_ops *ops,
 				   .priv = priv };
 
 	pinf->num_ids = 0;
+	pinf->cached_checked_of = true;
 	return of_iommu_for_each_id(pinf->dev, pinf->of_master_np,
 				    pinf->of_map_id, parse_of_xlate, &info);
 }

@@ -61,6 +61,7 @@ __iommu_viot_get_single_iommu(struct iommu_probe_info *pinf,
 		return ERR_PTR(-ENODEV);
 
 	iommu_fw_clear_cache(pinf);
+	pinf->cached_checked_viot = true;
 	err = viot_iommu_for_each_id(pinf->dev, parse_single_iommu, &info);
 	if (err)
 		return ERR_PTR(err);

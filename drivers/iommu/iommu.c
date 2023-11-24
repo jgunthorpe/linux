@@ -518,6 +518,48 @@ static void iommu_deinit_device(struct device *dev)
 	dev_iommu_free(dev);
 }
 
+/*
+ * When being called from dma_configure it is necessary to check if an ENODEV
+ * result indicates that we haven't loaded the driver yet. Since we may not have
+ * any drivers registered yet we have no way to predict what kind of FW
+ * description could need to be parsed. Check the widely used ones we have
+ * common parsers for.
+ *
+ * Drivers that use FW descriptions other than these common ones (AMD, Intel,
+ * etc) must probe the iommus during early boot otherwise they will have
+ * problems with probe ordering.
+ *
+ * The *_get_single_iommu() implementations will generate EPROBE_DEFER if they
+ * detect a FW description with no registered iommu driver which will cause
+ * the driver binding from dma_configure to abort and try later.
+ */
+static int iommu_fw_check_deferred(struct iommu_probe_info *pinf)
+{
+	struct iommu_device *iommu;
+
+	if (!pinf->is_dma_configure)
+		return -ENODEV;
+
+	if (!pinf->cached_checked_of && pinf->of_master_np) {
+		iommu = __iommu_of_get_single_iommu(pinf, NULL, -1);
+		if (iommu != ERR_PTR(-ENODEV))
+			return PTR_ERR(iommu);
+	}
+
+	if (!pinf->cached_checked_iort && pinf->is_acpi) {
+		iommu = __iommu_iort_get_single_iommu(pinf, NULL, NULL);
+		if (iommu != ERR_PTR(-ENODEV))
+			return PTR_ERR(iommu);
+	}
+
+	if (!pinf->cached_checked_viot && pinf->is_acpi) {
+		iommu = __iommu_viot_get_single_iommu(pinf, NULL);
+		if (iommu != ERR_PTR(-ENODEV))
+			return PTR_ERR(iommu);
+	}
+	return -ENODEV;
+}
+
 DEFINE_MUTEX(iommu_probe_device_lock);
 
 static int iommu_find_init_device(struct iommu_probe_info *pinf)
@@ -540,7 +582,7 @@ static int iommu_find_init_device(struct iommu_probe_info *pinf)
 				return ret;
 		}
 	}
-	return -ENODEV;
+	return iommu_fw_check_deferred(pinf);
 }
 
 static int __iommu_probe_device(struct iommu_probe_info *pinf)
@@ -580,10 +622,13 @@ static int __iommu_probe_device(struct iommu_probe_info *pinf)
 	if (dev->iommu_group)
 		return 0;
 
-	if (ops)
+	if (ops) {
 		ret = iommu_init_device(pinf, ops);
-	else
+		if (ret == -ENODEV)
+			return iommu_fw_check_deferred(pinf);
+	} else {
 		ret = iommu_find_init_device(pinf);
+	}
 	if (ret)
 		return ret;
 

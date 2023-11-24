@@ -88,6 +88,7 @@ __iommu_iort_get_single_iommu(struct iommu_probe_info *pinf,
 		params = &unused_params;
 
 	iommu_fw_clear_cache(pinf);
+	pinf->cached_checked_iort = true;
 	err = iort_iommu_for_each_id(pinf->dev, pinf->acpi_map_id, params,
 				     parse_single_iommu, &info);
 	if (err)
