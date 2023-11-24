@@ -5,6 +5,17 @@
 
 #include <linux/acpi.h>
 
+struct viot_iommu {
+	/* Node offset within the table */
+	unsigned int			offset;
+	struct fwnode_handle		*fwnode;
+	struct list_head		list;
+};
+
+typedef int (*viot_for_each_fn)(struct viot_iommu *viommu, u32 epid,
+				void *info);
+int viot_iommu_for_each_id(struct device *dev, viot_for_each_fn fn, void *info);
+
 #ifdef CONFIG_ACPI_VIOT
 void __init acpi_viot_early_init(void);
 void __init acpi_viot_init(void);

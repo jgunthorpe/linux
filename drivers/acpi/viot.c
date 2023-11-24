@@ -25,13 +25,6 @@
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 
-struct viot_iommu {
-	/* Node offset within the table */
-	unsigned int			offset;
-	struct fwnode_handle		*fwnode;
-	struct list_head		list;
-};
-
 struct viot_endpoint {
 	union {
 		/* PCI range */
@@ -304,10 +297,10 @@ void __init acpi_viot_init(void)
 	acpi_put_table(hdr);
 }
 
-static int viot_dev_iommu_init(struct device *dev, struct viot_iommu *viommu,
-			       u32 epid)
+static int viot_dev_iommu_init(struct viot_iommu *viommu, u32 epid, void *info)
 {
 	const struct iommu_ops *ops;
+	struct device *dev = info;
 
 	if (!viommu)
 		return -ENODEV;
@@ -324,11 +317,17 @@ static int viot_dev_iommu_init(struct device *dev, struct viot_iommu *viommu,
 	return acpi_iommu_fwspec_init(dev, epid, viommu->fwnode, ops);
 }
 
-static int viot_pci_dev_iommu_init(struct pci_dev *pdev, u16 dev_id, void *data)
+struct viot_pci_iommu_alias_info {
+	struct device *dev;
+	viot_for_each_fn fn;
+	void *info;
+};
+
+static int __for_each_pci_alias(struct pci_dev *pdev, u16 dev_id, void *data)
 {
 	u32 epid;
 	struct viot_endpoint *ep;
-	struct device *aliased_dev = data;
+	struct viot_pci_iommu_alias_info *info = data;
 	u32 domain_nr = pci_domain_nr(pdev->bus);
 
 	list_for_each_entry(ep, &viot_pci_ranges, list) {
@@ -339,14 +338,14 @@ static int viot_pci_dev_iommu_init(struct pci_dev *pdev, u16 dev_id, void *data)
 			epid = ((domain_nr - ep->segment_start) << 16) +
 				dev_id - ep->bdf_start + ep->endpoint_id;
 
-			return viot_dev_iommu_init(aliased_dev, ep->viommu,
-						   epid);
+			return info->fn(ep->viommu, epid, info->info);
 		}
 	}
 	return -ENODEV;
 }
 
-static int viot_mmio_dev_iommu_init(struct platform_device *pdev)
+static int __for_each_platform(struct platform_device *pdev,
+			       viot_for_each_fn fn, void *info)
 {
 	struct resource *mem;
 	struct viot_endpoint *ep;
@@ -357,9 +356,25 @@ static int viot_mmio_dev_iommu_init(struct platform_device *pdev)
 
 	list_for_each_entry(ep, &viot_mmio_endpoints, list) {
 		if (ep->address == mem->start)
-			return viot_dev_iommu_init(&pdev->dev, ep->viommu,
-						   ep->endpoint_id);
+			return fn(ep->viommu, ep->endpoint_id, info);
 	}
+	return -ENODEV;
+}
+
+int viot_iommu_for_each_id(struct device *dev, viot_for_each_fn fn, void *info)
+{
+	if (dev_is_pci(dev)) {
+		struct viot_pci_iommu_alias_info pci_info = {
+			.dev = dev,
+			.fn = fn,
+			.info = info,
+		};
+		return pci_for_each_dma_alias(to_pci_dev(dev),
+					      __for_each_pci_alias, &pci_info);
+	}
+
+	if (dev_is_platform(dev))
+		return __for_each_platform(to_platform_device(dev), fn, info);
 	return -ENODEV;
 }
 
@@ -371,10 +386,5 @@ static int viot_mmio_dev_iommu_init(struct platform_device *pdev)
  */
 int viot_iommu_configure(struct device *dev)
 {
-	if (dev_is_pci(dev))
-		return pci_for_each_dma_alias(to_pci_dev(dev),
-					      viot_pci_dev_iommu_init, dev);
-	else if (dev_is_platform(dev))
-		return viot_mmio_dev_iommu_init(to_platform_device(dev));
-	return -ENODEV;
+	return viot_iommu_for_each_id(dev, viot_dev_iommu_init, dev);
 }
