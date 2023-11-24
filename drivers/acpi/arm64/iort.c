@@ -946,11 +946,19 @@ static u32 *iort_rmr_alloc_sids(u32 *sids, u32 count, u32 id_start,
 	return new_sids;
 }
 
-static bool iort_rmr_has_dev(struct device *dev, u32 id_start,
+struct iort_resv_args {
+	struct device *dev;
+	struct list_head *head;
+	struct fwnode_handle *iommu_fwnode;
+	const u32 *fw_ids;
+	unsigned int fw_num_ids;
+};
+
+static bool iort_rmr_has_dev(struct iort_resv_args *args, u32 id_start,
 			     u32 id_count)
 {
+	struct device *dev = args->dev;
 	int i;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	/*
 	 * Make sure the kernel has preserved the boot firmware PCIe
@@ -965,18 +973,18 @@ static bool iort_rmr_has_dev(struct device *dev, u32 id_start,
 			return false;
 	}
 
-	for (i = 0; i < fwspec->num_ids; i++) {
-		if (fwspec->ids[i] >= id_start &&
-		    fwspec->ids[i] <= id_start + id_count)
+	for (i = 0; i < args->fw_num_ids; i++) {
+		if (args->fw_ids[i] >= id_start &&
+		    args->fw_ids[i] <= id_start + id_count)
 			return true;
 	}
 
 	return false;
 }
 
-static void iort_node_get_rmr_info(struct acpi_iort_node *node,
-				   struct acpi_iort_node *iommu,
-				   struct device *dev, struct list_head *head)
+static void iort_node_get_rmr_info(struct iort_resv_args *args,
+				   struct acpi_iort_node *node,
+				   struct acpi_iort_node *iommu)
 {
 	struct acpi_iort_node *smmu = NULL;
 	struct acpi_iort_rmr *rmr;
@@ -1013,8 +1021,8 @@ static void iort_node_get_rmr_info(struct acpi_iort_node *node,
 			continue;
 
 		/* If dev is valid, check RMR node corresponds to the dev SID */
-		if (dev && !iort_rmr_has_dev(dev, map->output_base,
-					     map->id_count))
+		if (args->dev &&
+		    !iort_rmr_has_dev(args, map->output_base, map->id_count))
 			continue;
 
 		/* Retrieve SIDs associated with the Node. */
@@ -1029,12 +1037,12 @@ static void iort_node_get_rmr_info(struct acpi_iort_node *node,
 	if (!sids)
 		return;
 
-	iort_get_rmrs(node, smmu, sids, num_sids, head);
+	iort_get_rmrs(node, smmu, sids, num_sids, args->head);
 	kfree(sids);
 }
 
-static void iort_find_rmrs(struct acpi_iort_node *iommu, struct device *dev,
-			   struct list_head *head)
+static void iort_find_rmrs(struct iort_resv_args *args,
+			   struct acpi_iort_node *iommu)
 {
 	struct acpi_table_iort *iort;
 	struct acpi_iort_node *iort_node, *iort_end;
@@ -1057,7 +1065,7 @@ static void iort_find_rmrs(struct acpi_iort_node *iommu, struct device *dev,
 			return;
 
 		if (iort_node->type == ACPI_IORT_NODE_RMR)
-			iort_node_get_rmr_info(iort_node, iommu, dev, head);
+			iort_node_get_rmr_info(args, iort_node, iommu);
 
 		iort_node = ACPI_ADD_PTR(struct acpi_iort_node, iort_node,
 					 iort_node->length);
@@ -1069,25 +1077,23 @@ static void iort_find_rmrs(struct acpi_iort_node *iommu, struct device *dev,
  * If dev is NULL, the function populates all the RMRs associated with the
  * given IOMMU.
  */
-static void iort_iommu_rmr_get_resv_regions(struct fwnode_handle *iommu_fwnode,
-					    struct device *dev,
-					    struct list_head *head)
+static void iort_iommu_rmr_get_resv_regions(struct iort_resv_args *args)
 {
 	struct acpi_iort_node *iommu;
 
-	iommu = iort_get_iort_node(iommu_fwnode);
+	iommu = iort_get_iort_node(args->iommu_fwnode);
 	if (!iommu)
 		return;
 
-	iort_find_rmrs(iommu, dev, head);
+	iort_find_rmrs(args, iommu);
 }
 
-static struct acpi_iort_node *iort_get_msi_resv_iommu(struct device *dev)
+static struct acpi_iort_node *
+iort_get_msi_resv_iommu(struct iort_resv_args *args)
 {
 	struct acpi_iort_node *iommu;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
-	iommu = iort_get_iort_node(fwspec->iommu_fwnode);
+	iommu = iort_get_iort_node(args->iommu_fwnode);
 
 	if (iommu && (iommu->type == ACPI_IORT_NODE_SMMU_V3)) {
 		struct acpi_iort_smmu_v3 *smmu;
@@ -1105,15 +1111,13 @@ static struct acpi_iort_node *iort_get_msi_resv_iommu(struct device *dev)
  * The ITS interrupt translation spaces (ITS_base + SZ_64K, SZ_64K)
  * associated with the device are the HW MSI reserved regions.
  */
-static void iort_iommu_msi_get_resv_regions(struct device *dev,
-					    struct list_head *head)
+static void iort_iommu_msi_get_resv_regions(struct iort_resv_args *args)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct acpi_iort_its_group *its;
 	struct acpi_iort_node *iommu_node, *its_node = NULL;
 	int i;
 
-	iommu_node = iort_get_msi_resv_iommu(dev);
+	iommu_node = iort_get_msi_resv_iommu(args);
 	if (!iommu_node)
 		return;
 
@@ -1126,9 +1130,9 @@ static void iort_iommu_msi_get_resv_regions(struct device *dev,
 	 * a given PCI or named component may map IDs to.
 	 */
 
-	for (i = 0; i < fwspec->num_ids; i++) {
+	for (i = 0; i < args->fw_num_ids; i++) {
 		its_node = iort_node_map_id(iommu_node,
-					fwspec->ids[i],
+					args->fw_ids[i],
 					NULL, IORT_MSI_TYPE);
 		if (its_node)
 			break;
@@ -1151,7 +1155,7 @@ static void iort_iommu_msi_get_resv_regions(struct device *dev,
 							 prot, IOMMU_RESV_MSI,
 							 GFP_KERNEL);
 			if (region)
-				list_add_tail(&region->list, head);
+				list_add_tail(&region->list, args->head);
 		}
 	}
 }
@@ -1160,13 +1164,24 @@ static void iort_iommu_msi_get_resv_regions(struct device *dev,
  * iort_iommu_get_resv_regions - Generic helper to retrieve reserved regions.
  * @dev: Device from iommu_get_resv_regions()
  * @head: Reserved region list from iommu_get_resv_regions()
+ * @iommu_fwnode: fwnode that describes the iommu connection for the device
+ * @fw_ids: Parsed IDs
+ * @fw_num_ids: Length of fw_ids
  */
-void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head)
+void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head,
+				 struct fwnode_handle *iommu_fwnode,
+				 const u32 *fw_ids, unsigned int fw_num_ids)
 {
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct iort_resv_args args = {
+		.dev = dev,
+		.head = head,
+		.iommu_fwnode = iommu_fwnode,
+		.fw_ids = fw_ids,
+		.fw_num_ids = fw_num_ids,
+	};
 
-	iort_iommu_msi_get_resv_regions(dev, head);
-	iort_iommu_rmr_get_resv_regions(fwspec->iommu_fwnode, dev, head);
+	iort_iommu_msi_get_resv_regions(&args);
+	iort_iommu_rmr_get_resv_regions(&args);
 }
 
 /**
@@ -1178,7 +1193,12 @@ void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head)
 void iort_get_rmr_sids(struct fwnode_handle *iommu_fwnode,
 		       struct list_head *head)
 {
-	iort_iommu_rmr_get_resv_regions(iommu_fwnode, NULL, head);
+	struct iort_resv_args args = {
+		.head = head,
+		.iommu_fwnode = iommu_fwnode,
+	};
+
+	iort_iommu_rmr_get_resv_regions(&args);
 }
 EXPORT_SYMBOL_GPL(iort_get_rmr_sids);
 

@@ -468,9 +468,12 @@ void iommu_put_dma_cookie(struct iommu_domain *domain)
  */
 void iommu_dma_get_resv_regions(struct device *dev, struct list_head *list)
 {
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
-	if (!is_of_node(dev_iommu_fwspec_get(dev)->iommu_fwnode))
-		iort_iommu_get_resv_regions(dev, list);
+	if (!is_of_node(fwspec->iommu_fwnode)) {
+		iort_iommu_get_resv_regions(dev, list, fwspec->iommu_fwnode,
+					    fwspec->ids, fwspec->num_ids);
+	}
 
 	if (dev->of_node)
 		of_iommu_get_resv_regions(dev, list);

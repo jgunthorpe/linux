@@ -53,7 +53,9 @@ void iort_put_rmr_sids(struct fwnode_handle *iommu_fwnode,
 /* IOMMU interface */
 int iort_dma_get_ranges(struct device *dev, u64 *size);
 int iort_iommu_configure_id(struct device *dev, const u32 *id_in);
-void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head);
+void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head,
+				 struct fwnode_handle *iommu_fwnode,
+				 const u32 *fw_ids, unsigned int fw_num_ids);
 phys_addr_t acpi_iort_dma_get_max_cpu_address(void);
 #else
 static inline u32 iort_msi_map_id(struct device *dev, u32 id)
@@ -72,7 +74,9 @@ static inline int iort_dma_get_ranges(struct device *dev, u64 *size)
 static inline int iort_iommu_configure_id(struct device *dev, const u32 *id_in)
 { return -ENODEV; }
 static inline
-void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head)
+void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head,
+				 struct fwnode_handle *iommu_fwnode,
+				 const u32 *fw_ids, unsigned int fw_num_ids)
 { }
 
 static inline phys_addr_t acpi_iort_dma_get_max_cpu_address(void)
