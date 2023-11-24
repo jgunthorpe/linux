@@ -3030,6 +3030,9 @@ iommu_device_from_fwnode_pinf(struct iommu_probe_info *pinf,
 	if (!pinf->num_ids)
 		pinf->cached_single_iommu = true;
 
+	if (pinf->is_acpi)
+		pinf->acpi_fwnode = fwnode;
+
 	if (!iommu || iommu->fwnode != fwnode) {
 		iommu = iommu_device_from_fwnode(fwnode);
 		if (!iommu)

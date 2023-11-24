@@ -40,6 +40,7 @@ typedef int (*iort_for_each_fn)(struct acpi_iort_node *iommu, u32 streamid,
 int iort_iommu_for_each_id(struct device *dev, const u32 *id_in,
 			   struct iort_params *params, iort_for_each_fn fn,
 			   void *info);
+struct fwnode_handle *iort_get_fwnode(struct acpi_iort_node *node);
 
 #ifdef CONFIG_ACPI_IORT
 u32 iort_msi_map_id(struct device *dev, u32 id);

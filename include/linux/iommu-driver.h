@@ -19,6 +19,7 @@
 struct of_phandle_args;
 struct fwnode_handle;
 struct iommu_device;
+struct iort_params;
 struct iommu_ops;
 
 /*
@@ -39,7 +40,9 @@ struct iommu_probe_info {
 	struct list_head *deferred_group_list;
 	struct iommu_device *cached_iommu;
 	struct device_node *of_master_np;
+	struct fwnode_handle *acpi_fwnode;
 	const u32 *of_map_id;
+	const u32 *acpi_map_id;
 	int (*get_u32_ids)(struct iommu_probe_info *pinf, u32 *ids);
 	unsigned int num_ids;
 	u32 cached_ids[8];
@@ -62,6 +65,21 @@ iommu_device_from_fwnode_pinf(struct iommu_probe_info *pinf,
 			      const struct iommu_ops *ops,
 			      struct fwnode_handle *fwnode);
 struct iommu_device *iommu_fw_finish_get_single(struct iommu_probe_info *pinf);
+
+/**
+ * iommu_fw_acpi_fwnode - Get an ACPI fwnode_handle
+ * @pinf: The iommu_probe_info
+ *
+ * Return the ACPI version of the fwnode describing the iommu data that is
+ * associated with the device being probed.
+ */
+static inline struct fwnode_handle *
+iommu_fw_acpi_fwnode(struct iommu_probe_info *pinf)
+{
+	if (!pinf->is_acpi)
+		return NULL;
+	return pinf->acpi_fwnode;
+}
 
 typedef int (*iommu_of_xlate_fn)(struct iommu_device *iommu,
 				struct of_phandle_args *args, void *priv);
@@ -213,4 +231,27 @@ __iommu_viot_get_single_iommu(struct iommu_probe_info *pinf,
 			      __iommu_of_get_single_iommu(pinf, ops, -1)), \
 		drv_struct, member)
 
+#if IS_ENABLED(CONFIG_ACPI_IORT)
+struct iommu_device *
+__iommu_iort_get_single_iommu(struct iommu_probe_info *pinf,
+			      const struct iommu_ops *ops,
+			      struct iort_params *params);
+#else
+static inline struct iommu_device *
+__iommu_iort_get_single_iommu(struct iommu_probe_info *pinf,
+			      const struct iommu_ops *ops,
+			      struct iort_params *params)
+{
+	return ERR_PTR(-ENODEV);
+}
+#endif
+#define iommu_iort_get_single_iommu(pinf, ops, params, drv_struct, member)    \
+	({                                                                    \
+		memset(params, 0, sizeof(*(params)));                         \
+		container_of_err(__iommu_first(__iommu_iort_get_single_iommu( \
+						       pinf, ops, params),    \
+					       __iommu_of_get_single_iommu(   \
+						       pinf, ops, -1)),       \
+				 drv_struct, member)                          \
+	})
 #endif
