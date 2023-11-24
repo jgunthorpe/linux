@@ -19,33 +19,6 @@
 #include <linux/slab.h>
 #include <linux/fsl/mc.h>
 
-static int of_iommu_xlate(struct of_phandle_args *iommu_spec, void *info)
-{
-	struct device *dev = info;
-	struct iommu_device *iommu;
-	struct fwnode_handle *fwnode = &iommu_spec->np->fwnode;
-	int ret;
-
-	iommu = iommu_device_from_fwnode(fwnode);
-	if ((iommu && !iommu->ops->of_xlate) ||
-	    !of_device_is_available(iommu_spec->np))
-		return -ENODEV;
-
-	ret = iommu_fwspec_init(dev, &iommu_spec->np->fwnode, iommu->ops);
-	if (ret)
-		return ret;
-	/*
-	 * The otherwise-empty fwspec handily serves to indicate the specific
-	 * IOMMU device we're waiting for, which will be useful if we ever get
-	 * a proper probe-ordering dependency mechanism in future.
-	 */
-	if (!iommu)
-		return driver_deferred_probe_check_state(dev);
-
-	ret = iommu->ops->of_xlate(dev, iommu_spec);
-	return ret;
-}
-
 typedef int (*of_for_each_fn)(struct of_phandle_args *args, void *info);
 
 static int __for_each_map_id(struct device_node *master_np, u32 id,
@@ -143,33 +116,13 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 		.of_map_id = id,
 		.is_dma_configure = true,
 	};
-	struct iommu_fwspec *fwspec;
 	int err;
 
 	if (!master_np)
 		return -ENODEV;
 
-	/* Serialise to make dev->iommu stable under our potential fwspec */
-	mutex_lock(&iommu_probe_device_lock);
-	fwspec = dev_iommu_fwspec_get(dev);
-	if (fwspec) {
-		if (fwspec->ops) {
-			mutex_unlock(&iommu_probe_device_lock);
-			return 0;
-		}
-		/* In the deferred case, start again from scratch */
-		iommu_fwspec_free(dev);
-	}
-
 	if (dev_is_pci(dev))
 		pci_request_acs();
-
-	err = of_iommu_for_each_id(dev, master_np, id, of_iommu_xlate, dev);
-	mutex_unlock(&iommu_probe_device_lock);
-	if (err == -ENODEV || err == -EPROBE_DEFER)
-		return err;
-	if (err)
-		goto err_log;
 
 	err = iommu_probe_device_pinf(&pinf);
 	if (err)

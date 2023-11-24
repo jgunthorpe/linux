@@ -597,7 +597,6 @@ static const struct iommu_ops qcom_iommu_ops = {
 	.probe_device_pinf = qcom_iommu_probe_device,
 	.release_device = qcom_iommu_release_device,
 	.device_group	= generic_device_group,
-	.of_xlate	= iommu_dummy_of_xlate,
 	.pgsize_bitmap	= SZ_4K | SZ_64K | SZ_1M | SZ_16M,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= qcom_iommu_attach_dev,

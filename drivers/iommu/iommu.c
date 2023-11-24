@@ -42,6 +42,7 @@
 static struct kset *iommu_group_kset;
 static DEFINE_IDA(iommu_group_ida);
 static DEFINE_IDA(iommu_global_pasid_ida);
+static DEFINE_MUTEX(iommu_probe_device_lock);
 
 static unsigned int iommu_def_domain_type __read_mostly;
 static bool iommu_dma_strict __read_mostly = IS_ENABLED(CONFIG_IOMMU_DEFAULT_DMA_STRICT);
@@ -371,10 +372,6 @@ static void dev_iommu_free(struct device *dev)
 	struct dev_iommu *param = dev->iommu;
 
 	dev->iommu = NULL;
-	if (param->fwspec) {
-		fwnode_handle_put(param->fwspec->iommu_fwnode);
-		kfree(param->fwspec);
-	}
 	kfree(param);
 }
 
@@ -560,8 +557,6 @@ static int iommu_fw_check_deferred(struct iommu_probe_info *pinf)
 	return -ENODEV;
 }
 
-DEFINE_MUTEX(iommu_probe_device_lock);
-
 static int iommu_find_init_device(struct iommu_probe_info *pinf)
 {
 	const struct iommu_ops *ops = NULL;
@@ -588,26 +583,9 @@ static int iommu_find_init_device(struct iommu_probe_info *pinf)
 static int __iommu_probe_device(struct iommu_probe_info *pinf)
 {
 	struct device *dev = pinf->dev;
-	const struct iommu_ops *ops;
-	struct iommu_fwspec *fwspec;
 	struct iommu_group *group;
 	struct group_device *gdev;
 	int ret;
-
-	/*
-	 * For FDT-based systems and ACPI IORT/VIOT, drivers register IOMMU
-	 * instances with non-NULL fwnodes, and client devices should have been
-	 * identified with a fwspec by this point. Otherwise, we can currently
-	 * assume that only one of Intel, AMD, s390, PAMU or legacy SMMUv2 can
-	 * be present, and that any of their registered instances has suitable
-	 * ops for probing, and thus cheekily co-opt the same mechanism.
-	 */
-	fwspec = dev_iommu_fwspec_get(dev);
-	if (fwspec && fwspec->ops) {
-		ops = fwspec->ops;
-		if (!ops)
-			return -ENODEV;
-	}
 
 	/*
 	 * Serialise to avoid races between IOMMU drivers registering in
@@ -622,13 +600,7 @@ static int __iommu_probe_device(struct iommu_probe_info *pinf)
 	if (dev->iommu_group)
 		return 0;
 
-	if (ops) {
-		ret = iommu_init_device(pinf, ops);
-		if (ret == -ENODEV)
-			return iommu_fw_check_deferred(pinf);
-	} else {
-		ret = iommu_find_init_device(pinf);
-	}
+	ret = iommu_find_init_device(pinf);
 	if (ret)
 		return ret;
 
@@ -3085,7 +3057,8 @@ bool iommu_default_passthrough(void)
 }
 EXPORT_SYMBOL_GPL(iommu_default_passthrough);
 
-struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode)
+static struct iommu_device *
+iommu_device_from_fwnode(struct fwnode_handle *fwnode)
 {
 	struct iommu_device *iommu;
 
@@ -3172,68 +3145,6 @@ int iommu_fw_get_u32_ids(struct iommu_probe_info *pinf, u32 *ids)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(iommu_fw_get_u32_ids);
-
-int iommu_fwspec_init(struct device *dev, struct fwnode_handle *iommu_fwnode,
-		      const struct iommu_ops *ops)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	if (fwspec)
-		return ops == fwspec->ops ? 0 : -EINVAL;
-
-	if (!dev_iommu_get(dev))
-		return -ENOMEM;
-
-	/* Preallocate for the overwhelmingly common case of 1 ID */
-	fwspec = kzalloc(struct_size(fwspec, ids, 1), GFP_KERNEL);
-	if (!fwspec)
-		return -ENOMEM;
-
-	of_node_get(to_of_node(iommu_fwnode));
-	fwspec->iommu_fwnode = iommu_fwnode;
-	fwspec->ops = ops;
-	dev_iommu_fwspec_set(dev, fwspec);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(iommu_fwspec_init);
-
-void iommu_fwspec_free(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	if (fwspec) {
-		fwnode_handle_put(fwspec->iommu_fwnode);
-		kfree(fwspec);
-		dev_iommu_fwspec_set(dev, NULL);
-	}
-}
-EXPORT_SYMBOL_GPL(iommu_fwspec_free);
-
-int iommu_fwspec_add_ids(struct device *dev, u32 *ids, int num_ids)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	int i, new_num;
-
-	if (!fwspec)
-		return -EINVAL;
-
-	new_num = fwspec->num_ids + num_ids;
-	if (new_num > 1) {
-		fwspec = krealloc(fwspec, struct_size(fwspec, ids, new_num),
-				  GFP_KERNEL);
-		if (!fwspec)
-			return -ENOMEM;
-
-		dev_iommu_fwspec_set(dev, fwspec);
-	}
-
-	for (i = 0; i < num_ids; i++)
-		fwspec->ids[fwspec->num_ids + i] = ids[i];
-
-	fwspec->num_ids = new_num;
-	return 0;
-}
-EXPORT_SYMBOL_GPL(iommu_fwspec_add_ids);
 
 /*
  * Per device IOMMU features.

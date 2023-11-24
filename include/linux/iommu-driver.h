@@ -62,7 +62,6 @@ static inline void iommu_fw_clear_cache(struct iommu_probe_info *pinf)
 }
 
 int iommu_probe_device_pinf(struct iommu_probe_info *pinf);
-struct iommu_device *iommu_device_from_fwnode(struct fwnode_handle *fwnode);
 struct iommu_device *
 iommu_device_from_fwnode_pinf(struct iommu_probe_info *pinf,
 			      const struct iommu_ops *ops,
@@ -200,15 +199,6 @@ __iommu_fw_alloc_per_device_ids(struct iommu_probe_info *pinf, void *mem,
 		drv = __iommu_fw_alloc_per_device_ids(                     \
 			pinf, drv, num_ids, &drv->num_ids, drv->ids);      \
 	})
-
-/*
- * Used temporarily to indicate drivers that have moved to the new probe method.
- */
-static inline int iommu_dummy_of_xlate(struct device *dev,
-				       struct of_phandle_args *args)
-{
-	return 0;
-}
 
 #define __iommu_first(a, b)                              \
 	({                                               \

@@ -945,7 +945,6 @@ static const struct iommu_ops tegra_smmu_ops = {
 	.probe_device_pinf = tegra_smmu_probe_device,
 	.release_device = tegra_smmu_release_device,
 	.device_group = tegra_smmu_device_group,
-	.of_xlate = iommu_dummy_of_xlate,
 	.tegra_dev_iommu_get_stream_id = tegra_smmu_get_stream_id,
 	.pgsize_bitmap = SZ_4K,
 	.default_domain_ops = &(const struct iommu_domain_ops) {

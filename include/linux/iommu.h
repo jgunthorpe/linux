@@ -354,7 +354,6 @@ static inline int __iommu_copy_struct_from_user(
  *                  group and attached to the groups domain
  * @device_group: find iommu group for a particular device
  * @get_resv_regions: Request list of reserved regions for a device
- * @of_xlate: add OF master IDs to iommu grouping
  * @is_attach_deferred: Check if domain attach should be deferred from iommu
  *                      driver init to device driver init (default no)
  * @dev_enable/disable_feat: per device entries to enable/disable
@@ -398,7 +397,6 @@ struct iommu_ops {
 	/* Request/Free a list of reserved regions for a device */
 	void (*get_resv_regions)(struct device *dev, struct list_head *list);
 
-	int (*of_xlate)(struct device *dev, struct of_phandle_args *args);
 	bool (*is_attach_deferred)(struct device *dev);
 
 	/* Per device IOMMU features */
@@ -534,7 +532,6 @@ struct iommu_fault_param {
  *
  * @fault_param: IOMMU detected device fault reporting data
  * @iopf_param:	 I/O Page Fault queue and data
- * @fwspec:	 IOMMU fwspec data
  * @iommu_dev:	 IOMMU device this device is linked to
  * @priv:	 IOMMU Driver private data
  * @max_pasids:  number of PASIDs this device can consume
@@ -550,7 +547,6 @@ struct dev_iommu {
 	struct mutex lock;
 	struct iommu_fault_param	*fault_param;
 	struct iopf_device_param	*iopf_param;
-	struct iommu_fwspec		*fwspec;
 	struct iommu_device		*iommu_dev;
 	void				*priv;
 	u32				max_pasids;
@@ -788,54 +784,12 @@ struct iommu_group *fsl_mc_device_group(struct device *dev);
 extern struct iommu_group *generic_single_device_group(struct device *dev);
 
 /**
- * struct iommu_fwspec - per-device IOMMU instance data
- * @ops: ops for this device's IOMMU
- * @iommu_fwnode: firmware handle for this device's IOMMU
- * @flags: IOMMU_FWSPEC_* flags
- * @num_ids: number of associated device IDs
- * @ids: IDs which this device may present to the IOMMU
- *
- * Note that the IDs (and any other information, really) stored in this structure should be
- * considered private to the IOMMU device driver and are not to be used directly by IOMMU
- * consumers.
- */
-struct iommu_fwspec {
-	const struct iommu_ops	*ops;
-	struct fwnode_handle	*iommu_fwnode;
-	u32			flags;
-	unsigned int		num_ids;
-	u32			ids[];
-};
-
-/* ATS is supported */
-#define IOMMU_FWSPEC_PCI_RC_ATS			(1 << 0)
-
-/**
  * struct iommu_sva - handle to a device-mm bond
  */
 struct iommu_sva {
 	struct device			*dev;
 	struct iommu_domain		*domain;
 };
-
-int iommu_fwspec_init(struct device *dev, struct fwnode_handle *iommu_fwnode,
-		      const struct iommu_ops *ops);
-void iommu_fwspec_free(struct device *dev);
-int iommu_fwspec_add_ids(struct device *dev, u32 *ids, int num_ids);
-
-static inline struct iommu_fwspec *dev_iommu_fwspec_get(struct device *dev)
-{
-	if (dev->iommu)
-		return dev->iommu->fwspec;
-	else
-		return NULL;
-}
-
-static inline void dev_iommu_fwspec_set(struct device *dev,
-					struct iommu_fwspec *fwspec)
-{
-	dev->iommu->fwspec = fwspec;
-}
 
 static inline void *dev_iommu_priv_get(struct device *dev)
 {
@@ -847,7 +801,6 @@ static inline void *dev_iommu_priv_get(struct device *dev)
 
 void dev_iommu_priv_set(struct device *dev, void *priv);
 
-extern struct mutex iommu_probe_device_lock;
 int iommu_probe_device(struct device *dev);
 
 int iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features f);
@@ -878,7 +831,6 @@ void iommu_free_global_pasid(ioasid_t pasid);
 
 struct iommu_ops {};
 struct iommu_group {};
-struct iommu_fwspec {};
 struct iommu_device {};
 struct iommu_fault_param {};
 struct iommu_iotlb_gather {};
@@ -1153,23 +1105,6 @@ static inline void iommu_device_unlink(struct device *dev, struct device *link)
 {
 }
 
-static inline int iommu_fwspec_init(struct device *dev,
-				    struct fwnode_handle *iommu_fwnode,
-				    const struct iommu_ops *ops)
-{
-	return -ENODEV;
-}
-
-static inline void iommu_fwspec_free(struct device *dev)
-{
-}
-
-static inline int iommu_fwspec_add_ids(struct device *dev, u32 *ids,
-				       int num_ids)
-{
-	return -ENODEV;
-}
-
 static inline int
 iommu_dev_enable_feature(struct device *dev, enum iommu_dev_features feat)
 {
@@ -1180,11 +1115,6 @@ static inline int
 iommu_dev_disable_feature(struct device *dev, enum iommu_dev_features feat)
 {
 	return -ENODEV;
-}
-
-static inline struct iommu_fwspec *dev_iommu_fwspec_get(struct device *dev)
-{
-	return NULL;
 }
 
 static inline int iommu_device_use_default_domain(struct device *dev)

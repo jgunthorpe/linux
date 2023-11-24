@@ -23,7 +23,6 @@
 #include <linux/memremap.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
-#include <linux/iommu-driver.h>
 #include <linux/pci.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock.h>
@@ -455,29 +454,6 @@ void iommu_put_dma_cookie(struct iommu_domain *domain)
 	kfree(cookie);
 	domain->iova_cookie = NULL;
 }
-
-/**
- * iommu_dma_get_resv_regions - Reserved region driver helper
- * @dev: Device from iommu_get_resv_regions()
- * @list: Reserved region list from iommu_get_resv_regions()
- *
- * IOMMU drivers can use this to implement their .get_resv_regions callback
- * for general non-IOMMU-specific reservations. Currently, this covers GICv3
- * ITS region reservation on ACPI based ARM platforms that may require HW MSI
- * reservation.
- */
-void iommu_dma_get_resv_regions(struct device *dev, struct list_head *list)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	if (!is_of_node(fwspec->iommu_fwnode)) {
-		iort_iommu_get_resv_regions(dev, list, fwspec->iommu_fwnode,
-					    fwspec->ids, fwspec->num_ids);
-	}
-
-	of_iommu_get_resv_regions(dev, list);
-}
-EXPORT_SYMBOL(iommu_dma_get_resv_regions);
 
 static int cookie_init_hw_msi_region(struct iommu_dma_cookie *cookie,
 		phys_addr_t start, phys_addr_t end)

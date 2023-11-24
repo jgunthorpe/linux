@@ -796,8 +796,6 @@ void acpi_configure_pmsi_domain(struct device *dev)
 }
 
 #ifdef CONFIG_IOMMU_API
-#include <linux/iommu-driver.h>
-
 static void iort_rmr_free(struct device *dev,
 			  struct iommu_resv_region *region)
 {
@@ -1218,55 +1216,12 @@ void iort_put_rmr_sids(struct fwnode_handle *iommu_fwnode,
 }
 EXPORT_SYMBOL_GPL(iort_put_rmr_sids);
 
-static inline bool iort_iommu_driver_enabled(u8 type)
-{
-	switch (type) {
-	case ACPI_IORT_NODE_SMMU_V3:
-		return IS_ENABLED(CONFIG_ARM_SMMU_V3);
-	case ACPI_IORT_NODE_SMMU:
-		return IS_ENABLED(CONFIG_ARM_SMMU);
-	default:
-		pr_warn("IORT node type %u does not describe an SMMU\n", type);
-		return false;
-	}
-}
-
 static bool iort_pci_rc_supports_ats(struct acpi_iort_node *node)
 {
 	struct acpi_iort_root_complex *pci_rc;
 
 	pci_rc = (struct acpi_iort_root_complex *)node->node_data;
 	return pci_rc->ats_attribute & ACPI_IORT_ATS_SUPPORTED;
-}
-
-static int iort_iommu_xlate(struct acpi_iort_node *node, u32 streamid,
-			    void *info)
-{
-	struct device *dev = info;
-	struct iommu_device *iommu;
-	struct fwnode_handle *iort_fwnode;
-
-	if (!node)
-		return -ENODEV;
-
-	iort_fwnode = iort_get_fwnode(node);
-	if (!iort_fwnode)
-		return -ENODEV;
-
-	/*
-	 * If the iommu look-up fails, this means that either
-	 * the SMMU drivers have not been probed yet or that
-	 * the SMMU drivers are not built in the kernel;
-	 * Depending on whether the SMMU drivers are built-in
-	 * in the kernel or not, defer the IOMMU configuration
-	 * or just abort it.
-	 */
-	iommu = iommu_device_from_fwnode(iort_fwnode);
-	if (!iommu)
-		return iort_iommu_driver_enabled(node->type) ?
-		       -EPROBE_DEFER : -ENODEV;
-
-	return acpi_iommu_fwspec_init(dev, streamid, iort_fwnode, iommu->ops);
 }
 
 struct iort_pci_alias_info {
@@ -1380,40 +1335,9 @@ int iort_iommu_for_each_id(struct device *dev, const u32 *id_in,
 	iort_named_component_init(dev, node);
 	return 0;
 }
-
-/**
- * iort_iommu_configure_id - Set-up IOMMU configuration for a device.
- *
- * @dev: device to configure
- * @id_in: optional input id const value pointer
- *
- * Returns: 0 on success, <0 on failure
- */
-int iort_iommu_configure_id(struct device *dev, const u32 *id_in)
-{
-	struct iort_params params;
-	int err;
-
-	err = iort_iommu_for_each_id(dev, id_in, &params, &iort_iommu_xlate,
-				     dev);
-	if (err)
-		return err;
-
-	if (params.pci_rc_ats) {
-		struct iommu_fwspec *fwspec;
-
-		fwspec = dev_iommu_fwspec_get(dev);
-		if (fwspec)
-			fwspec->flags |= IOMMU_FWSPEC_PCI_RC_ATS;
-	}
-	return 0;
-}
-
 #else
 void iort_iommu_get_resv_regions(struct device *dev, struct list_head *head)
 { }
-int iort_iommu_configure_id(struct device *dev, const u32 *input_id)
-{ return -ENODEV; }
 #endif
 
 static int nc_dma_get_range(struct device *dev, u64 *size)

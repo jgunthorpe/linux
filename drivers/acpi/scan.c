@@ -1545,29 +1545,9 @@ int acpi_dma_get_range(struct device *dev, const struct bus_dma_region **map)
 #ifdef CONFIG_IOMMU_API
 #include <linux/iommu-driver.h>
 
-int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode,
-			   const struct iommu_ops *ops)
-{
-	int ret = iommu_fwspec_init(dev, fwnode, ops);
-
-	if (!ret)
-		ret = iommu_fwspec_add_ids(dev, &id, 1);
-
-	return ret;
-}
-
-static inline const struct iommu_ops *acpi_iommu_fwspec_ops(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	return fwspec ? fwspec->ops : NULL;
-}
-
 static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 {
 	int err;
-	const struct iommu_ops *ops;
 	struct iommu_probe_info pinf = {
 		.dev = dev,
 		.is_dma_configure = true,
@@ -1575,29 +1555,14 @@ static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 		.is_acpi = true,
 	};
 
-	/* Serialise to make dev->iommu stable under our potential fwspec */
-	mutex_lock(&iommu_probe_device_lock);
-	/*
-	 * If we already translated the fwspec there is nothing left to do,
-	 * return the iommu_ops.
-	 */
-	ops = acpi_iommu_fwspec_ops(dev);
-	if (ops) {
-		mutex_unlock(&iommu_probe_device_lock);
-		return 0;
-	}
-
-	err = iort_iommu_configure_id(dev, id_in);
-	if (err && err != -EPROBE_DEFER)
-		err = viot_iommu_configure(dev);
-	mutex_unlock(&iommu_probe_device_lock);
-
 	/*
 	 * If we have reason to believe the IOMMU driver missed the initial
 	 * iommu_probe_device() call for dev, replay it to get things in order.
 	 */
-	if (!err && dev->bus)
-		err = iommu_probe_device_pinf(&pinf);
+	if (!dev->bus)
+		return 0;
+
+	err = iommu_probe_device_pinf(&pinf);
 
 	/* Ignore all other errors apart from EPROBE_DEFER */
 	if (err == -EPROBE_DEFER) {
@@ -1606,19 +1571,10 @@ static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 		dev_dbg(dev, "Adding to IOMMU failed: %d\n", err);
 		return -ENODEV;
 	}
-	if (!acpi_iommu_fwspec_ops(dev))
-		return -ENODEV;
 	return 0;
 }
 
 #else /* !CONFIG_IOMMU_API */
-
-int acpi_iommu_fwspec_init(struct device *dev, u32 id,
-			   struct fwnode_handle *fwnode,
-			   const struct iommu_ops *ops)
-{
-	return -ENODEV;
-}
 
 static int acpi_iommu_configure_id(struct device *dev, const u32 *id_in)
 {

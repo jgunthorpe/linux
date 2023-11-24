@@ -404,7 +404,6 @@ static const struct iommu_ops sprd_iommu_ops = {
 	.domain_alloc_paging = sprd_iommu_domain_alloc_paging,
 	.probe_device_pinf = sprd_iommu_probe_device,
 	.device_group	= generic_single_device_group,
-	.of_xlate = iommu_dummy_of_xlate,
 	.pgsize_bitmap	= SPRD_IOMMU_PAGE_SIZE,
 	.owner		= THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
