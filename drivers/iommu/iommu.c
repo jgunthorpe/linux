@@ -241,6 +241,26 @@ static int remove_iommu_group(struct device *dev, void *data)
 	return 0;
 }
 
+static void iommu_device_add(struct iommu_device *iommu)
+{
+	struct iommu_device *cur;
+
+	/*
+	 * Keep the iommu_device_list grouped by ops so that
+	 * iommu_find_init_device() works efficiently.
+	 */
+	mutex_lock(&iommu_probe_device_lock);
+	list_for_each_entry(cur, &iommu_device_list, list) {
+		if (cur->ops == iommu->ops) {
+			list_add(&iommu->list, &cur->list);
+			goto out;
+		}
+	}
+	list_add(&iommu->list, &iommu_device_list);
+out:
+	mutex_unlock(&iommu_probe_device_lock);
+}
+
 /**
  * iommu_device_register() - Register an IOMMU hardware instance
  * @iommu: IOMMU handle for the instance
@@ -262,9 +282,7 @@ int iommu_device_register(struct iommu_device *iommu,
 	if (hwdev)
 		iommu->fwnode = dev_fwnode(hwdev);
 
-	mutex_lock(&iommu_probe_device_lock);
-	list_add_tail(&iommu->list, &iommu_device_list);
-	mutex_unlock(&iommu_probe_device_lock);
+	iommu_device_add(iommu);
 
 	for (int i = 0; i < ARRAY_SIZE(iommu_buses) && !err; i++)
 		err = bus_iommu_probe(iommu_buses[i]);
@@ -502,6 +520,29 @@ static void iommu_deinit_device(struct device *dev)
 
 DEFINE_MUTEX(iommu_probe_device_lock);
 
+static int iommu_find_init_device(struct iommu_probe_info *pinf)
+{
+	const struct iommu_ops *ops = NULL;
+	struct iommu_device *iommu;
+	int ret;
+
+	lockdep_assert_held(&iommu_probe_device_lock);
+
+	/*
+	 * Each unique ops gets a chance to claim the device, -ENODEV means the
+	 * driver does not support the device.
+	 */
+	list_for_each_entry(iommu, &iommu_device_list, list) {
+		if (iommu->ops != ops) {
+			ops = iommu->ops;
+			ret = iommu_init_device(pinf, iommu->ops);
+			if (ret != -ENODEV)
+				return ret;
+		}
+	}
+	return -ENODEV;
+}
+
 static int __iommu_probe_device(struct iommu_probe_info *pinf)
 {
 	struct device *dev = pinf->dev;
@@ -524,13 +565,6 @@ static int __iommu_probe_device(struct iommu_probe_info *pinf)
 		ops = fwspec->ops;
 		if (!ops)
 			return -ENODEV;
-	} else {
-		struct iommu_device *iommu;
-
-		iommu = iommu_device_from_fwnode(NULL);
-		if (!iommu)
-			return -ENODEV;
-		ops = iommu->ops;
 	}
 
 	/*
@@ -546,7 +580,10 @@ static int __iommu_probe_device(struct iommu_probe_info *pinf)
 	if (dev->iommu_group)
 		return 0;
 
-	ret = iommu_init_device(pinf, ops);
+	if (ops)
+		ret = iommu_init_device(pinf, ops);
+	else
+		ret = iommu_find_init_device(pinf);
 	if (ret)
 		return ret;
 
