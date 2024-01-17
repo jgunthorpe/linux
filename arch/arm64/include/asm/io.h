@@ -136,6 +136,124 @@ extern void __memset_io(volatile void __iomem *, int, size_t);
 #define memcpy_toio(c,a,l)	__memcpy_toio((c),(a),(l))
 
 /*
+ * The ARM64 iowrite implementation is intended to support drivers that want to
+ * use write combining. For instance PCI drivers using write combining with a 64
+ * byte __iowrite64_copy() expect to get a 64 byte MemWr TLP on the PCIe bus.
+ *
+ * Newer ARM core have sensitive write combining buffers, it is important that
+ * the stores be contiguous blocks of store pair instructions. Normal memcpy
+ * approaches have a very low chance to generate write combining.
+ *
+ * Since this is the only API on ARM64 that should be used with write combining
+ * it also integrates the DGH hint which is supposed to lower the latency to
+ * emit the large TLP from the CPU.
+ */
+
+static inline void __const_memcpy_toio_aligned32(volatile u32 __iomem *to,
+						 const u32 *from, size_t count)
+{
+	switch (count) {
+	case 8:
+		asm volatile("stp %w0, %w1, [%8, #8 * 0]\n"
+			     "stp %w2, %w3, [%8, #8 * 1]\n"
+			     "stp %w4, %w5, [%8, #8 * 2]\n"
+			     "stp %w6, %w7, [%8, #8 * 3]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "rZ"(from[2]),
+			       "rZ"(from[3]), "rZ"(from[4]), "rZ"(from[5]),
+			       "rZ"(from[6]), "rZ"(from[7]), "r"(to));
+		break;
+	case 4:
+		asm volatile("stp %w0, %w1, [%4, #8 * 0]\n"
+			     "stp %w2, %w3, [%4, #8 * 1]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "rZ"(from[2]),
+			       "rZ"(from[3]), "r"(to));
+		break;
+	case 2:
+		asm volatile("stp %w0, %w1, [%2, #8 * 0]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "r"(to));
+		break;
+	case 1:
+		__raw_writel(*from, to);
+		break;
+	default:
+		BUILD_BUG();
+	}
+}
+
+void __iowrite32_copy_full(void __iomem *to, const void *from, size_t count);
+
+static inline void __const_iowrite32_copy(void __iomem *to, const void *from,
+					  size_t count)
+{
+	if (count == 8 || count == 4 || count == 2 || count == 1) {
+		__const_memcpy_toio_aligned32(to, from, count);
+		dgh();
+	} else {
+		__iowrite32_copy_full(to, from, count);
+	}
+}
+
+#define __iowrite32_copy(to, from, count)                  \
+	(__builtin_constant_p(count) ?                     \
+		 __const_iowrite32_copy(to, from, count) : \
+		 __iowrite32_copy_full(to, from, count))
+
+static inline void __const_memcpy_toio_aligned64(volatile u64 __iomem *to,
+						 const u64 *from, size_t count)
+{
+	switch (count) {
+	case 8:
+		asm volatile("stp %x0, %x1, [%8, #16 * 0]\n"
+			     "stp %x2, %x3, [%8, #16 * 1]\n"
+			     "stp %x4, %x5, [%8, #16 * 2]\n"
+			     "stp %x6, %x7, [%8, #16 * 3]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "rZ"(from[2]),
+			       "rZ"(from[3]), "rZ"(from[4]), "rZ"(from[5]),
+			       "rZ"(from[6]), "rZ"(from[7]), "r"(to));
+		break;
+	case 4:
+		asm volatile("stp %x0, %x1, [%4, #16 * 0]\n"
+			     "stp %x2, %x3, [%4, #16 * 1]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "rZ"(from[2]),
+			       "rZ"(from[3]), "r"(to));
+		break;
+	case 2:
+		asm volatile("stp %x0, %x1, [%2, #16 * 0]\n"
+			     :
+			     : "rZ"(from[0]), "rZ"(from[1]), "r"(to));
+		break;
+	case 1:
+		__raw_writeq(*from, to);
+		break;
+	default:
+		BUILD_BUG();
+	}
+}
+
+void __iowrite64_copy_full(void __iomem *to, const void *from, size_t count);
+
+static inline void __const_iowrite64_copy(void __iomem *to, const void *from,
+					  size_t count)
+{
+	if (count == 8 || count == 4 || count == 2 || count == 1) {
+		__const_memcpy_toio_aligned64(to, from, count);
+		dgh();
+	} else {
+		__iowrite64_copy_full(to, from, count);
+	}
+}
+
+#define __iowrite64_copy(to, from, count)                  \
+	(__builtin_constant_p(count) ?                     \
+		 __const_iowrite64_copy(to, from, count) : \
+		 __iowrite64_copy_full(to, from, count))
+
+/*
  * I/O memory mapping functions.
  */
 
