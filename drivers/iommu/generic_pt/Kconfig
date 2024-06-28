@@ -27,4 +27,11 @@ config IOMMU_PT
 	default n
 	help
 	  Generic library for building IOMMU page tables
+
+if IOMMU_PT
+config IOMMU_PT_KUNIT_TEST
+	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+endif
 endif

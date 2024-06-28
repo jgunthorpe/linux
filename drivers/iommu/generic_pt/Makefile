@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
+obj-y += fmt/
+
 iommu_pt-y := \
 	pt_alloc.o
 
