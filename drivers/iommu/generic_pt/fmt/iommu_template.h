@@ -45,4 +45,7 @@
  */
 #include "../kunit_generic_pt.h"
 #include "../kunit_iommu_pt.h"
+#ifdef pt_iommu_alloc_io_pgtable
+#include "../kunit_iommu_cmp.h"
+#endif
 #endif
