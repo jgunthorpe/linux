@@ -279,6 +279,7 @@ static inline void pt_top_set_level(struct pt_common *common,
 	pt_top_set(common, NULL, top_level);
 }
 
+/* FIXME remove me */
 static inline unsigned int pt_top_get_level(const struct pt_common *common)
 {
 	return READ_ONCE(common->top_of_table) % (1 << PT_TOP_LEVEL_BITS);
