@@ -19,4 +19,12 @@ config DEBUG_GENERIC_PT
 	  kernels.
 
 	  The kunit tests require this to be enabled to get full coverage.
+
+config IOMMU_PT
+	tristate "IOMMU Page Tables"
+	depends on IOMMU_SUPPORT
+	depends on GENERIC_PT
+	default n
+	help
+	  Generic library for building IOMMU page tables
 endif
