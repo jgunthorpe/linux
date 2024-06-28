@@ -127,6 +127,7 @@ config IOMMU_PT_X86_64
 
 config IOMMU_PT_KUNIT_TEST
 	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
+	select IOMMU_IO_PGTABLE
 	depends on KUNIT
 	depends on IOMMU_PT_AMDV1 || !IOMMU_PT_AMDV1
 	depends on IOMMU_PT_ARMV7S || !IOMMU_PT_ARMV7S
