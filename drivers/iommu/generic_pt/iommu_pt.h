@@ -14,6 +14,63 @@
 
 #include <linux/iommu.h>
 #include <linux/export.h>
+#include <linux/cleanup.h>
+#include <linux/dma-mapping.h>
+
+/*
+ * Keep track of what table items are being written too during mutation
+ * operations. When the HW is DMA Incoherent these have to be cache flushed
+ * before they are visible. The write_log batches flushes together and uses a C
+ * cleanup to make sure the table memory is flushed before walking concludes
+ * with that table.
+ *
+ * There are two notable cases that need special flushing:
+ *  1) Installing a table entry requires the new table memory (and all of it's
+ *     children) are flushed.
+ *  2) Installing a shared table requires that other threads using the shared
+ *     table ensure it is flushed before they attempt to use it.
+ */
+struct iommu_write_log {
+	struct pt_range *range;
+	struct pt_table_p *table;
+	unsigned int start_idx;
+	unsigned int last_idx;
+};
+
+static void record_write(struct iommu_write_log *wlog,
+			 const struct pt_state *pts,
+			 unsigned int index_count_lg2)
+{
+	if (!(PT_SUPPORTED_FEATURES & BIT(PT_FEAT_DMA_INCOHERENT)))
+		return;
+
+	if (!wlog->table) {
+		wlog->table = pts->table;
+		wlog->start_idx = pts->index;
+	}
+	wlog->last_idx =
+		max(wlog->last_idx,
+		    log2_set_mod(pts->index + log2_to_int(index_count_lg2), 0,
+				 index_count_lg2));
+}
+
+static void done_writes(struct iommu_write_log *wlog)
+{
+	struct pt_iommu *iommu_table = iommu_from_common(wlog->range->common);
+	dma_addr_t dma;
+
+	if (!pt_feature(wlog->range->common, PT_FEAT_DMA_INCOHERENT) ||
+	    !wlog->table)
+		return;
+
+	dma = virt_to_phys(wlog->table);
+	dma_sync_single_for_device(iommu_table->iommu_device,
+				   dma + wlog->start_idx * PT_ENTRY_WORD_SIZE,
+				   (wlog->last_idx - wlog->start_idx + 1) *
+					   PT_ENTRY_WORD_SIZE,
+				   DMA_TO_DEVICE);
+	wlog->table = NULL;
+}
 
 static int make_range(struct pt_common *common, struct pt_range *range,
 		      dma_addr_t iova, dma_addr_t len)
@@ -102,6 +159,94 @@ static int __collect_tables(struct pt_range *range, void *arg,
 	return 0;
 }
 
+struct pt_unmap_args {
+	struct pt_radix_list_head free_list;
+	pt_vaddr_t unmapped;
+};
+
+static int __unmap_range(struct pt_range *range, void *arg, unsigned int level,
+			 struct pt_table_p *table)
+{
+	struct iommu_write_log wlog __cleanup(done_writes) = { .range = range };
+	struct pt_state pts = pt_init(range, level, table);
+	struct pt_unmap_args *unmap = arg;
+	int ret;
+
+	for_each_pt_level_item(&pts) {
+		switch (pts.type) {
+		case PT_ENTRY_TABLE: {
+			bool fully_covered = pt_entry_fully_covered(
+				&pts, pt_table_item_lg2sz(&pts));
+
+			ret = pt_descend(&pts, arg, __unmap_range);
+			if (ret)
+				return ret;
+
+			/*
+			 * If the unmapping range fully covers the table then we
+			 * can free it as well. The clear is delayed until we
+			 * succeed in clearing the lower table levels.
+			 */
+			if (fully_covered) {
+				pt_radix_add_list(&unmap->free_list,
+						  pts.table_lower);
+				record_write(&wlog, &pts, ilog2(1));
+				pt_clear_entry(&pts, ilog2(1));
+			}
+			break;
+		}
+		case PT_ENTRY_EMPTY:
+			return -EFAULT;
+		case PT_ENTRY_OA: {
+			unsigned int oasz_lg2 = pt_entry_oa_lg2sz(&pts);
+
+			/*
+			 * The IOMMU API does not require drivers to support
+			 * unmapping parts of large pages. Long ago VFIO would
+			 * try to split maps but the current version never does.
+			 *
+			 * Instead when unmap reaches a partial unmap of the
+			 * start of a large IOPTE it should remove the entire
+			 * IOPTE and return that size to the caller.
+			 */
+			if (log2_mod(range->va, oasz_lg2))
+				return -EINVAL;
+
+			unmap->unmapped += log2_to_int(oasz_lg2);
+			record_write(&wlog, &pts,
+				     pt_entry_num_contig_lg2(&pts));
+			pt_clear_entry(&pts, pt_entry_num_contig_lg2(&pts));
+			break;
+		}
+		}
+	}
+	return 0;
+}
+
+static size_t NS(unmap_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
+			      dma_addr_t len,
+			      struct iommu_iotlb_gather *iotlb_gather)
+{
+	struct pt_common *common = common_from_iommu(iommu_table);
+	struct pt_unmap_args unmap = { .free_list = PT_RADIX_LIST_INIT };
+	struct pt_range range;
+	int ret;
+
+	ret = make_range(common_from_iommu(iommu_table), &range, iova, len);
+	if (ret)
+		return 0;
+
+	pt_walk_range(&range, __unmap_range, &unmap);
+
+	if (pt_feature(common, PT_FEAT_DMA_INCOHERENT))
+		pt_radix_stop_incoherent_list(&unmap.free_list,
+					      iommu_table->iommu_device);
+
+	/* FIXME into gather */
+	pt_radix_free_list_rcu(&unmap.free_list);
+	return unmap.unmapped;
+}
+
 static void NS(get_info)(struct pt_iommu *iommu_table,
 			 struct pt_iommu_info *info)
 {
@@ -144,6 +289,7 @@ static void NS(deinit)(struct pt_iommu *iommu_table)
 }
 
 static const struct pt_iommu_ops NS(ops) = {
+	.unmap_range = NS(unmap_range),
 	.iova_to_phys = NS(iova_to_phys),
 	.get_info = NS(get_info),
 	.deinit = NS(deinit),

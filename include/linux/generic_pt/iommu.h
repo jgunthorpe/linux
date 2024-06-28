@@ -8,6 +8,7 @@
 #include <linux/generic_pt/common.h>
 #include <linux/mm_types.h>
 
+struct iommu_iotlb_gather;
 struct pt_iommu_ops;
 struct pt_iommu_flush_ops;
 
@@ -68,6 +69,29 @@ struct pt_iommu_info {
 };
 
 struct pt_iommu_ops {
+	/**
+	 * unmap_range() - Make a range of IOVA empty/not present
+	 * @iommu_table: Table to manipulate
+	 * @iova: IO virtual address to start
+	 * @len: Length of the range starting from @iova
+	 * @gather: Gather struct that must be flushed on return
+	 *
+	 * unmap_range() will remove translation created by map_range(). It
+	 * cannot subdivide a mapping created by map_range(), so it should be
+	 * called with IOVA ranges that match those passed to map_pages. The
+	 * IOVA range can aggregate contiguous map_range() calls so long as no
+	 * individual range is split.
+	 *
+	 * Context: The caller must hold a write range lock that includes
+	 * the whole range.
+	 *
+	 * Returns: Number of bytes of VA unmapped. iova + res will be the
+	 * point unmapping stopped.
+	 */
+	size_t (*unmap_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
+			      dma_addr_t len,
+			      struct iommu_iotlb_gather *iotlb_gather);
+
 	/**
 	 * iova_to_phys() - Return the output address for the given IOVA
 	 * @iommu_table: Table to query
