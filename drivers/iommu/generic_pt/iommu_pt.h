@@ -159,6 +159,411 @@ static int __collect_tables(struct pt_range *range, void *arg,
 	return 0;
 }
 
+/* Allocate a table, the empty table will be ready to be installed. */
+static inline struct pt_table_p *_table_alloc(struct pt_common *common,
+					      size_t lg2sz, gfp_t gfp,
+					      bool no_incoherent_start)
+{
+	struct pt_iommu *iommu_table = iommu_from_common(common);
+	struct pt_table_p *table_mem;
+
+	table_mem = pt_radix_alloc(common, iommu_table->nid, lg2sz, gfp);
+	if (pt_feature(common, PT_FEAT_DMA_INCOHERENT) &&
+	    !no_incoherent_start) {
+		int ret = pt_radix_start_incoherent(
+			table_mem, iommu_table->iommu_device, true);
+		if (ret) {
+			pt_radix_free(table_mem);
+			return ERR_PTR(ret);
+		}
+	}
+	return table_mem;
+}
+
+static inline struct pt_table_p *table_alloc_top(struct pt_common *common,
+						 uintptr_t top_of_table,
+						 gfp_t gfp,
+						 bool no_incoherent_start)
+{
+	/*
+	 * FIXME top is special it doesn't need RCU or the list, and it might be
+	 * small. For now just waste a page on it regardless.
+	 */
+	return _table_alloc(common,
+			    max(pt_top_memsize_lg2(common, top_of_table),
+				PAGE_SHIFT),
+			    gfp, no_incoherent_start);
+}
+
+/* Allocate an interior table */
+static inline struct pt_table_p *table_alloc(struct pt_state *pts, gfp_t gfp,
+					     bool no_incoherent_start)
+{
+	return _table_alloc(pts->range->common,
+			    pt_num_items_lg2(pts) + ilog2(PT_ENTRY_WORD_SIZE),
+			    gfp, no_incoherent_start);
+}
+
+static inline int pt_iommu_new_table(struct pt_state *pts,
+				     struct pt_write_attrs *attrs,
+				     bool no_incoherent_start)
+{
+	struct pt_table_p *table_mem;
+	phys_addr_t phys;
+
+	/* Given PA/VA/length can't be represented */
+	if (unlikely(!pt_can_have_table(pts)))
+		return -ENXIO;
+
+	table_mem = table_alloc(pts, attrs->gfp, no_incoherent_start);
+	if (IS_ERR(table_mem))
+		return PTR_ERR(table_mem);
+
+	phys = virt_to_phys(table_mem);
+	if (!pt_install_table(pts, phys, attrs)) {
+		pt_radix_free(table_mem);
+		return -EAGAIN;
+	}
+
+	if (IS_ENABLED(CONFIG_DEBUG_GENERIC_PT)) {
+		/*
+		 * The underlying table can't store the physical table address.
+		 * This happens when kunit testing tables outside their normal
+		 * environment where a CPU might be limited.
+		 */
+		pt_load_single_entry(pts);
+		if (PT_WARN_ON(pt_table_pa(pts) != phys)) {
+			pt_clear_entry(pts, ilog2(1));
+			pt_radix_free(table_mem);
+			return -EINVAL;
+		}
+	}
+
+	pts->table_lower = table_mem;
+	return 0;
+}
+
+struct pt_iommu_map_args {
+	struct pt_radix_list_head free_list;
+	struct pt_write_attrs attrs;
+	pt_oaddr_t oa;
+};
+
+/*
+ * Check that the items in a contiguous block are all empty. This will
+ * recursively check any tables in the block to validate they are empty and
+ * accumulate them on the free list. Makes no change on failure. On success
+ * caller must fill the items.
+ */
+static int pt_iommu_clear_contig(const struct pt_state *start_pts,
+				 struct pt_iommu_map_args *map,
+				 struct iommu_write_log *wlog,
+				 unsigned int pgsize_lg2)
+{
+	struct pt_range range = *start_pts->range;
+	struct pt_state pts =
+		pt_init(&range, start_pts->level, start_pts->table);
+	struct pt_iommu_collect_args collect = {
+		.free_list = PT_RADIX_LIST_INIT,
+	};
+	int ret;
+
+	pts.index = start_pts->index;
+	pts.table_lower = start_pts->table_lower;
+	pts.end_index = start_pts->index +
+			log2_to_int(pgsize_lg2 - pt_table_item_lg2sz(&pts));
+	pts.type = start_pts->type;
+	pts.entry = start_pts->entry;
+	while (true) {
+		if (pts.type == PT_ENTRY_TABLE) {
+			ret = pt_walk_child_all(&pts, __collect_tables,
+						&collect);
+			if (ret)
+				return ret;
+			pt_radix_add_list(&collect.free_list,
+					  pt_table_ptr(&pts));
+		} else if (pts.type != PT_ENTRY_EMPTY) {
+			return -EADDRINUSE;
+		}
+
+		_pt_advance(&pts, ilog2(1));
+		if (pts.index == pts.end_index)
+			break;
+		pt_load_entry(&pts);
+	}
+	pt_radix_list_splice(&map->free_list, &collect.free_list);
+	return 0;
+}
+
+static int __map_range(struct pt_range *range, void *arg, unsigned int level,
+		       struct pt_table_p *table)
+{
+	struct iommu_write_log wlog __cleanup(done_writes) = { .range = range };
+	struct pt_state pts = pt_init(range, level, table);
+	struct pt_iommu_map_args *map = arg;
+	int ret;
+
+again:
+	for_each_pt_level_item(&pts) {
+		/*
+		 * FIXME: This allows us to segment on our own, but there is
+		 * probably a better performing way to implement it.
+		 */
+		unsigned int pgsize_lg2 = pt_compute_best_pgsize(&pts, map->oa);
+
+		/*
+		 * Our mapping fully covers this page size of items starting
+		 * here
+		 */
+		if (pgsize_lg2) {
+			if (pgsize_lg2 != pt_table_item_lg2sz(&pts) ||
+			    pts.type != PT_ENTRY_EMPTY) {
+				ret = pt_iommu_clear_contig(&pts, map, &wlog,
+							    pgsize_lg2);
+				if (ret)
+					return ret;
+			}
+
+			record_write(&wlog, &pts, pgsize_lg2);
+			pt_install_leaf_entry(&pts, map->oa, pgsize_lg2,
+					      &map->attrs);
+			pts.type = PT_ENTRY_OA;
+			map->oa += log2_to_int(pgsize_lg2);
+			continue;
+		}
+
+		/* Otherwise we need to descend to a child table */
+
+		if (pts.type == PT_ENTRY_EMPTY) {
+			record_write(&wlog, &pts, ilog2(1));
+			ret = pt_iommu_new_table(&pts, &map->attrs, false);
+			if (ret) {
+				/*
+				 * Racing with another thread installing a table
+				 */
+				if (ret == -EAGAIN)
+					goto again;
+				return ret;
+			}
+			if (pts_feature(&pts, PT_FEAT_DMA_INCOHERENT)) {
+				done_writes(&wlog);
+				pt_radix_done_incoherent_flush(pts.table_lower);
+			}
+		} else if (pts.type == PT_ENTRY_TABLE) {
+			/*
+			 * Racing with a shared pt_iommu_new_table()? The other
+			 * thread is still flushing the cache, so we have to
+			 * also flush it to ensure that when our thread's map
+			 * completes our mapping is working.
+			 *
+			 * Using the folio memory means we don't have to rely on
+			 * an available PTE bit to keep track.
+			 *
+			 */
+			if (pts_feature(&pts, PT_FEAT_DMA_INCOHERENT) &&
+			    pt_radix_incoherent_still_flushing(pts.table_lower))
+				record_write(&wlog, &pts, ilog2(1));
+		} else {
+			return -EADDRINUSE;
+		}
+
+		/*
+		 * Notice the already present table can possibly be shared with
+		 * another concurrent map.
+		 */
+		ret = pt_descend(&pts, arg, __map_range);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
+ * Add a table to the top, increasing the top level as much as necessary to
+ * encompass range.
+ */
+static int increase_top(struct pt_iommu *iommu_table, struct pt_range *range,
+			struct pt_write_attrs *attrs)
+{
+	struct pt_common *common = common_from_iommu(iommu_table);
+	uintptr_t top_of_table = READ_ONCE(common->top_of_table);
+	struct pt_radix_list_head free_list = PT_RADIX_LIST_INIT;
+	uintptr_t new_top_of_table = top_of_table;
+	struct pt_table_p *table_mem;
+	unsigned int new_level;
+	spinlock_t *domain_lock;
+	unsigned long flags;
+	int ret;
+
+	while (true) {
+		struct pt_range top_range =
+			_pt_top_range(common, new_top_of_table);
+		struct pt_state pts = pt_init_top(&top_range);
+
+		top_range.va = range->va;
+		top_range.last_va = range->last_va;
+
+		if (!pt_check_range(&top_range))
+			break;
+
+		pts.level++;
+		if (pts.level > PT_MAX_TOP_LEVEL ||
+		    pt_table_item_lg2sz(&pts) >= common->max_vasz_lg2) {
+			ret = -ERANGE;
+			goto err_free;
+		}
+
+		new_level = pts.level;
+		table_mem = table_alloc_top(
+			common, _pt_top_set(NULL, pts.level), attrs->gfp, true);
+		if (IS_ERR(table_mem))
+			return PTR_ERR(table_mem);
+		pt_radix_add_list(&free_list, table_mem);
+
+		/* The new table links to the lower table always at index 0 */
+		top_range.va = 0;
+		pts.table_lower = pts.table;
+		pts.table = table_mem;
+		pt_load_single_entry(&pts);
+		PT_WARN_ON(pts.index != 0);
+		pt_install_table(&pts, virt_to_phys(pts.table_lower), attrs);
+		new_top_of_table = _pt_top_set(pts.table, pts.level);
+
+		top_range = _pt_top_range(common, new_top_of_table);
+	}
+
+	if (pt_feature(common, PT_FEAT_DMA_INCOHERENT)) {
+		ret = pt_radix_start_incoherent_list(
+			&free_list, iommu_from_common(common)->iommu_device);
+		if (ret)
+			goto err_free;
+	}
+
+	/*
+	 * top_of_table is write locked by the spinlock, but readers can use
+	 * READ_ONCE() to get the value. Since we encode both the level and the
+	 * pointer in one quanta the lockless reader will always see something
+	 * valid. The HW must be updated to the new level under the spinlock
+	 * before top_of_table is updated so that concurrent readers don't map
+	 * into the new level until it is fully functional. If another thread
+	 * already updated it while we were working then throw everything away
+	 * and try again.
+	 */
+	domain_lock = iommu_table->hw_flush_ops->get_top_lock(iommu_table);
+	spin_lock_irqsave(domain_lock, flags);
+	if (common->top_of_table != top_of_table) {
+		spin_unlock_irqrestore(domain_lock, flags);
+		ret = -EAGAIN;
+		goto err_free;
+	}
+
+	iommu_table->hw_flush_ops->change_top(
+		iommu_table, virt_to_phys(table_mem), new_level);
+	WRITE_ONCE(common->top_of_table, new_top_of_table);
+	spin_unlock_irqrestore(domain_lock, flags);
+
+	*range = pt_make_range(common, range->va, range->last_va);
+	PT_WARN_ON(pt_check_range(range));
+	return 0;
+
+err_free:
+	if (pt_feature(common, PT_FEAT_DMA_INCOHERENT))
+		pt_radix_stop_incoherent_list(
+			&free_list, iommu_from_common(common)->iommu_device);
+	pt_radix_free_list(&free_list);
+	return ret;
+}
+
+/*
+ * If the range spans the whole current table it may be better to increase
+ * the top and then place a single OA
+ */
+static int check_full_table(struct pt_iommu *iommu_table,
+			    struct pt_range *range,
+			    struct pt_iommu_map_args *map, pt_oaddr_t oa)
+{
+	struct pt_common *common = range->common;
+	struct pt_state pts = pt_init_top(range);
+	struct pt_range bigger_range = *range;
+	int ret;
+
+	/* Range spans the entire current VA size */
+	if (log2_mod(range->va, range->max_vasz_lg2) != 0 ||
+	    !log2_mod_eq_max(range->last_va, range->max_vasz_lg2))
+		return 0;
+
+	/* Room for expansion */
+	pts.level++;
+	if (pts.level > PT_MAX_TOP_LEVEL ||
+	    pt_table_item_lg2sz(&pts) >= common->max_vasz_lg2)
+		return 0;
+
+	/* A single IOPTE is available for this mapping in the higher level */
+	if (!pt_compute_best_pgsize(&pts, oa))
+		return 0;
+
+	/* Force an increase */
+	bigger_range.last_va++;
+	ret = increase_top(iommu_table, &bigger_range, &map->attrs);
+	if (ret)
+		return ret;
+	return -EAGAIN;
+}
+
+static int NS(map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
+			 phys_addr_t paddr, dma_addr_t len, unsigned int prot,
+			 gfp_t gfp, size_t *mapped,
+			 struct iommu_iotlb_gather *iotlb_gather)
+{
+	struct pt_common *common = common_from_iommu(iommu_table);
+	struct pt_iommu_map_args map = {
+		.free_list = PT_RADIX_LIST_INIT,
+		.oa = paddr,
+	};
+	struct pt_range range;
+	int ret;
+
+	if (WARN_ON(!(prot & (IOMMU_READ | IOMMU_WRITE))))
+		return -EINVAL;
+
+	if ((sizeof(pt_oaddr_t) > sizeof(paddr) && paddr > PT_VADDR_MAX) ||
+	    (common->max_oasz_lg2 != PT_VADDR_MAX_LG2 &&
+	     oalog2_div(paddr, common->max_oasz_lg2)))
+		return -ERANGE;
+
+	ret = pt_iommu_set_prot(common, &map.attrs, prot);
+	if (ret)
+		return ret;
+	map.attrs.gfp = gfp;
+
+	while (1) {
+		ret = make_range(common_from_iommu(iommu_table), &range, iova,
+				 len);
+		if (pt_feature(common, PT_FEAT_DYNAMIC_TOP)) {
+			if (!ret)
+				ret = check_full_table(iommu_table, &range,
+						       &map, paddr);
+			if (ret == -ERANGE)
+				ret = increase_top(iommu_table, &range,
+						   &map.attrs);
+			if (ret == -EAGAIN)
+				continue;
+		}
+		if (ret)
+			return ret;
+		break;
+	}
+
+	ret = pt_walk_range(&range, __map_range, &map);
+
+	/* FIXME into gather */
+	pt_radix_free_list_rcu(&map.free_list);
+
+	/* Bytes successfully mapped */
+	*mapped += map.oa - paddr;
+	return ret;
+}
+
 struct pt_unmap_args {
 	struct pt_radix_list_head free_list;
 	pt_vaddr_t unmapped;
@@ -289,6 +694,7 @@ static void NS(deinit)(struct pt_iommu *iommu_table)
 }
 
 static const struct pt_iommu_ops NS(ops) = {
+	.map_range = NS(map_range),
 	.unmap_range = NS(unmap_range),
 	.iova_to_phys = NS(iova_to_phys),
 	.get_info = NS(get_info),
