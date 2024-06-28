@@ -31,6 +31,7 @@ config IOMMU_PT
 if IOMMU_PT
 config IOMMU_PT_KUNIT_TEST
 	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
+	select IOMMU_IO_PGTABLE
 	depends on KUNIT
 	default KUNIT_ALL_TESTS
 endif
