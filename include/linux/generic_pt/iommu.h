@@ -69,6 +69,22 @@ struct pt_iommu_info {
 
 struct pt_iommu_ops {
 	/**
+	 * iova_to_phys() - Return the output address for the given IOVA
+	 * @iommu_table: Table to query
+	 * @iova: IO virtual address to query
+	 *
+	 * Determine the output address from the given IOVA. @iova may have any
+	 * alignment, the returned physical will be adjusted with any sub page
+	 * offset.
+	 *
+	 * Context: The caller must hold a read range lock that includes @iova.
+	 *
+	 * Return: 0 if there is no translation for the given iova.
+	 */
+	phys_addr_t (*iova_to_phys)(struct pt_iommu *iommu_table,
+				    dma_addr_t iova);
+
+	/**
 	 * get_info() - Return the pt_iommu_info structure
 	 * @iommu_table: Table to query
 	 *
