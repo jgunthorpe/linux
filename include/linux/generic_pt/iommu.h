@@ -11,6 +11,7 @@
 struct iommu_iotlb_gather;
 struct pt_iommu_ops;
 struct pt_iommu_flush_ops;
+struct iommu_dirty_bitmap;
 
 /**
  * DOC: IOMMU Radix Page Table
@@ -165,6 +166,39 @@ struct pt_iommu_ops {
 	 */
 	phys_addr_t (*iova_to_phys)(struct pt_iommu *iommu_table,
 				    dma_addr_t iova);
+
+	/**
+	 * read_and_clear_dirty() - Manipulate the HW set write dirty state
+	 * @iommu_table: Table to manipulate
+	 * @iova: IO virtual address to start
+	 * @size: Length of the IOVA
+	 * @flags: A bitmap of IOMMU_DIRTY_NO_CLEAR
+	 *
+	 * Iterate over all the entries in the mapped range and record their
+	 * write dirty status in iommu_dirty_bitmap. If IOMMU_DIRTY_NO_CLEAR is
+	 * not specified then the entries will be left dirty, otherwise they are
+	 * returned to being not write dirty.
+	 *
+	 * Context: The caller must hold a read range lock that includes @iova.
+	 *
+	 * Returns: -ERRNO on failure, 0 on success.
+	 */
+	int (*read_and_clear_dirty)(struct pt_iommu *iommu_table,
+				    dma_addr_t iova, dma_addr_t len,
+				    unsigned long flags,
+				    struct iommu_dirty_bitmap *dirty_bitmap);
+
+	/**
+	 * set_dirty() - Make the iova write dirty
+	 * @iommu_table: Table to manipulate
+	 * @iova: IO virtual address to start
+	 *
+	 * This is only used by iommufd testing. It makes the iova dirty so that
+	 * read_and_clear_dirty() will see it as dirty. Unlike all the other ops
+	 * this one is safe to call without holding any locking. It may return
+	 * -EAGAIN if there is a race.
+	 */
+	int (*set_dirty)(struct pt_iommu *iommu_table, dma_addr_t iova);
 
 	/**
 	 * get_info() - Return the pt_iommu_info structure

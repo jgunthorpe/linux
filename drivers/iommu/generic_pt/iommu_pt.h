@@ -130,6 +130,123 @@ static phys_addr_t NS(iova_to_phys)(struct pt_iommu *iommu_table,
 	return res;
 }
 
+struct pt_iommu_dirty_args {
+	struct iommu_dirty_bitmap *dirty;
+	unsigned int flags;
+};
+
+static void record_dirty(struct pt_state *pts,
+			 struct pt_iommu_dirty_args *dirty,
+			 unsigned int num_contig_lg2)
+{
+	if (num_contig_lg2 != ilog2(1)) {
+		unsigned int index = pts->index;
+		unsigned int end_index = log2_set_mod_max_t(
+			unsigned int, pts->index, num_contig_lg2);
+
+		/* Adjust for being contained inside a contiguous page */
+		end_index = min(end_index, pts->end_index);
+		iommu_dirty_bitmap_record(
+			dirty->dirty, pts->range->va,
+			(end_index - index) *
+				log2_to_int(pt_table_item_lg2sz(pts)));
+	} else {
+		/* FIXME the gathering should be seperate from the dirty.. */
+		iommu_dirty_bitmap_record(
+			dirty->dirty, pts->range->va,
+			log2_to_int(pt_table_item_lg2sz(pts)));
+	}
+
+	if (!(dirty->flags & IOMMU_DIRTY_NO_CLEAR)) {
+		/*
+		 * No write log required because DMA incoherence and atomic
+		 * dirty tracking bits can't work together
+		 */
+		pt_entry_set_write_clean(pts);
+	}
+}
+
+/* FIXME this is a bit big on formats with contig.. */
+static __always_inline int
+__do_read_and_clear_dirty(struct pt_range *range, void *arg, unsigned int level,
+			  struct pt_table_p *table, pt_level_fn_t descend_fn)
+{
+	struct pt_state pts = pt_init(range, level, table);
+	struct pt_iommu_dirty_args *dirty = arg;
+	int ret;
+
+	for_each_pt_level_item(&pts) {
+		if (pts.type == PT_ENTRY_TABLE) {
+			ret = pt_descend(&pts, arg, descend_fn);
+			if (ret)
+				return ret;
+			continue;
+		}
+		if (pts.type == PT_ENTRY_OA && pt_entry_write_is_dirty(&pts))
+			record_dirty(&pts, dirty,
+				     pt_entry_num_contig_lg2(&pts));
+	}
+	return 0;
+}
+PT_MAKE_LEVELS(__read_and_clear_dirty, __do_read_and_clear_dirty);
+
+static int __maybe_unused NS(read_and_clear_dirty)(
+	struct pt_iommu *iommu_table, dma_addr_t iova, dma_addr_t len,
+	unsigned long flags, struct iommu_dirty_bitmap *dirty_bitmap)
+{
+	struct pt_iommu_dirty_args dirty = {
+		.dirty = dirty_bitmap,
+		.flags = flags,
+	};
+	struct pt_range range;
+	int ret;
+
+	ret = make_range(common_from_iommu(iommu_table), &range, iova, len);
+	if (ret)
+		return ret;
+
+	ret = pt_walk_range(&range, __read_and_clear_dirty, &dirty);
+	PT_WARN_ON(ret);
+	return ret;
+}
+
+static __always_inline int __do_set_dirty(struct pt_range *range, void *arg,
+					  unsigned int level,
+					  struct pt_table_p *table,
+					  pt_level_fn_t descend_fn)
+{
+	struct pt_state pts = pt_init(range, level, table);
+
+	switch (pt_load_single_entry(&pts)) {
+	case PT_ENTRY_EMPTY:
+		return -ENOENT;
+	case PT_ENTRY_TABLE:
+		return pt_descend(&pts, arg, descend_fn);
+	case PT_ENTRY_OA:
+		if (!pt_entry_make_write_dirty(&pts))
+			return -EAGAIN;
+		return 0;
+	}
+	return -ENOENT;
+}
+PT_MAKE_LEVELS(__set_dirty, __do_set_dirty);
+
+static int __maybe_unused NS(set_dirty)(struct pt_iommu *iommu_table,
+					dma_addr_t iova)
+{
+	struct pt_range range;
+	int ret;
+
+	ret = make_range(common_from_iommu(iommu_table), &range, iova, 1);
+	if (ret)
+		return ret;
+
+	rcu_read_lock();
+	ret = pt_walk_range(&range, __set_dirty, NULL);
+	rcu_read_unlock();
+	return ret;
+}
+
 struct pt_iommu_collect_args {
 	struct pt_radix_list_head free_list;
 	u8 ignore_mapped : 1;
@@ -967,6 +1084,12 @@ static const struct pt_iommu_ops NS(ops) = {
 	.unmap_range = NS(unmap_range),
 	.iova_to_phys = NS(iova_to_phys),
 	.cut_mapping = NS(cut_mapping),
+#if IS_ENABLED(CONFIG_IOMMUFD_DRIVER) && defined(pt_entry_write_is_dirty)
+	.read_and_clear_dirty = NS(read_and_clear_dirty),
+#if IS_ENABLED(CONFIG_IOMMUFD_TEST) && defined(pt_entry_make_write_dirty)
+	.set_dirty = NS(set_dirty),
+#endif
+#endif
 	.get_info = NS(get_info),
 	.deinit = NS(deinit),
 };
@@ -1104,5 +1227,7 @@ EXPORT_SYMBOL_NS_GPL(pt_iommu_hw_info, GENERIC_PT_IOMMU);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("IOMMU Pagetable implementation for " __stringify(PTPFX_RAW));
 MODULE_IMPORT_NS(GENERIC_PT);
+/* For iommu_dirty_bitmap_record() */
+MODULE_IMPORT_NS(IOMMUFD);
 
 #endif
