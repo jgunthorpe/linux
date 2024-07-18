@@ -18,6 +18,15 @@ config FWCTL_BNXT
 
 	  If you don't know what to do here, say N.
 
+config FWCTL_CXL
+	tristate "CXL fwctl driver"
+	depends on CXL_BUS
+	help
+	  CXL provides interface for the user process to access user allowed
+	  mailbox commands for CXL device.
+
+	  If you don't know what to do here, say N.
+
 config FWCTL_MLX5
 	tristate "mlx5 ConnectX control fwctl driver"
 	depends on MLX5_CORE
