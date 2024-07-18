@@ -3,6 +3,7 @@
 #ifndef __CXL_MBOX_H__
 #define __CXL_MBOX_H__
 
+#include <uapi/linux/cxl_mem.h>
 #include <linux/auxiliary_bus.h>
 
 /**
@@ -45,6 +46,8 @@ struct cxl_mbox_cmd {
  * struct cxl_mailbox - context for CXL mailbox operations
  * @host: device that hosts the mailbox
  * @adev: auxiliary device for fw-ctl
+ * @enabled_cmds: Hardware commands found enabled in CEL.
+ * @exclusive_cmds: Commands that are kernel-internal only
  * @payload_size: Size of space for payload
  *                (CXL 3.1 8.2.8.4.3 Mailbox Capabilities Register)
  * @mbox_mutex: mutex protects device mailbox and firmware
@@ -54,6 +57,8 @@ struct cxl_mbox_cmd {
 struct cxl_mailbox {
 	struct device *host;
 	struct auxiliary_device adev; /* For fw-ctl */
+	DECLARE_BITMAP(enabled_cmds, CXL_MEM_COMMAND_ID_MAX);
+	DECLARE_BITMAP(exclusive_cmds, CXL_MEM_COMMAND_ID_MAX);
 	size_t payload_size;
 	struct mutex mbox_mutex; /* lock to protect mailbox context */
 	struct rcuwait mbox_wait;
