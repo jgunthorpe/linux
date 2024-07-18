@@ -45,6 +45,10 @@ static struct cxl_cel_entry mock_cel[] = {
 		.effect = CXL_CMD_EFFECT_NONE,
 	},
 	{
+		.opcode = cpu_to_le16(CXL_MBOX_OP_GET_SUPPORTED_FEATURES),
+		.effect = CXL_CMD_EFFECT_NONE,
+	},
+	{
 		.opcode = cpu_to_le16(CXL_MBOX_OP_IDENTIFY),
 		.effect = CXL_CMD_EFFECT_NONE,
 	},
@@ -1337,6 +1341,64 @@ static int mock_activate_fw(struct cxl_mockmem_data *mdata,
 	return -EINVAL;
 }
 
+#define DEV_PATROL_SCRUB_FEAT_UUID						\
+	UUID_INIT(0x96dad7d6, 0xfde8, 0x482b, 0xa7, 0x33, 0x75, 0x77, 0x4e,	\
+		  0x06, 0xdb, 0x8a)
+
+static void fill_feature_device_patrol_scrub_control(struct cxl_feat_entry *feat)
+{
+	feat->uuid = DEV_PATROL_SCRUB_FEAT_UUID;
+	feat->id = 0;
+	feat->get_feat_size = cpu_to_le16(4);
+	feat->set_feat_size = cpu_to_le16(2);
+	feat->flags = cpu_to_le32(0x21);
+	feat->get_feat_ver = 1;
+	feat->set_feat_ver = 1;
+	feat->effects = cpu_to_le16(0x202);
+}
+
+static int mock_get_supported_features(struct cxl_mockmem_data *mdata,
+				       struct cxl_mbox_cmd *cmd)
+{
+	struct cxl_mbox_get_sup_feats_in *in = cmd->payload_in;
+	struct cxl_mbox_get_sup_feats_out *out = cmd->payload_out;
+	struct cxl_feat_entry *feat;
+	u16 start_idx, count;
+
+	if (cmd->size_out < sizeof(*out)) {
+		cmd->return_code = CXL_MBOX_CMD_RC_PAYLOADLEN;
+		return -EINVAL;
+	}
+
+	/*
+	 * Current emulation only supports 1 feature
+	 */
+	start_idx = le16_to_cpu(in->start_idx);
+	if (start_idx != 0) {
+		cmd->return_code = CXL_MBOX_CMD_RC_INPUT;
+		return -EINVAL;
+	}
+
+	count = le16_to_cpu(in->count);
+	if (count < sizeof(*out)) {
+		cmd->return_code = CXL_MBOX_CMD_RC_PAYLOADLEN;
+		return -EINVAL;
+	}
+
+	out->supported_feats = cpu_to_le16(1);
+	cmd->return_code = 0;
+	if (count < sizeof(*out) + sizeof(*feat)) {
+		out->num_entries = 0;
+		return 0;
+	}
+
+	out->num_entries = 1;
+	feat = out->ents;
+	fill_feature_device_patrol_scrub_control(feat);
+
+	return 0;
+}
+
 static int cxl_mock_mbox_send(struct cxl_mailbox *cxl_mbox,
 			      struct cxl_mbox_cmd *cmd)
 {
@@ -1424,6 +1486,9 @@ static int cxl_mock_mbox_send(struct cxl_mailbox *cxl_mbox,
 	case CXL_MBOX_OP_ACTIVATE_FW:
 		rc = mock_activate_fw(mdata, cmd);
 		break;
+	case CXL_MBOX_OP_GET_SUPPORTED_FEATURES:
+		rc = mock_get_supported_features(mdata, cmd);
+		break;
 	default:
 		break;
 	}
@@ -1510,6 +1575,10 @@ static int cxl_mock_mem_probe(struct platform_device *pdev)
 	rc = cxl_enumerate_cmds(mds);
 	if (rc)
 		return rc;
+
+	rc = cxl_get_supported_features(&cxlds->cxl_mbox);
+	if (rc)
+		dev_dbg(dev, "No features enumerated\n");
 
 	rc = cxl_poison_state_init(mds);
 	if (rc)
