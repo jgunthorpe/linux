@@ -20,4 +20,13 @@ config FWCTL_MLX5
 	  mainstream kernel.
 
 	  If you don't know what to do here, say N.
+
+config FWCTL_CXL
+	tristate "CXL fwctl driver"
+	depends on CXL_BUS
+	help
+	  CXLCTL provides interface for the user process to access user allowed
+	  mailbox commands for CXL device.
+
+	  If you don't know what to do here, say N.
 endif
