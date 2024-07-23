@@ -262,6 +262,82 @@ IOMMU_FORMAT(amdv1, amdpt);
 struct pt_iommu_amdv1_mock_hw_info;
 IOMMU_PROTOTYPES(amdv1_mock);
 
+struct pt_iommu_armv8 {
+	struct pt_iommu iommu;
+	struct pt_armv8 armpt;
+};
+
+struct pt_iommu_armv8_cfg {
+	struct pt_iommu_cfg common;
+};
+
+#define pt_iommu_armv8_4k pt_iommu_armv8
+#define pt_iommu_armv8_4k_cfg pt_iommu_armv8_cfg
+struct pt_iommu_armv8_4k_hw_info;
+IOMMU_PROTOTYPES(armv8_4k);
+
+#define pt_iommu_armv8_16k pt_iommu_armv8
+#define pt_iommu_armv8_16k_cfg pt_iommu_armv8_cfg
+struct pt_iommu_armv8_16k_hw_info;
+IOMMU_PROTOTYPES(armv8_16k);
+
+#define pt_iommu_armv8_64k pt_iommu_armv8
+#define pt_iommu_armv8_64k_cfg pt_iommu_armv8_cfg
+struct pt_iommu_armv8_64k_hw_info;
+IOMMU_PROTOTYPES(armv8_64k);
+
+static size_t __pt_iommu_armv8_granuals_to_lg2(size_t granual_sizes)
+{
+	size_t supported_granuals = 0;
+
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_4K))
+		supported_granuals |= BIT(12);
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_16K))
+		supported_granuals |= BIT(14);
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_64K))
+		supported_granuals |= BIT(16);
+
+	granual_sizes &= supported_granuals;
+	if (!granual_sizes)
+		return 0;
+
+	/* Prefer the CPU page size if possible */
+	if (granual_sizes & PAGE_SIZE)
+		return PAGE_SHIFT;
+
+	/*
+	 * Otherwise prefer the largest page size smaller than the CPU page
+	 * size
+	 */
+	if (granual_sizes % PAGE_SIZE)
+		return ilog2(rounddown_pow_of_two(granual_sizes % PAGE_SIZE));
+
+	/* Otherwise use the smallest page size available */
+	return __ffs(granual_sizes);
+}
+
+static inline int pt_iommu_armv8_init(struct pt_iommu_armv8 *table,
+				      const struct pt_iommu_armv8_cfg *cfg,
+				      size_t granual_sizes, gfp_t gfp)
+{
+	switch (__pt_iommu_armv8_granuals_to_lg2(granual_sizes)) {
+	case 12:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_4K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_4k_init(table, cfg, gfp);
+	case 14:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_16K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_16k_init(table, cfg, gfp);
+	case 16:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_64K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_64k_init(table, cfg, gfp);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 struct pt_iommu_riscv_64_cfg {
 	struct pt_iommu_cfg common;
 };
