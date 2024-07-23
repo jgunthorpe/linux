@@ -97,4 +97,26 @@ enum {
 	PT_FEAT_FMT_START,
 };
 
+struct pt_armv8 {
+	struct pt_common common;
+};
+
+enum {
+	/* Use the upper address space instead of lower */
+	PT_FEAT_ARMV8_TTBR1 = PT_FEAT_FMT_START,
+	/*
+	 * Large Physical Address extension allows larger page sizes on 64k.
+	 * Larger physical addresess are always supported
+	 */
+	PT_FEAT_ARMV8_LPA,
+	/* Use the Stage 2 format instead of Stage 1 */
+	PT_FEAT_ARMV8_S2,
+	/* Use Dirty Bit Modifier, necessary for IOMMU dirty tracking */
+	PT_FEAT_ARMV8_DBM,
+	/* For S2 uses the Force Write Back coding of the S2MEMATTR */
+	PT_FEAT_ARMV8_S2FWB,
+	/* Set the NS and NSTable bits in all entries */
+	PT_FEAT_ARMV8_NS,
+};
+
 #endif

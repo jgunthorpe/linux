@@ -303,4 +303,72 @@ struct pt_iommu_cfg {
 	u8 hw_max_oasz_lg2;
 };
 
+struct pt_iommu_armv8 {
+	struct pt_iommu iommu;
+	struct pt_armv8 armpt;
+};
+
+struct pt_iommu_armv8_cfg {
+	struct pt_iommu_cfg common;
+};
+
+int pt_iommu_armv8_4k_init(struct pt_iommu_armv8 *table,
+			   const struct pt_iommu_armv8_cfg *cfg, gfp_t gfp);
+int pt_iommu_armv8_16k_init(struct pt_iommu_armv8 *table,
+			    const struct pt_iommu_armv8_cfg *cfg, gfp_t gfp);
+int pt_iommu_armv8_64k_init(struct pt_iommu_armv8 *table,
+			    const struct pt_iommu_armv8_cfg *cfg, gfp_t gfp);
+
+static size_t __pt_iommu_armv8_granuals_to_lg2(size_t granual_sizes)
+{
+	size_t supported_granuals = 0;
+
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_4K))
+		supported_granuals |= BIT(12);
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_16K))
+		supported_granuals |= BIT(14);
+	if (IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_64K))
+		supported_granuals |= BIT(16);
+
+	granual_sizes &= supported_granuals;
+	if (!granual_sizes)
+		return 0;
+
+	/* Prefer the CPU page size if possible */
+	if (granual_sizes & PAGE_SIZE)
+		return PAGE_SHIFT;
+
+	/*
+	 * Otherwise prefer the largest page size smaller than the CPU page
+	 * size
+	 */
+	if (granual_sizes % PAGE_SIZE)
+		return ilog2(rounddown_pow_of_two(granual_sizes % PAGE_SIZE));
+
+	/* Otherwise use the smallest page size available */
+	return __ffs(granual_sizes);
+}
+
+static inline int pt_iommu_armv8_init(struct pt_iommu_armv8 *table,
+				      const struct pt_iommu_armv8_cfg *cfg,
+				      size_t granual_sizes, gfp_t gfp)
+{
+	switch (__pt_iommu_armv8_granuals_to_lg2(granual_sizes)) {
+	case 12:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_4K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_4k_init(table, cfg, gfp);
+	case 14:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_16K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_16k_init(table, cfg, gfp);
+	case 16:
+		if (!IS_ENABLED(CONFIG_IOMMU_PT_ARMV8_64K))
+			return -EOPNOTSUPP;
+		return pt_iommu_armv8_64k_init(table, cfg, gfp);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 #endif
