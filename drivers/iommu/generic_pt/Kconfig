@@ -29,6 +29,11 @@ config IOMMU_PT
 	  Generic library for building IOMMU page tables
 
 if IOMMU_PT
+config IOMMU_PT_AMDV1
+	tristate "IOMMU page table for 64 bit AMD IOMMU v1"
+	depends on !GENERIC_ATOMIC64 # for cmpxchg64
+	default n
+
 config IOMMU_PT_ARMV8_4K
 	tristate "IOMMU page table for 64 bit ARMv8 4k page size"
 	depends on !GENERIC_ATOMIC64 # for cmpxchg64
@@ -69,6 +74,7 @@ config IOMMU_PT_KUNIT_TEST
 	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
 	select IOMMU_IO_PGTABLE
 	depends on KUNIT
+	depends on IOMMU_PT_AMDV1 || !IOMMU_PT_AMDV1
 	depends on IOMMU_PT_ARMV8_4K || !IOMMU_PT_ARMV8_4K
 	depends on IOMMU_PT_ARMV8_16K || !IOMMU_PT_ARMV8_16K
 	depends on IOMMU_PT_ARMV8_64K || !IOMMU_PT_ARMV8_64K

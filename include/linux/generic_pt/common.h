@@ -97,6 +97,10 @@ enum {
 	PT_FEAT_FMT_START,
 };
 
+struct pt_amdv1 {
+	struct pt_common common;
+};
+
 struct pt_armv8 {
 	struct pt_common common;
 };
