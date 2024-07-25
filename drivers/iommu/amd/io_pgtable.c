@@ -121,9 +121,11 @@ static bool increase_address_space(struct amd_io_pgtable *pgtable,
 				   gfp_t gfp)
 {
 	struct io_pgtable_cfg *cfg = &pgtable->pgtbl.cfg;
+#if 0
 	struct protection_domain *domain =
 		container_of(pgtable, struct protection_domain, iop);
 	unsigned long flags;
+#endif
 	bool ret = true;
 	u64 *pte;
 
@@ -131,7 +133,7 @@ static bool increase_address_space(struct amd_io_pgtable *pgtable,
 	if (!pte)
 		return false;
 
-	spin_lock_irqsave(&domain->lock, flags);
+//	spin_lock_irqsave(&domain->lock, flags);
 
 	if (address <= PM_LEVEL_SIZE(pgtable->mode))
 		goto out;
@@ -144,13 +146,15 @@ static bool increase_address_space(struct amd_io_pgtable *pgtable,
 
 	pgtable->root  = pte;
 	pgtable->mode += 1;
+#if 0
 	amd_iommu_update_and_flush_device_table(domain);
+#endif
 
 	pte = NULL;
 	ret = true;
 
 out:
-	spin_unlock_irqrestore(&domain->lock, flags);
+//	spin_unlock_irqrestore(&domain->lock, flags);
 	iommu_free_page(pte);
 
 	return ret;
@@ -334,8 +338,10 @@ static int iommu_v1_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	bool updated = false;
 	u64 __pte, *pte;
 	int ret, i, count;
+#if 0
 	size_t size = pgcount << __ffs(pgsize);
 	unsigned long o_iova = iova;
+#endif
 
 	BUG_ON(!IS_ALIGNED(iova, pgsize));
 	BUG_ON(!IS_ALIGNED(paddr, pgsize));
@@ -382,6 +388,7 @@ static int iommu_v1_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	ret = 0;
 
 out:
+#if 0
 	if (updated) {
 		struct protection_domain *dom = io_pgtable_ops_to_domain(ops);
 		unsigned long flags;
@@ -395,6 +402,7 @@ out:
 		amd_iommu_domain_flush_pages(dom, o_iova, size);
 		spin_unlock_irqrestore(&dom->lock, flags);
 	}
+#endif
 
 	/* Everything flushed out, free pages now */
 	iommu_put_pages_list(&freelist);
