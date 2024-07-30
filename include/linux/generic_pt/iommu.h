@@ -338,6 +338,14 @@ static inline int pt_iommu_armv8_init(struct pt_iommu_armv8 *table,
 	}
 }
 
+struct pt_iommu_dart_cfg {
+	struct pt_iommu_cfg common;
+	u64 pgsize_bitmap;
+};
+
+struct pt_iommu_dart_hw_info;
+IOMMU_FORMAT(dart, dartpt);
+
 struct pt_iommu_riscv_64_cfg {
 	struct pt_iommu_cfg common;
 };
@@ -346,7 +354,6 @@ struct pt_iommu_riscv_64_hw_info {
 	u64 ppn;
 	u8 fsc_iosatp_mode;
 };
-
 IOMMU_FORMAT(riscv_64, riscv_64pt);
 
 struct pt_iommu_vtdss_cfg {

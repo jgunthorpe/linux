@@ -75,6 +75,16 @@ config IOMMU_PT_ARMV8_64K
 
 	  Selected automatically by an IOMMU driver that uses this format.
 
+config IOMMU_PT_DART
+       tristate "IOMMU page table for Apple Silicon DART"
+	depends on !GENERIC_ATOMIC64 # for cmpxchg64
+	help
+	  iommu_domain implementation for the Apple DART pagetable formats.
+	  These include the t8020 and t6000/t8110 DART formats used in Apple
+	  M1/M2 family SoCs.
+
+	  Selected automatically by an IOMMU driver that uses this format.
+
 config IOMMU_PT_RISCV64
        tristate "IOMMU page table for RISC-V 64 bit Sv57/Sv48/Sv39"
 	depends on !GENERIC_ATOMIC64 # for cmpxchg64
@@ -112,6 +122,7 @@ config IOMMU_PT_KUNIT_TEST
 	depends on IOMMU_PT_ARMV8_4K || !IOMMU_PT_ARMV8_4K
 	depends on IOMMU_PT_ARMV8_16K || !IOMMU_PT_ARMV8_16K
 	depends on IOMMU_PT_ARMV8_64K || !IOMMU_PT_ARMV8_64K
+	depends on IOMMU_PT_DART || !IOMMU_PT_DART
 	depends on IOMMU_PT_RISCV64 || !IOMMU_PT_RISCV64
 	depends on IOMMU_PT_VTDSS || !IOMMU_PT_VTDSS
 	depends on IOMMU_PT_X86_64 || !IOMMU_PT_X86_64
