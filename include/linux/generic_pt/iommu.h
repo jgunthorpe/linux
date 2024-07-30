@@ -395,4 +395,23 @@ static inline int pt_iommu_armv8_init(struct pt_iommu_armv8 *table,
 	}
 }
 
+struct pt_iommu_x86pae {
+	struct pt_iommu iommu;
+	struct pt_x86pae x86pae_pt;
+};
+
+struct pt_iommu_x86pae_cfg {
+	struct pt_iommu_cfg common;
+};
+
+struct pt_iommu_x86pae_hw_info {
+	u64 gcr3_pt;
+	u8 levels;
+};
+
+int pt_iommu_x86pae_init(struct pt_iommu_x86pae *table,
+			 const struct pt_iommu_x86pae_cfg *cfg, gfp_t gfp);
+void pt_iommu_x86pae_hw_info(struct pt_iommu_x86pae *table,
+			     struct pt_iommu_x86pae_hw_info *info);
+
 #endif

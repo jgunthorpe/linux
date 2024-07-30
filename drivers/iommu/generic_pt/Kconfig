@@ -70,6 +70,11 @@ config IOMMU_PT_ARMV8_64K
 
 	  If unsure, say N here.
 
+config IOMMU_PT_X86PAE
+       tristate "IOMMU page table for x86 PAE"
+	depends on !GENERIC_ATOMIC64 # for cmpxchg64
+	default n
+
 config IOMMU_PT_KUNIT_TEST
 	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
 	select IOMMU_IO_PGTABLE
@@ -78,6 +83,7 @@ config IOMMU_PT_KUNIT_TEST
 	depends on IOMMU_PT_ARMV8_4K || !IOMMU_PT_ARMV8_4K
 	depends on IOMMU_PT_ARMV8_16K || !IOMMU_PT_ARMV8_16K
 	depends on IOMMU_PT_ARMV8_64K || !IOMMU_PT_ARMV8_64K
+	depends on IOMMU_PT_X86PAE || !IOMMU_PT_X86PAE
 	default KUNIT_ALL_TESTS
 endif
 endif
