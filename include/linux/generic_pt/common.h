@@ -123,4 +123,8 @@ enum {
 	PT_FEAT_ARMV8_NS,
 };
 
+struct pt_x86pae {
+	struct pt_common common;
+};
+
 #endif
