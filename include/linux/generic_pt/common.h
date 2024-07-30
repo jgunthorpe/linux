@@ -123,6 +123,16 @@ enum {
 	PT_FEAT_ARMV8_NS,
 };
 
+struct pt_dart {
+	struct pt_common common;
+	u8 granule_lg2sz;
+};
+
+enum {
+	/* Use the DART 2 rules instead of DART 1 */
+	PT_FEAT_DART_V2 = PT_FEAT_FMT_START,
+};
+
 struct pt_x86pae {
 	struct pt_common common;
 };

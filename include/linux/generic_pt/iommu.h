@@ -395,6 +395,18 @@ static inline int pt_iommu_armv8_init(struct pt_iommu_armv8 *table,
 	}
 }
 
+struct pt_iommu_dart {
+	struct pt_iommu iommu;
+	struct pt_dart dartpt;
+};
+
+struct pt_iommu_dart_cfg {
+	struct pt_iommu_cfg common;
+	u64 pgsize_bitmap;
+};
+int pt_iommu_dart_init(struct pt_iommu_dart *table,
+		       const struct pt_iommu_dart_cfg *cfg, gfp_t gfp);
+
 struct pt_iommu_x86pae {
 	struct pt_iommu iommu;
 	struct pt_x86pae x86pae_pt;
