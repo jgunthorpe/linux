@@ -105,6 +105,17 @@ struct pt_armv8 {
 	struct pt_common common;
 };
 
+struct pt_armv7s {
+	struct pt_common common;
+};
+
+enum {
+	/* Use the upper address space instead of lower */
+	PT_FEAT_ARMV7S_TTBR1 = PT_FEAT_FMT_START,
+	/* Set the NS bit in ARM's level 1 */
+	PT_FEAT_ARMV7S_NS,
+};
+
 enum {
 	/* Use the upper address space instead of lower */
 	PT_FEAT_ARMV8_TTBR1 = PT_FEAT_FMT_START,
