@@ -42,6 +42,16 @@ config IOMMU_PT_AMDV1
 
 	  Selected automatically by an IOMMU driver that uses this format.
 
+config IOMMU_PT_ARMV7S
+	tristate "IOMMU page table for the 32 bit ARMv7/v8 Short Descriptor Format"
+	help
+	  iommu_domain implementation for the ARM Short-descriptor pagetable
+	  format. This supports 32-bit virtual and physical addresses mapped
+	  using 2-level tables with 4KB pages/1MB sections, and contiguous
+	  entries for 64KB pages/16MB supersections.
+
+	  Selected automatically by an IOMMU driver that uses this format.
+
 config IOMMU_PT_ARMV8_4K
 	tristate "IOMMU page table for 64 bit ARMv8 4k page size"
 	depends on !GENERIC_ATOMIC64 # for cmpxchg64
@@ -119,6 +129,7 @@ config IOMMU_PT_KUNIT_TEST
 	tristate "IOMMU Page Table KUnit Test" if !KUNIT_ALL_TESTS
 	depends on KUNIT
 	depends on IOMMU_PT_AMDV1 || !IOMMU_PT_AMDV1
+	depends on IOMMU_PT_ARMV7S || !IOMMU_PT_ARMV7S
 	depends on IOMMU_PT_ARMV8_4K || !IOMMU_PT_ARMV8_4K
 	depends on IOMMU_PT_ARMV8_16K || !IOMMU_PT_ARMV8_16K
 	depends on IOMMU_PT_ARMV8_64K || !IOMMU_PT_ARMV8_64K

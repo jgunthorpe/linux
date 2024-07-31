@@ -262,6 +262,13 @@ IOMMU_FORMAT(amdv1, amdpt);
 struct pt_iommu_amdv1_mock_hw_info;
 IOMMU_PROTOTYPES(amdv1_mock);
 
+struct pt_iommu_armv7s_cfg {
+	struct pt_iommu_cfg common;
+};
+
+struct pt_iommu_armv7s_hw_info;
+IOMMU_FORMAT(armv7s, armpt);
+
 struct pt_iommu_armv8 {
 	struct pt_iommu iommu;
 	struct pt_armv8 armpt;
