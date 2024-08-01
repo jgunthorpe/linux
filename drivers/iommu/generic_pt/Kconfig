@@ -90,6 +90,11 @@ config IOMMU_PT_DART
 
 	  If unsure, say N here.
 
+config IOMMU_PT_VTDSS
+       tristate "IOMMU page table for Intel VT-D IOMMU Second Stage"
+	depends on !GENERIC_ATOMIC64 # for cmpxchg64
+	default n
+
 config IOMMU_PT_X86PAE
        tristate "IOMMU page table for x86 PAE"
 	depends on !GENERIC_ATOMIC64 # for cmpxchg64
@@ -105,6 +110,7 @@ config IOMMU_PT_KUNIT_TEST
 	depends on IOMMU_PT_ARMV8_16K || !IOMMU_PT_ARMV8_16K
 	depends on IOMMU_PT_ARMV8_64K || !IOMMU_PT_ARMV8_64K
 	depends on IOMMU_PT_DART || !IOMMU_PT_DART
+	depends on IOMMU_PT_VTDSS || !IOMMU_PT_VTDSS
 	depends on IOMMU_PT_X86PAE || !IOMMU_PT_X86PAE
 	default KUNIT_ALL_TESTS
 endif

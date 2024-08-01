@@ -419,6 +419,17 @@ struct pt_iommu_dart_cfg {
 int pt_iommu_dart_init(struct pt_iommu_dart *table,
 		       const struct pt_iommu_dart_cfg *cfg, gfp_t gfp);
 
+struct pt_iommu_vtdss {
+	struct pt_iommu iommu;
+	struct pt_vtdss vtdss_pt;
+};
+
+struct pt_iommu_vtdss_cfg {
+	struct pt_iommu_cfg common;
+};
+int pt_iommu_vtdss_init(struct pt_iommu_vtdss *table,
+			const struct pt_iommu_vtdss_cfg *cfg, gfp_t gfp);
+
 struct pt_iommu_x86pae {
 	struct pt_iommu iommu;
 	struct pt_x86pae x86pae_pt;
