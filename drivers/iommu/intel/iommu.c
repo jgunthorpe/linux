@@ -1600,8 +1600,8 @@ static void switch_to_super_page(struct dmar_domain *domain,
 					       start_pfn + lvl_pages - 1,
 					       level + 1);
 
-			cache_tag_flush_range(domain, start_pfn << VTD_PAGE_SHIFT,
-					      end_pfn << VTD_PAGE_SHIFT, 0);
+			/*cache_tag_flush_range(domain, start_pfn << VTD_PAGE_SHIFT,
+					      end_pfn << VTD_PAGE_SHIFT, 0);*/
 		}
 
 		pte++;
@@ -3655,7 +3655,7 @@ static size_t intel_iommu_unmap(struct iommu_domain *domain,
 	 * We do not use page-selective IOTLB invalidation in flush queue,
 	 * so there is no need to track page and sync iotlb.
 	 */
-	if (!iommu_iotlb_gather_queued(gather))
+	if (!iommu_iotlb_gather_queued(gather) && gather)
 		iommu_iotlb_gather_add_page(domain, gather, iova, size);
 
 	return size;
@@ -4906,7 +4906,7 @@ static struct io_pgtable *alloc_pgtable(struct io_pgtable_cfg *cfg, void *cookie
 		return NULL;
 
 	domain->nid = NUMA_NO_NODE;
-	domain->use_first_level = true;
+	domain->use_first_level = cfg->vtd_cfg.first_level;
 	INIT_LIST_HEAD(&domain->devices);
 	spin_lock_init(&domain->lock);
 	xa_init(&domain->iommu_array);

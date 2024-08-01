@@ -190,6 +190,7 @@ struct io_pgtable_cfg {
 			u64 cap_reg;
 			u64 ecap_reg;
 			u64 pgd;
+			bool first_level;
 		} vtd_cfg;
 	};
 };
