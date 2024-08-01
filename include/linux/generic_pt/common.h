@@ -144,6 +144,10 @@ enum {
 	PT_FEAT_DART_V2 = PT_FEAT_FMT_START,
 };
 
+struct pt_vtdss {
+	struct pt_common common;
+};
+
 struct pt_x86pae {
 	struct pt_common common;
 };
