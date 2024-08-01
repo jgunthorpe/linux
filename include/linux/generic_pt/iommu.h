@@ -273,6 +273,17 @@ struct pt_iommu_riscv_64_hw_info {
 
 IOMMU_FORMAT(riscv_64, riscv_64pt);
 
+struct pt_iommu_vtdss_cfg {
+	struct pt_iommu_cfg common;
+};
+
+struct pt_iommu_vtdss_hw_info {
+	u64 ssptptr;
+	u8 aw;
+};
+
+IOMMU_FORMAT(vtdss, vtdss_pt);
+
 struct pt_iommu_x86_64_cfg {
 	struct pt_iommu_cfg common;
 };
