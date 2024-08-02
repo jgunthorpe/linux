@@ -512,7 +512,7 @@ static int arm_lpae_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 
 	if (cfg->quirks & IO_PGTABLE_QUIRK_ARM_TTBR1)
 		iaext = ~iaext;
-	if (WARN_ON(iaext || paddr >> cfg->oas))
+	if (WARN_ON(iaext || (u64)paddr >> cfg->oas))
 		return -ERANGE;
 
 	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE)))
