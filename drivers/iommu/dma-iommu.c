@@ -31,6 +31,7 @@
 #include <linux/swiotlb.h>
 #include <linux/vmalloc.h>
 #include <trace/events/swiotlb.h>
+#include <linux/generic_pt/iommu.h>
 
 #include "dma-iommu.h"
 #include "iommu-pages.h"
@@ -176,10 +177,21 @@ static void fq_ring_free(struct iommu_dma_cookie *cookie, struct iova_fq *fq)
 	spin_unlock_irqrestore(&fq->lock, flags);
 }
 
+static void __flush_all(struct iommu_domain *domain)
+{
+	if (iommu_is_iommupt_domain(domain)) {
+		domain->iommupt->hw_flush_ops->flush_all(domain->iommupt);
+		return;
+	}
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	domain->ops->flush_iotlb_all(domain);
+#endif
+}
+
 static void fq_flush_iotlb(struct iommu_dma_cookie *cookie)
 {
 	atomic64_inc(&cookie->fq_flush_start_cnt);
-	cookie->fq_domain->ops->flush_iotlb_all(cookie->fq_domain);
+	__flush_all(cookie->fq_domain);
 	atomic64_inc(&cookie->fq_flush_finish_cnt);
 }
 
@@ -201,7 +213,7 @@ static void fq_flush_timeout(struct timer_list *t)
 
 static void queue_iova(struct iommu_dma_cookie *cookie,
 		unsigned long pfn, unsigned long pages,
-		struct list_head *freelist)
+		struct iommu_iotlb_gather *gather)
 {
 	struct iova_fq *fq;
 	unsigned long flags;
@@ -240,8 +252,10 @@ static void queue_iova(struct iommu_dma_cookie *cookie,
 	fq->entries[idx].iova_pfn = pfn;
 	fq->entries[idx].pages    = pages;
 	fq->entries[idx].counter  = atomic64_read(&cookie->fq_flush_start_cnt);
-	list_splice(freelist, &fq->entries[idx].freelist);
-
+	/* FIXME this needs a pt_radix_alloc list splice */
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	list_splice(&gather->freelist, &fq->entries[idx].freelist);
+#endif
 	spin_unlock_irqrestore(&fq->lock, flags);
 
 	/* Avoid false sharing as much as possible. */
@@ -815,8 +829,7 @@ static void iommu_dma_free_iova(struct iommu_dma_cookie *cookie,
 		cookie->msi_iova -= size;
 	else if (gather && gather->queued)
 		queue_iova(cookie, iova_pfn(iovad, iova),
-				size >> iova_shift(iovad),
-				&gather->freelist);
+			   size >> iova_shift(iovad), gather);
 	else
 		free_iova_fast(iovad, iova_pfn(iovad, iova),
 				size >> iova_shift(iovad));

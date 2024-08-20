@@ -42,6 +42,7 @@ struct notifier_block;
 struct iommu_sva;
 struct iommu_dma_cookie;
 struct iommu_fault_param;
+struct pt_iommu;
 
 #define IOMMU_FAULT_PERM_READ	(1 << 0) /* read */
 #define IOMMU_FAULT_PERM_WRITE	(1 << 1) /* write */
@@ -213,6 +214,7 @@ struct iommu_domain {
 	unsigned long pgsize_bitmap;	/* Bitmap of page sizes in use */
 	struct iommu_domain_geometry geometry;
 	struct iommu_dma_cookie *iova_cookie;
+	struct pt_iommu *iommupt;
 	int (*iopf_handler)(struct iopf_group *group);
 	void *fault_data;
 	union {
@@ -235,6 +237,11 @@ struct iommu_domain {
 static inline bool iommu_is_dma_domain(struct iommu_domain *domain)
 {
 	return domain->type & __IOMMU_DOMAIN_DMA_API;
+}
+
+static inline bool iommu_is_iommupt_domain(struct iommu_domain *domain)
+{
+	return IS_ENABLED(CONFIG_IOMMU_USE_IOMMUPT) && domain->iommupt;
 }
 
 enum iommu_cap {
@@ -346,7 +353,9 @@ struct iommu_iotlb_gather {
 	unsigned long		start;
 	unsigned long		end;
 	size_t			pgsize;
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	struct list_head	freelist;
+#endif
 	bool			queued;
 };
 
@@ -370,10 +379,12 @@ struct iommu_dirty_bitmap {
  */
 struct iommu_dirty_ops {
 	int (*set_dirty_tracking)(struct iommu_domain *domain, bool enabled);
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	int (*read_and_clear_dirty)(struct iommu_domain *domain,
 				    unsigned long iova, size_t size,
 				    unsigned long flags,
 				    struct iommu_dirty_bitmap *dirty);
+#endif
 };
 
 /**
@@ -592,7 +603,9 @@ struct iommu_ops {
 				 struct iommu_domain *domain);
 
 	const struct iommu_domain_ops *default_domain_ops;
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	unsigned long pgsize_bitmap;
+#endif
 	struct module *owner;
 	struct iommu_domain *identity_domain;
 	struct iommu_domain *blocked_domain;
@@ -644,6 +657,7 @@ struct iommu_domain_ops {
 	int (*set_dev_pasid)(struct iommu_domain *domain, struct device *dev,
 			     ioasid_t pasid);
 
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	int (*map_pages)(struct iommu_domain *domain, unsigned long iova,
 			 phys_addr_t paddr, size_t pgsize, size_t pgcount,
 			 int prot, gfp_t gfp, size_t *mapped);
@@ -656,16 +670,17 @@ struct iommu_domain_ops {
 			      size_t size);
 	void (*iotlb_sync)(struct iommu_domain *domain,
 			   struct iommu_iotlb_gather *iotlb_gather);
-	int (*cache_invalidate_user)(struct iommu_domain *domain,
-				     struct iommu_user_data_array *array);
 
 	phys_addr_t (*iova_to_phys)(struct iommu_domain *domain,
 				    dma_addr_t iova);
-
-	bool (*enforce_cache_coherency)(struct iommu_domain *domain);
-	int (*enable_nesting)(struct iommu_domain *domain);
 	int (*set_pgtable_quirks)(struct iommu_domain *domain,
 				  unsigned long quirks);
+	int (*enable_nesting)(struct iommu_domain *domain);
+#endif
+
+	int (*cache_invalidate_user)(struct iommu_domain *domain,
+				     struct iommu_user_data_array *array);
+	bool (*enforce_cache_coherency)(struct iommu_domain *domain);
 
 	void (*free)(struct iommu_domain *domain);
 };
@@ -780,7 +795,9 @@ static inline void iommu_iotlb_gather_init(struct iommu_iotlb_gather *gather)
 {
 	*gather = (struct iommu_iotlb_gather) {
 		.start	= ULONG_MAX,
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 		.freelist = LIST_HEAD_INIT(gather->freelist),
+#endif
 	};
 }
 
@@ -853,6 +870,7 @@ void iommu_set_dma_strict(void);
 extern int report_iommu_fault(struct iommu_domain *domain, struct device *dev,
 			      unsigned long iova, int flags);
 
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 static inline void iommu_flush_iotlb_all(struct iommu_domain *domain)
 {
 	if (domain->ops->flush_iotlb_all)
@@ -943,6 +961,15 @@ static inline bool iommu_iotlb_gather_queued(struct iommu_iotlb_gather *gather)
 {
 	return gather && gather->queued;
 }
+#else
+static inline void iommu_iotlb_sync(struct iommu_domain *domain,
+				    struct iommu_iotlb_gather *iotlb_gather)
+{
+	// FIXME
+	iommu_iotlb_gather_init(iotlb_gather);
+}
+
+#endif
 
 static inline void iommu_dirty_bitmap_init(struct iommu_dirty_bitmap *dirty,
 					   struct iova_bitmap *bitmap,
@@ -962,8 +989,10 @@ static inline void iommu_dirty_bitmap_record(struct iommu_dirty_bitmap *dirty,
 	if (dirty->bitmap)
 		iova_bitmap_set(dirty->bitmap, iova, length);
 
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	if (dirty->gather)
 		iommu_iotlb_gather_add_range(dirty->gather, iova, length);
+#endif
 }
 
 /* PCI device grouping function */

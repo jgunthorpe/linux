@@ -22,6 +22,7 @@ config INTEL_IOMMU
 	select PCI_ATS
 	select PCI_PRI
 	select PCI_PASID
+	select IOMMU_DOMAIN_PGTBL
 	help
 	  DMA remapping (DMAR) devices support enables independent address
 	  translations for Direct Memory Access (DMA) from devices.
