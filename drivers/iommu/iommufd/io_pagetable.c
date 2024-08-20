@@ -10,6 +10,7 @@
  */
 #include <linux/err.h>
 #include <linux/errno.h>
+#include <linux/generic_pt/iommu.h>
 #include <linux/iommu.h>
 #include <linux/iommufd.h>
 #include <linux/lockdep.h>
@@ -440,6 +441,22 @@ struct iova_bitmap_fn_arg {
 	struct iommu_dirty_bitmap *dirty;
 };
 
+static int op_read_and_clear_dirty(struct iommu_domain *domain,
+				   unsigned long iova, unsigned long len,
+				   unsigned long flags,
+				   struct iommu_dirty_bitmap *dirty_bitmap)
+{
+	if (iommu_is_iommupt_domain(domain))
+		return domain->iommupt->ops->read_and_clear_dirty(
+			domain->iommupt, iova, len, flags, dirty_bitmap);
+
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	return domain->dirty_ops->read_and_clear_dirty(domain, iova, len, flags,
+					 dirty_bitmap);
+#endif
+	return -EOPNOTSUPP;
+}
+
 static int __iommu_read_and_clear_dirty(struct iova_bitmap *bitmap,
 					unsigned long iova, size_t length,
 					void *opaque)
@@ -449,7 +466,6 @@ static int __iommu_read_and_clear_dirty(struct iova_bitmap *bitmap,
 	struct iova_bitmap_fn_arg *arg = opaque;
 	struct iommu_domain *domain = arg->domain;
 	struct iommu_dirty_bitmap *dirty = arg->dirty;
-	const struct iommu_dirty_ops *ops = domain->dirty_ops;
 	unsigned long last_iova = iova + length - 1;
 	unsigned long flags = arg->flags;
 	int ret;
@@ -457,9 +473,9 @@ static int __iommu_read_and_clear_dirty(struct iova_bitmap *bitmap,
 	iopt_for_each_contig_area(&iter, area, arg->iopt, iova, last_iova) {
 		unsigned long last = min(last_iova, iopt_area_last_iova(area));
 
-		ret = ops->read_and_clear_dirty(domain, iter.cur_iova,
-						last - iter.cur_iova + 1, flags,
-						dirty);
+		ret = op_read_and_clear_dirty(domain, iter.cur_iova,
+					      last - iter.cur_iova + 1, flags,
+					      dirty);
 		if (ret)
 			return ret;
 	}
@@ -469,19 +485,31 @@ static int __iommu_read_and_clear_dirty(struct iova_bitmap *bitmap,
 	return 0;
 }
 
+static bool iommu_have_read_and_clear(struct iommu_domain *domain)
+{
+	if (iommu_is_iommupt_domain(domain) &&
+	    domain->iommupt->ops->read_and_clear_dirty)
+		return true;
+
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	if (domain->dirty_ops && domain->dirty_ops->read_and_clear_dirty)
+		return true;
+#endif
+	return false;
+}
+
 static int
 iommu_read_and_clear_dirty(struct iommu_domain *domain,
 			   struct io_pagetable *iopt, unsigned long flags,
 			   struct iommu_hwpt_get_dirty_bitmap *bitmap)
 {
-	const struct iommu_dirty_ops *ops = domain->dirty_ops;
 	struct iommu_iotlb_gather gather;
 	struct iommu_dirty_bitmap dirty;
 	struct iova_bitmap_fn_arg arg;
 	struct iova_bitmap *iter;
 	int ret = 0;
 
-	if (!ops || !ops->read_and_clear_dirty)
+	if (!iommu_have_read_and_clear(domain))
 		return -EOPNOTSUPP;
 
 	iter = iova_bitmap_alloc(bitmap->iova, bitmap->length,
@@ -553,7 +581,6 @@ int iopt_read_and_clear_dirty_data(struct io_pagetable *iopt,
 static int iopt_clear_dirty_data(struct io_pagetable *iopt,
 				 struct iommu_domain *domain)
 {
-	const struct iommu_dirty_ops *ops = domain->dirty_ops;
 	struct iommu_iotlb_gather gather;
 	struct iommu_dirty_bitmap dirty;
 	struct iopt_area *area;
@@ -568,9 +595,9 @@ static int iopt_clear_dirty_data(struct io_pagetable *iopt,
 		if (!area->pages)
 			continue;
 
-		ret = ops->read_and_clear_dirty(domain, iopt_area_iova(area),
-						iopt_area_length(area), 0,
-						&dirty);
+		ret = op_read_and_clear_dirty(domain, iopt_area_iova(area),
+					      iopt_area_length(area), 0,
+					      &dirty);
 		if (ret)
 			break;
 	}

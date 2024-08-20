@@ -32,6 +32,7 @@
 #include <trace/events/iommu.h>
 #include <linux/sched/mm.h>
 #include <linux/msi.h>
+#include <linux/generic_pt/iommu.h>
 
 #include "dma-iommu.h"
 #include "iommu-priv.h"
@@ -1964,8 +1965,10 @@ static struct iommu_domain *__iommu_domain_alloc(const struct iommu_ops *ops,
 	 * If not already set, assume all sizes by default; the driver
 	 * may override this later
 	 */
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 	if (!domain->pgsize_bitmap)
 		domain->pgsize_bitmap = ops->pgsize_bitmap;
+#endif
 
 	if (!domain->ops)
 		domain->ops = ops->default_domain_ops;
@@ -2371,16 +2374,21 @@ EXPORT_SYMBOL_GPL(iommu_detach_group);
 
 phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 {
+	if (iommu_is_iommupt_domain(domain))
+		return domain->iommupt->ops->iova_to_phys(domain->iommupt, iova);
+
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	if (domain->type & __IOMMU_DOMAIN_PAGING)
+		return domain->ops->iova_to_phys(domain, iova);
+#endif
+
 	if (domain->type == IOMMU_DOMAIN_IDENTITY)
 		return iova;
-
-	if (domain->type == IOMMU_DOMAIN_BLOCKED)
-		return 0;
-
-	return domain->ops->iova_to_phys(domain, iova);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(iommu_iova_to_phys);
 
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
 static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
 			   phys_addr_t paddr, size_t size, size_t *count)
 {
@@ -2435,8 +2443,9 @@ out_set_count:
 	return pgsize;
 }
 
-static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
-		       phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
+				    unsigned long iova, phys_addr_t paddr,
+				    size_t size, int prot, gfp_t gfp)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
 	unsigned long orig_iova = iova;
@@ -2497,11 +2506,57 @@ static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
 
 	return ret;
 }
+#else
+static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
+				    unsigned long iova, phys_addr_t paddr,
+				    size_t size, int prot, gfp_t gfp)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+
+static int __iommu_map_sync(struct iommu_domain *domain, unsigned long iova,
+			    size_t len, struct iommu_iotlb_gather *iotlb_gather)
+{
+	if (iommu_is_iommupt_domain(domain)) {
+		iommu_iotlb_sync(domain, iotlb_gather);
+		return 0;
+	}
+
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+	if (domain->ops->iotlb_sync_map)
+		return domain->ops->iotlb_sync_map(domain, iova, len);
+#endif
+	return 0;
+}
+
+static int __iommu_map(struct iommu_domain *domain, unsigned long iova,
+		       phys_addr_t paddr, size_t size, int prot, gfp_t gfp,
+		       struct iommu_iotlb_gather *iotlb_gather)
+{
+	int ret;
+
+	if (iommu_is_iommupt_domain(domain)) {
+		size_t mapped;
+
+		ret = domain->iommupt->ops->map_range(domain->iommupt, iova,
+						       paddr, size, prot, gfp,
+						       &mapped, iotlb_gather);
+		if (ret) {
+			domain->iommupt->ops->unmap_range(domain->iommupt, iova,
+							  mapped, iotlb_gather);
+			iommu_iotlb_sync(domain, iotlb_gather);
+			return ret;
+		}
+		return 0;
+	}
+	return __iommu_map_domain_pgtbl(domain, iova, paddr, size, prot, gfp);
+}
 
 int iommu_map(struct iommu_domain *domain, unsigned long iova,
 	      phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
 {
-	const struct iommu_domain_ops *ops = domain->ops;
+	struct iommu_iotlb_gather iotlb_gather;
 	int ret;
 
 	might_sleep_if(gfpflags_allow_blocking(gfp));
@@ -2511,14 +2566,15 @@ int iommu_map(struct iommu_domain *domain, unsigned long iova,
 				__GFP_HIGHMEM)))
 		return -EINVAL;
 
-	ret = __iommu_map(domain, iova, paddr, size, prot, gfp);
-	if (ret == 0 && ops->iotlb_sync_map) {
-		ret = ops->iotlb_sync_map(domain, iova, size);
-		if (ret)
-			goto out_err;
-	}
+	iommu_iotlb_gather_init(&iotlb_gather);
+	ret = __iommu_map(domain, iova, paddr, size, prot, gfp, &iotlb_gather);
+	if (ret)
+		return ret;
 
-	return ret;
+	ret = __iommu_map_sync(domain, iova, size, &iotlb_gather);
+	if (ret)
+		goto out_err;
+	return 0;
 
 out_err:
 	/* undo mappings already done */
@@ -2528,9 +2584,10 @@ out_err:
 }
 EXPORT_SYMBOL_GPL(iommu_map);
 
-static size_t __iommu_unmap(struct iommu_domain *domain,
-			    unsigned long iova, size_t size,
-			    struct iommu_iotlb_gather *iotlb_gather)
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+static size_t
+__iommu_unmap_domain_pgtbl(struct iommu_domain *domain, unsigned long iova,
+			   size_t size, struct iommu_iotlb_gather *iotlb_gather)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
 	size_t unmapped_page, unmapped = 0;
@@ -2581,6 +2638,24 @@ static size_t __iommu_unmap(struct iommu_domain *domain,
 	trace_unmap(orig_iova, size, unmapped);
 	return unmapped;
 }
+#else
+static size_t
+__iommu_unmap_domain_pgtbl(struct iommu_domain *domain, unsigned long iova,
+			   size_t size, struct iommu_iotlb_gather *iotlb_gather)
+{
+	return 0;
+}
+#endif
+
+static size_t __iommu_unmap(struct iommu_domain *domain,
+			    unsigned long iova, size_t size,
+			    struct iommu_iotlb_gather *iotlb_gather)
+{
+	if (iommu_is_iommupt_domain(domain))
+		return domain->iommupt->ops->unmap_range(domain->iommupt, iova,
+							 size, iotlb_gather);
+	return __iommu_unmap_domain_pgtbl(domain, iova, size, iotlb_gather);
+}
 
 size_t iommu_unmap(struct iommu_domain *domain,
 		   unsigned long iova, size_t size)
@@ -2608,7 +2683,7 @@ ssize_t iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 		     struct scatterlist *sg, unsigned int nents, int prot,
 		     gfp_t gfp)
 {
-	const struct iommu_domain_ops *ops = domain->ops;
+	struct iommu_iotlb_gather iotlb_gather;
 	size_t len = 0, mapped = 0;
 	phys_addr_t start;
 	unsigned int i = 0;
@@ -2621,16 +2696,16 @@ ssize_t iommu_map_sg(struct iommu_domain *domain, unsigned long iova,
 				__GFP_HIGHMEM)))
 		return -EINVAL;
 
+	iommu_iotlb_gather_init(&iotlb_gather);
+
 	while (i <= nents) {
 		phys_addr_t s_phys = sg_phys(sg);
 
 		if (len && s_phys != start + len) {
-			ret = __iommu_map(domain, iova + mapped, start,
-					len, prot, gfp);
-
+			ret = __iommu_map(domain, iova + mapped, start, len,
+					  prot, gfp, &iotlb_gather);
 			if (ret)
 				goto out_err;
-
 			mapped += len;
 			len = 0;
 		}
@@ -2650,11 +2725,9 @@ next:
 			sg = sg_next(sg);
 	}
 
-	if (ops->iotlb_sync_map) {
-		ret = ops->iotlb_sync_map(domain, iova, mapped);
-		if (ret)
-			goto out_err;
-	}
+	ret = __iommu_map_sync(domain, iova, mapped, &iotlb_gather);
+	if (ret)
+		goto out_err;
 	return mapped;
 
 out_err:
@@ -2721,14 +2794,19 @@ core_initcall(iommu_init);
 
 int iommu_enable_nesting(struct iommu_domain *domain)
 {
+#if 0 // entire function removed in another patch
 	if (domain->type != IOMMU_DOMAIN_UNMANAGED)
 		return -EINVAL;
 	if (!domain->ops->enable_nesting)
 		return -EINVAL;
 	return domain->ops->enable_nesting(domain);
+#endif
+	return -EINVAL;
 }
 EXPORT_SYMBOL_GPL(iommu_enable_nesting);
 
+#if IS_ENABLED(CONFIG_IOMMU_DOMAIN_PGTBL)
+// Only used by adreno to set IO_PGTABLE_QUIRK_ARM_OUTER_WBWA
 int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 		unsigned long quirk)
 {
@@ -2739,6 +2817,7 @@ int iommu_set_pgtable_quirks(struct iommu_domain *domain,
 	return domain->ops->set_pgtable_quirks(domain, quirk);
 }
 EXPORT_SYMBOL_GPL(iommu_set_pgtable_quirks);
+#endif
 
 /**
  * iommu_get_resv_regions - get reserved regions
