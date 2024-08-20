@@ -13,6 +13,8 @@
 
 DECLARE_RWSEM(cxl_memdev_rwsem);
 
+#define CXL_ADEV_NAME "fwctl-cxl"
+
 /*
  * An entire PCI topology full of devices should be enough for any
  * config
@@ -1030,6 +1032,7 @@ static const struct file_operations cxl_memdev_fops = {
 struct cxl_memdev *devm_cxl_add_memdev(struct device *host,
 				       struct cxl_dev_state *cxlds)
 {
+	struct auxiliary_device *adev;
 	struct cxl_memdev *cxlmd;
 	struct device *dev;
 	struct cdev *cdev;
@@ -1056,10 +1059,26 @@ struct cxl_memdev *devm_cxl_add_memdev(struct device *host,
 	if (rc)
 		goto err;
 
+	adev = &cxlds->cxl_mbox.adev;
+	adev->id = cxlmd->id;
+	adev->name = CXL_ADEV_NAME;
+	adev->dev.parent = dev;
+
+	rc = auxiliary_device_init(adev);
+	if (rc)
+		goto err;
+
+	rc = auxiliary_device_add(adev);
+	if (rc)
+		goto aux_err;
+
 	rc = devm_add_action_or_reset(host, cxl_memdev_unregister, cxlmd);
 	if (rc)
 		return ERR_PTR(rc);
 	return cxlmd;
+
+aux_err:
+	auxiliary_device_uninit(adev);
 
 err:
 	/*
