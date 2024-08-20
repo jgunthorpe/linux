@@ -4,6 +4,7 @@
 #include <linux/debugfs.h>
 #include <linux/ktime.h>
 #include <linux/mutex.h>
+#include <linux/cxl/mailbox.h>
 #include <asm/unaligned.h>
 #include <cxlpci.h>
 #include <cxlmem.h>
@@ -215,6 +216,15 @@ static struct cxl_mem_command *cxl_mem_find_command(u16 opcode)
 	return NULL;
 }
 
+struct cxl_mem_command *cxl_get_mem_command(u32 id)
+{
+	if (id > CXL_MEM_COMMAND_ID_MAX)
+		return NULL;
+
+	return &cxl_mem_commands[id];
+}
+EXPORT_SYMBOL_NS_GPL(cxl_get_mem_command, CXL);
+
 static const char *cxl_mem_opcode_to_name(u16 opcode)
 {
 	struct cxl_mem_command *c;
@@ -377,10 +387,13 @@ static int cxl_mbox_cmd_ctor(struct cxl_mbox_cmd *mbox_cmd,
 	}
 
 	/* Prepare to handle a full payload for variable sized output */
-	if (out_size == CXL_VARIABLE_PAYLOAD)
-		mbox_cmd->size_out = cxl_mbox->payload_size;
-	else
+	if (out_size == CXL_VARIABLE_PAYLOAD) {
+		/* Adding extra 8 bytes for FWCTL, should not impact operation */
+		mbox_cmd->size_out = cxl_mbox->payload_size +
+			sizeof(struct fwctl_rpc_cxl_out);
+	} else {
 		mbox_cmd->size_out = out_size;
+	}
 
 	if (mbox_cmd->size_out) {
 		mbox_cmd->payload_out = kvzalloc(mbox_cmd->size_out, GFP_KERNEL);
@@ -477,6 +490,73 @@ static int cxl_to_mem_cmd(struct cxl_mem_command *mem_cmd,
 	return 0;
 }
 
+static int cxl_fwctl_to_mem_cmd(struct cxl_mem_command *mem_cmd,
+				const struct cxl_send_command *send_cmd,
+				struct cxl_mailbox *cxl_mbox)
+{
+	struct cxl_mem_command *c = &cxl_mem_commands[send_cmd->id];
+	const struct cxl_command_info *info = &c->info;
+
+	if (send_cmd->flags & ~CXL_MEM_COMMAND_FLAG_MASK)
+		return -EINVAL;
+
+	if (send_cmd->rsvd)
+		return -EINVAL;
+
+	if (send_cmd->in.rsvd || send_cmd->out.rsvd)
+		return -EINVAL;
+
+	/* Check the input buffer is the expected size */
+	if (info->size_in != CXL_VARIABLE_PAYLOAD &&
+	    info->size_in != send_cmd->in.size)
+		return -ENOMEM;
+
+	/* Check the output buffer is at least large enough */
+	if (info->size_out != CXL_VARIABLE_PAYLOAD &&
+	    send_cmd->out.size < info->size_out)
+		return -ENOMEM;
+
+	*mem_cmd = (struct cxl_mem_command) {
+		.info = {
+			.id = info->id,
+			.flags = info->flags,
+			.size_in = send_cmd->in.size,
+			.size_out = send_cmd->out.size,
+		},
+		.opcode = c->opcode
+	};
+
+	return 0;
+}
+
+static int verify_send_command(const struct cxl_send_command *send_cmd,
+			       struct cxl_mailbox *cxl_mbox)
+{
+	if (send_cmd->id == 0 || send_cmd->id >= CXL_MEM_COMMAND_ID_MAX)
+		return -ENOTTY;
+
+	/*
+	 * The user can never specify an input payload larger than what hardware
+	 * supports, but output can be arbitrarily large (simply write out as
+	 * much data as the hardware provides).
+	 */
+	if (send_cmd->in.size > cxl_mbox->payload_size)
+		return -EINVAL;
+
+	return 0;
+}
+
+/* Sanitize and construct a cxl_mbox_cmd */
+static int construct_mbox_cmd(struct cxl_mbox_cmd *mbox_cmd,
+			      struct cxl_mem_command *mem_cmd,
+			      struct cxl_mailbox *cxl_mbox,
+			      const struct cxl_send_command *send_cmd)
+{
+	return cxl_mbox_cmd_ctor(mbox_cmd, cxl_mbox, mem_cmd->opcode,
+				 mem_cmd->info.size_in, mem_cmd->info.size_out,
+				 send_cmd->in.payload);
+}
+
 /**
  * cxl_validate_cmd_from_user() - Check fields for CXL_MEM_SEND_COMMAND.
  * @mbox_cmd: Sanitized and populated &struct cxl_mbox_cmd.
@@ -501,16 +581,9 @@ static int cxl_validate_cmd_from_user(struct cxl_mbox_cmd *mbox_cmd,
 	struct cxl_mem_command mem_cmd;
 	int rc;
 
-	if (send_cmd->id == 0 || send_cmd->id >= CXL_MEM_COMMAND_ID_MAX)
-		return -ENOTTY;
-
-	/*
-	 * The user can never specify an input payload larger than what hardware
-	 * supports, but output can be arbitrarily large (simply write out as
-	 * much data as the hardware provides).
-	 */
-	if (send_cmd->in.size > cxl_mbox->payload_size)
-		return -EINVAL;
+	rc = verify_send_command(send_cmd, cxl_mbox);
+	if (rc)
+		return rc;
 
 	/* Sanitize and construct a cxl_mem_command */
 	if (send_cmd->id == CXL_MEM_COMMAND_ID_RAW)
@@ -521,10 +594,26 @@ static int cxl_validate_cmd_from_user(struct cxl_mbox_cmd *mbox_cmd,
 	if (rc)
 		return rc;
 
-	/* Sanitize and construct a cxl_mbox_cmd */
-	return cxl_mbox_cmd_ctor(mbox_cmd, cxl_mbox, mem_cmd.opcode,
-				 mem_cmd.info.size_in, mem_cmd.info.size_out,
-				 send_cmd->in.payload);
+	return construct_mbox_cmd(mbox_cmd, &mem_cmd, cxl_mbox, send_cmd);
+}
+
+static int cxl_validate_cmd_from_fwctl(struct cxl_mbox_cmd *mbox_cmd,
+				       struct cxl_mailbox *cxl_mbox,
+				       const struct cxl_send_command *send_cmd)
+{
+	struct cxl_mem_command mem_cmd;
+	int rc;
+
+	rc = verify_send_command(send_cmd, cxl_mbox);
+	if (rc)
+		return rc;
+
+	/* Sanitize and construct a cxl_mem_command */
+	rc = cxl_fwctl_to_mem_cmd(&mem_cmd, send_cmd, cxl_mbox);
+	if (rc)
+		return rc;
+
+	return construct_mbox_cmd(mbox_cmd, &mem_cmd, cxl_mbox, send_cmd);
 }
 
 int cxl_query_cmd(struct cxl_mailbox *cxl_mbox,
@@ -565,6 +654,86 @@ int cxl_query_cmd(struct cxl_mailbox *cxl_mbox,
 
 	return 0;
 }
+
+static bool fwctl_supported_commands(u16 opcode)
+{
+	switch (opcode) {
+	case CXL_MBOX_OP_GET_SUPPORTED_FEATURES:
+	case CXL_MBOX_OP_GET_FEATURE:
+	case CXL_MBOX_OP_SET_FEATURE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int get_fwctl_supported_commands(void)
+{
+	struct cxl_mem_command *cmd;
+	int cmds = 0;
+
+	cxl_for_each_cmd(cmd) {
+		if (fwctl_supported_commands(cmd->opcode))
+			cmds++;
+	}
+
+	return cmds;
+}
+
+void *cxl_query_cmd_from_fwctl(struct cxl_mailbox *cxl_mbox,
+			       struct cxl_mem_query_commands *q,
+			       size_t *out_len)
+{
+	u32 n_commands = q->n_commands;
+	struct cxl_mem_command *cmd;
+	size_t output_size;
+	int commands;
+	int j = 0;
+
+	commands = get_fwctl_supported_commands();
+	if (n_commands > commands)
+		return ERR_PTR(-EINVAL);
+
+	output_size = sizeof(struct cxl_mem_query_commands) +
+		      n_commands * sizeof(struct cxl_command_info);
+
+	struct cxl_mem_query_commands *qout __free(kvfree) =
+		kvzalloc(output_size, GFP_KERNEL);
+
+	if (!qout)
+		return ERR_PTR(-ENOMEM);
+
+	*out_len = output_size;
+	if (n_commands == 0) {
+		qout->n_commands = commands;
+		return no_free_ptr(qout);
+	}
+
+	qout->n_commands = n_commands;
+
+	/*
+	 * otherwise, return min(n_commands, total commands) cxl_command_info
+	 * structures.
+	 */
+	cxl_for_each_cmd(cmd) {
+		struct cxl_command_info info = cmd->info;
+
+		if (fwctl_supported_commands(cmd->opcode)) {
+			if (test_bit(info.id, cxl_mbox->enabled_cmds))
+				info.flags |= CXL_MEM_COMMAND_FLAG_ENABLED;
+			if (test_bit(info.id, cxl_mbox->exclusive_cmds))
+				info.flags |= CXL_MEM_COMMAND_FLAG_EXCLUSIVE;
+
+			memcpy(&qout->commands[j++], &info, sizeof(info));
+		}
+
+		if (j == n_commands)
+			break;
+	}
+
+	return no_free_ptr(qout);
+}
+EXPORT_SYMBOL_NS_GPL(cxl_query_cmd_from_fwctl, CXL);
 
 /**
  * handle_mailbox_cmd_from_user() - Dispatch a mailbox command for userspace.
@@ -631,7 +800,107 @@ out:
 	return rc;
 }
 
-int cxl_send_cmd(struct cxl_mailbox *cxl_mbox, struct cxl_send_command __user *s)
+static int cxl_send_cmd(struct cxl_mailbox *cxl_mbox, struct cxl_send_command *send,
+			struct cxl_mbox_cmd *mbox_cmd)
+{
+	int rc;
+
+	rc = cxl_validate_cmd_from_user(mbox_cmd, cxl_mbox, send);
+	if (rc)
+		return rc;
+
+	rc = handle_mailbox_cmd_from_user(cxl_mbox, mbox_cmd, send->out.payload,
+					  &send->out.size, &send->retval);
+	if (rc)
+		return rc;
+
+	return 0;
+}
+
+/**
+ * handle_mailbox_cmd_from_fwctl() - Dispatch a mailbox command for userspace.
+ * @mailbox: The mailbox context for the operation.
+ * @mbox_cmd: The validated mailbox command.
+ *
+ * Return:
+ *  * %0	- Mailbox transaction succeeded. This implies the mailbox
+ *		  protocol completed successfully not that the operation itself
+ *		  was successful.
+ *  * %-ENOMEM  - Couldn't allocate a bounce buffer.
+ *  * %-EINTR	- Mailbox acquisition interrupted.
+ *  * %-EXXX	- Transaction level failures.
+ *
+ * Dispatches a mailbox command on behalf of a userspace request.
+ * The output payload is copied to userspace by fwctl.
+ *
+ * See cxl_send_cmd().
+ */
+static int handle_mailbox_cmd_from_fwctl(struct cxl_mailbox *cxl_mbox,
+					 struct cxl_mbox_cmd *mbox_cmd)
+{
+	struct device *dev = cxl_mbox->host;
+	struct fwctl_rpc_cxl_out *orig_out;
+	int rc;
+
+	/*
+	 * Save the payload_out pointer and move it to where hardware output
+	 * can be copied to.
+	 */
+	orig_out = mbox_cmd->payload_out;
+	mbox_cmd->payload_out = (void *)orig_out + sizeof(*orig_out);
+
+	dev_dbg(dev,
+		"Submitting %s command for user\n"
+		"\topcode: %x\n"
+		"\tsize: %zx\n",
+		cxl_mem_opcode_to_name(mbox_cmd->opcode),
+		mbox_cmd->opcode, mbox_cmd->size_in);
+
+	rc = cxl_mbox->mbox_send(cxl_mbox, mbox_cmd);
+	if (rc)
+		return rc;
+
+	orig_out->retval = mbox_cmd->return_code;
+	mbox_cmd->payload_out = (void *)orig_out;
+
+	return 0;
+}
+
+int cxl_fwctl_send_cmd(struct cxl_mailbox *cxl_mbox,
+		       struct fwctl_cxl_command *fwctl_cmd,
+		       struct cxl_mbox_cmd *mbox_cmd, size_t *out_len)
+{
+	struct cxl_send_command send_cmd = {
+		.id = fwctl_cmd->id,
+		.flags = fwctl_cmd->flags,
+		.raw.opcode = fwctl_cmd->raw.opcode,
+		.in.size = fwctl_cmd->in.size,
+		.in.payload = fwctl_cmd->in.payload,
+		.out.size = *out_len,
+	};
+	int rc;
+
+	guard(rwsem_read)(&cxl_memdev_rwsem);
+	rc = cxl_validate_cmd_from_fwctl(mbox_cmd, cxl_mbox, &send_cmd);
+	if (rc)
+		return rc;
+
+	rc = handle_mailbox_cmd_from_fwctl(cxl_mbox, mbox_cmd);
+	if (rc)
+		return rc;
+
+	rc = cxl_mbox->mbox_send(cxl_mbox, mbox_cmd);
+	if (rc)
+		return rc;
+
+	*out_len = mbox_cmd->size_out;
+
+	return 0;
+}
+EXPORT_SYMBOL_NS_GPL(cxl_fwctl_send_cmd, CXL);
+
+int cxl_send_cmd_from_user(struct cxl_mailbox *cxl_mbox,
+			   struct cxl_send_command __user *s)
 {
 	struct device *dev = cxl_mbox->host;
 	struct cxl_send_command send;
@@ -643,12 +912,7 @@ int cxl_send_cmd(struct cxl_mailbox *cxl_mbox, struct cxl_send_command __user *s
 	if (copy_from_user(&send, s, sizeof(send)))
 		return -EFAULT;
 
-	rc = cxl_validate_cmd_from_user(&mbox_cmd, cxl_mbox, &send);
-	if (rc)
-		return rc;
-
-	rc = handle_mailbox_cmd_from_user(cxl_mbox, &mbox_cmd, send.out.payload,
-					  &send.out.size, &send.retval);
+	rc = cxl_send_cmd(cxl_mbox, &send, &mbox_cmd);
 	if (rc)
 		return rc;
 

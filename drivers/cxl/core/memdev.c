@@ -11,7 +11,7 @@
 #include "trace.h"
 #include "core.h"
 
-static DECLARE_RWSEM(cxl_memdev_rwsem);
+DECLARE_RWSEM(cxl_memdev_rwsem);
 
 /*
  * An entire PCI topology full of devices should be enough for any
@@ -669,7 +669,7 @@ static long __cxl_memdev_ioctl(struct cxl_memdev *cxlmd, unsigned int cmd,
 	case CXL_MEM_QUERY_COMMANDS:
 		return cxl_query_cmd(cxl_mbox, (void __user *)arg);
 	case CXL_MEM_SEND_COMMAND:
-		return cxl_send_cmd(cxl_mbox, (void __user *)arg);
+		return cxl_send_cmd_from_user(cxl_mbox, (void __user *)arg);
 	default:
 		return -ENOTTY;
 	}
