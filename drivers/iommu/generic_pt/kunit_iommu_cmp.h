@@ -7,6 +7,9 @@
 #include <linux/iommu.h>
 #include <linux/io-pgtable.h>
 
+#ifndef __GENERIC_PT_KUNIT_IOMMU_CMP_H
+#define __GENERIC_PT_KUNIT_IOMMU_CMP_H
+
 #ifndef PT_KUNIT_IO_PGTBL_DYNAMIC_TOP
 #define PT_KUNIT_IO_PGTBL_DYNAMIC_TOP 0
 #endif
@@ -448,3 +451,5 @@ static struct kunit_suite NS(cmp_suite) = {
 	.test_cases = cmp_test_cases,
 };
 kunit_test_suites(&NS(cmp_suite));
+
+#endif

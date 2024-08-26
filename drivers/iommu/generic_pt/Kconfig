@@ -145,5 +145,10 @@ config IOMMU_PT_KUNIT_TEST
 	  functions provided by the page table format, as well as covering the
 	  iommu_domain related functions.
 
+config IOMMU_PT_KUNIT_BENCHMARK
+	bool "IOMMU Page Table Kunit Tests for comparison benchmarks"
+	depends on IOMMU_PT_KUNIT_TEST
+	depends on IOMMU_PT_AMDV1
+	depends on AMD_IOMMU
 endif
 endif

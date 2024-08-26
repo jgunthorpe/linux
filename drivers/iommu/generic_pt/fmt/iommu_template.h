@@ -47,5 +47,8 @@
 #include "../kunit_iommu_pt.h"
 #ifdef pt_iommu_alloc_io_pgtable
 #include "../kunit_iommu_cmp.h"
+#if IS_ENABLED(CONFIG_IOMMU_PT_KUNIT_BENCHMARK)
+#include "../kunit_iommu_perf.h"
+#endif
 #endif
 #endif
