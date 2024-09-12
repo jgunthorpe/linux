@@ -393,7 +393,7 @@ static const struct pt_iommu_amdv1_cfg amdv1_kunit_fmt_cfgs[] = {
 enum { KUNIT_FMT_FEATURES = 0 };
 #endif
 
-#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU) && \
+#if 0 && defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU) && \
 	!defined(AMDV1_IOMMUFD_SELFTEST)
 #include <linux/io-pgtable.h>
 #include "../../amd/amd_iommu_types.h"

@@ -246,7 +246,7 @@ static const struct pt_iommu_x86pae_cfg x86pae_kunit_fmt_cfgs[] = {
 enum { KUNIT_FMT_FEATURES = 0 };
 #endif
 
-#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU)
+#if 0 && defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU)
 #include <linux/io-pgtable.h>
 #include "../../amd/amd_iommu_types.h"
 
