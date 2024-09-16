@@ -29,4 +29,13 @@ config FWCTL_CXL
 	  mailbox commands for CXL device.
 
 	  If you don't know what to do here, say N.
+
+config FWCTL_BNXT
+	tristate "bnxt control fwctl driver"
+	depends on BNXT
+	help
+	  BNXTCTL provides interface for the user process to access the debug and
+	  configuration registers of the Broadcom NIC hardware family
+
+	  If you don't know what to do here, say N.
 endif
