@@ -2275,7 +2275,9 @@ struct bnxt {
 	(BNXT_CHIP_P3(bp) || BNXT_CHIP_P4(bp) || BNXT_CHIP_P5(bp))
 
 	struct bnxt_aux_priv	*aux_priv;
+	struct bnxt_aux_priv	*aux_priv_fwctl;
 	struct bnxt_en_dev	*edev;
+	struct bnxt_en_dev	*edev_fwctl;
 
 	struct bnxt_napi	**bnapi;
 
