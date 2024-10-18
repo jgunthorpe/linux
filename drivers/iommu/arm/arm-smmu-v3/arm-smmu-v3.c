@@ -2702,6 +2702,45 @@ static void arm_smmu_remove_master_domain(struct arm_smmu_master *master,
 	spin_unlock_irqrestore(&smmu_domain->devices_lock, flags);
 }
 
+static int arm_smmu_enable_iopf(struct arm_smmu_master *master)
+{
+	int ret;
+
+	iommu_group_mutex_assert(master->dev);
+
+	if (!IS_ENABLED(CONFIG_ARM_SMMU_V3_SVA))
+		return -EOPNOTSUPP;
+
+	/* We're not keeping track of SIDs in fault events */
+	if (master->num_streams != 1)
+		return -EOPNOTSUPP;
+
+	if (!master->stall_enabled)
+		return -EOPNOTSUPP;
+
+	if (master->iopf_refcount != 0) {
+		master->iopf_refcount++;
+		return 0;
+	}
+
+	ret = iopf_queue_add_device(master->smmu->evtq.iopf, master->dev);
+	if (ret)
+		return ret;
+	master->iopf_refcount = 1;
+	return 0;
+}
+
+static void arm_smmu_disable_iopf(struct arm_smmu_master *master)
+{
+	iommu_group_mutex_assert(master->dev);
+
+	if (!IS_ENABLED(CONFIG_ARM_SMMU_V3_SVA))
+		return;
+
+	iopf_queue_remove_device(master->smmu->evtq.iopf, master->dev);
+	master->iopf_refcount--;
+}
+
 /*
  * Start the sequence to attach a domain to a master. The sequence contains three
  * steps:
@@ -2730,6 +2769,7 @@ int arm_smmu_attach_prepare(struct arm_smmu_attach_state *state,
 	struct arm_smmu_domain *smmu_domain =
 		to_smmu_domain_devices(new_domain);
 	unsigned long flags;
+	int ret;
 
 	/*
 	 * arm_smmu_share_asid() must not see two domains pointing to the same
@@ -2768,6 +2808,12 @@ int arm_smmu_attach_prepare(struct arm_smmu_attach_state *state,
 			master_domain->nested_ats_flush =
 				to_smmu_nested_domain(new_domain)->enable_ats;
 
+		if (new_domain->iopf_handler) {
+			ret = arm_smmu_enable_iopf(master);
+			if (ret)
+				goto err_free_master_domain;
+		}
+
 		/*
 		 * During prepare we want the current smmu_domain and new
 		 * smmu_domain to be in the devices list before we change any
@@ -2787,8 +2833,8 @@ int arm_smmu_attach_prepare(struct arm_smmu_attach_state *state,
 		    !arm_smmu_master_canwbs(master)) {
 			spin_unlock_irqrestore(&smmu_domain->devices_lock,
 					       flags);
-			kfree(master_domain);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto err_iopf;
 		}
 
 		if (state->ats_enabled)
@@ -2807,6 +2853,13 @@ int arm_smmu_attach_prepare(struct arm_smmu_attach_state *state,
 		wmb();
 	}
 	return 0;
+
+err_iopf:
+	if (new_domain->iopf_handler)
+		arm_smmu_disable_iopf(master);
+err_free_master_domain:
+	kfree(master_domain);
+	return ret;
 }
 
 /*
@@ -2835,6 +2888,8 @@ void arm_smmu_attach_commit(struct arm_smmu_attach_state *state)
 	}
 	master->ats_enabled = state->ats_enabled;
 
+	if (state->old_domain && state->old_domain->iopf_handler)
+		arm_smmu_disable_iopf(master);
 	arm_smmu_remove_master_domain(master, state->old_domain, state->ssid);
 }
 
@@ -2995,6 +3050,7 @@ int arm_smmu_set_pasid(struct arm_smmu_master *master,
 	    sid_domain->type != IOMMU_DOMAIN_IDENTITY &&
 	    sid_domain->type != IOMMU_DOMAIN_BLOCKED)
 		return -EINVAL;
+
 
 	cdptr = arm_smmu_alloc_cd_ptr(master, pasid);
 	if (!cdptr)
@@ -3400,8 +3456,7 @@ static void arm_smmu_release_device(struct device *dev)
 {
 	struct arm_smmu_master *master = dev_iommu_priv_get(dev);
 
-	if (WARN_ON(arm_smmu_master_sva_enabled(master)))
-		iopf_queue_remove_device(master->smmu->evtq.iopf, dev);
+	WARN_ON(master->iopf_refcount);
 
 	/* Put the STE back to what arm_smmu_init_strtab() sets */
 	if (dev->iommu->require_direct)
@@ -3486,18 +3541,10 @@ static int arm_smmu_dev_enable_feature(struct device *dev,
 
 	switch (feat) {
 	case IOMMU_DEV_FEAT_IOPF:
-		if (!arm_smmu_master_iopf_supported(master))
-			return -EINVAL;
-		if (master->iopf_enabled)
-			return -EBUSY;
-		master->iopf_enabled = true;
-		return 0;
 	case IOMMU_DEV_FEAT_SVA:
-		if (!arm_smmu_master_sva_supported(master))
+		if (!(master->smmu->features & ARM_SMMU_FEAT_SVA))
 			return -EINVAL;
-		if (arm_smmu_master_sva_enabled(master))
-			return -EBUSY;
-		return arm_smmu_master_enable_sva(master);
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -3513,16 +3560,8 @@ static int arm_smmu_dev_disable_feature(struct device *dev,
 
 	switch (feat) {
 	case IOMMU_DEV_FEAT_IOPF:
-		if (!master->iopf_enabled)
-			return -EINVAL;
-		if (master->sva_enabled)
-			return -EBUSY;
-		master->iopf_enabled = false;
-		return 0;
 	case IOMMU_DEV_FEAT_SVA:
-		if (!arm_smmu_master_sva_enabled(master))
-			return -EINVAL;
-		return arm_smmu_master_disable_sva(master);
+		return 0;
 	default:
 		return -EINVAL;
 	}
