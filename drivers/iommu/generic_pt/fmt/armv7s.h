@@ -467,4 +467,54 @@ enum {
 };
 #endif
 
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_IOMMU_IO_PGTABLE_ARMV7S)
+#include <linux/io-pgtable.h>
+
+/* Unmapping part of a huge page triggers WARN_ON in io-pgtable */
+#define PT_KUNIT_UNMAP_EXACT 1
+
+static struct io_pgtable_ops *
+armv7s_pt_iommu_alloc_io_pgtable(struct pt_iommu_armv7s_cfg *cfg,
+			       struct device *iommu_dev,
+			       struct io_pgtable_cfg **unused_pgtbl_cfg)
+{
+	struct io_pgtable_cfg pgtbl_cfg = {};
+
+	if (cfg->common.features & BIT(PT_FEAT_ARMV7S_TTBR1) ||
+	    cfg->common.hw_max_oasz_lg2 != 32)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	pgtbl_cfg.ias = PT_MAX_VA_ADDRESS_LG2;
+	pgtbl_cfg.oas = cfg->common.hw_max_oasz_lg2;
+	pgtbl_cfg.pgsize_bitmap |= SZ_4K | SZ_64K | SZ_1M | SZ_16M;
+	pgtbl_cfg.coherent_walk = true;
+	if (cfg->common.features & BIT(PT_FEAT_ARMV7S_NS))
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_NS;
+
+	return alloc_io_pgtable_ops(ARM_V7S, &pgtbl_cfg, NULL);
+}
+#define pt_iommu_alloc_io_pgtable armv7s_pt_iommu_alloc_io_pgtable
+
+static void armv7s_pt_iommu_setup_ref_table(struct pt_iommu_armv7s *iommu_table,
+					  struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct pt_common *common = &iommu_table->armpt.common;
+
+	pt_top_set(common,
+		   __va(log2_set_mod_t(u32, pgtbl_cfg->arm_v7s_cfg.ttbr, 0, 7)),
+		   PT_FIXED_TOP_LEVEL);
+}
+#define pt_iommu_setup_ref_table armv7s_pt_iommu_setup_ref_table
+
+static u64 armv7s_pt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	if (pts->type == PT_ENTRY_TABLE)
+		return pts->entry & (~(u32)(ARMV7S_PT_FMT1_TTB));
+	return pts->entry;
+}
+#define pt_kunit_cmp_mask_entry armv7s_pt_kunit_cmp_mask_entry
+#endif
+
 #endif

@@ -289,4 +289,51 @@ static const struct pt_iommu_vtdss_cfg vtdss_kunit_fmt_cfgs[] = {
 #define kunit_fmt_cfgs vtdss_kunit_fmt_cfgs
 enum { KUNIT_FMT_FEATURES = BIT(PT_FEAT_VTDSS_FORCE_WRITEABLE) };
 #endif
+
+/*
+ * Requires Tina's series:
+ *  https://patch.msgid.link/r/20231106071226.9656-3-tina.zhang@intel.com
+ * See my github for an integrated version
+ */
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_CONFIG_IOMMU_IO_PGTABLE_VTD)
+#include <linux/io-pgtable.h>
+
+static struct io_pgtable_ops *
+vtdss_pt_iommu_alloc_io_pgtable(struct pt_iommu_vtdss_cfg *cfg,
+				struct device *iommu_dev,
+				struct io_pgtable_cfg **unused_pgtbl_cfg)
+{
+	struct io_pgtable_cfg pgtbl_cfg = {};
+
+	pgtbl_cfg.ias = 48;
+	pgtbl_cfg.oas = 52;
+	pgtbl_cfg.vtd_cfg.cap_reg = 4 << 8;
+	pgtbl_cfg.vtd_cfg.ecap_reg = BIT(26) | BIT_ULL(60) | BIT_ULL(48) |
+				     BIT_ULL(56);
+	pgtbl_cfg.pgsize_bitmap = SZ_4K | SZ_2M | SZ_1G;
+	pgtbl_cfg.coherent_walk = true;
+	return alloc_io_pgtable_ops(INTEL_IOMMU, &pgtbl_cfg, NULL);
+}
+#define pt_iommu_alloc_io_pgtable vtdss_pt_iommu_alloc_io_pgtable
+
+static void vtdss_pt_iommu_setup_ref_table(struct pt_iommu_vtdss *iommu_table,
+					   struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct pt_common *common = &iommu_table->vtdss_pt.common;
+
+	pt_top_set(common, __va(pgtbl_cfg->vtd_cfg.pgd), 3);
+}
+#define pt_iommu_setup_ref_table vtdss_pt_iommu_setup_ref_table
+
+static u64 vtdss_pt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	if (pts->type == PT_ENTRY_TABLE)
+		return pts->entry & (~(u64)(VTDSS_FMT_OA));
+	return pts->entry;
+}
+#define pt_kunit_cmp_mask_entry vtdss_pt_kunit_cmp_mask_entry
+#endif
+
 #endif

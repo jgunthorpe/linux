@@ -283,4 +283,123 @@ static const struct pt_iommu_x86_64_cfg x86_64_kunit_fmt_cfgs[] = {
 #define kunit_fmt_cfgs x86_64_kunit_fmt_cfgs
 enum { KUNIT_FMT_FEATURES =  BIT(PT_FEAT_SIGN_EXTEND)};
 #endif
+
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU)
+#include <linux/io-pgtable.h>
+#include "../../amd/amd_iommu_types.h"
+
+#if 0
+/*
+ * AMD doesn't validate the upper bits but is uses them for indexing so the
+ * upper range does work. VTD blocks it.
+ */
+#define PT_KUNIT_CMP_SIGN_EXTEND 1
+
+static struct io_pgtable_ops *
+x86_64_pt_iommu_alloc_io_pgtable(struct pt_iommu_x86_64_cfg *cfg,
+				 struct device *iommu_dev,
+				 struct io_pgtable_cfg **pgtbl_cfg)
+{
+	struct amd_io_pgtable *pgtable;
+	struct io_pgtable_ops *pgtbl_ops;
+
+	/* Matches what io_pgtable does */
+	if (cfg->common.hw_max_vasz_lg2 != 48)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/*
+	 * AMD expects that io_pgtable_cfg is allocated to its type by the
+	 * caller.
+	 */
+	pgtable = kzalloc(sizeof(*pgtable), GFP_KERNEL);
+	if (!pgtable)
+		return NULL;
+
+	pgtable->pgtbl.cfg.iommu_dev = iommu_dev;
+	pgtable->pgtbl.cfg.amd.nid = NUMA_NO_NODE;
+	pgtbl_ops =
+		alloc_io_pgtable_ops(AMD_IOMMU_V2, &pgtable->pgtbl.cfg, NULL);
+	if (!pgtbl_ops) {
+		kfree(pgtable);
+		return NULL;
+	}
+	*pgtbl_cfg = &pgtable->pgtbl.cfg;
+	return pgtbl_ops;
+}
+#define pt_iommu_alloc_io_pgtable x86_64_pt_iommu_alloc_io_pgtable
+
+static void x86_64_pt_iommu_free_pgtbl_cfg(struct io_pgtable_cfg *pgtbl_cfg)
+{
+	struct amd_io_pgtable *pgtable =
+		container_of(pgtbl_cfg, struct amd_io_pgtable, pgtbl.cfg);
+
+	kfree(pgtable);
+}
+#define pt_iommu_free_pgtbl_cfg x86_64_pt_iommu_free_pgtbl_cfg
+
+static void x86_64_pt_iommu_setup_ref_table(struct pt_iommu_x86_64 *iommu_table,
+					    struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct amd_io_pgtable *pgtable =
+		container_of(pgtbl_cfg, struct amd_io_pgtable, pgtbl.cfg);
+	struct pt_common *common = &iommu_table->x86_64_pt.common;
+
+	/* FIXME Why is IOMMU_IN_ADDR_BIT_SIZE 52? */
+	if (pgtbl_cfg->ias == 52)
+		pt_top_set(common, (struct pt_table_p *)pgtable->pgd, 3);
+	else if (pgtbl_cfg->ias == 57)
+		pt_top_set(common, (struct pt_table_p *)pgtable->pgd, 4);
+	else
+		WARN_ON(true);
+}
+#define pt_iommu_setup_ref_table x86_64_pt_iommu_setup_ref_table
+#else
+static struct io_pgtable_ops *
+x86_64_pt_iommu_alloc_io_pgtable(struct pt_iommu_x86_64_cfg *cfg,
+				 struct device *iommu_dev,
+				 struct io_pgtable_cfg **unused_pgtbl_cfg)
+{
+	struct io_pgtable_cfg pgtbl_cfg = {};
+
+	if (cfg->common.hw_max_vasz_lg2 != 48)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	pgtbl_cfg.ias = cfg->common.hw_max_vasz_lg2;
+	pgtbl_cfg.oas = 52;
+	pgtbl_cfg.vtd_cfg.first_level = true;
+	pgtbl_cfg.vtd_cfg.cap_reg = 4 << 8;
+	pgtbl_cfg.vtd_cfg.ecap_reg = BIT(26) | BIT_ULL(60) | BIT_ULL(48) |
+				     BIT_ULL(56);
+	pgtbl_cfg.pgsize_bitmap = SZ_4K | SZ_2M | SZ_1G;
+	pgtbl_cfg.coherent_walk = true;
+	return alloc_io_pgtable_ops(INTEL_IOMMU, &pgtbl_cfg, NULL);
+}
+#define pt_iommu_alloc_io_pgtable x86_64_pt_iommu_alloc_io_pgtable
+
+static void x86_64_pt_iommu_setup_ref_table(struct pt_iommu_x86_64 *iommu_table,
+					    struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct pt_common *common = &iommu_table->x86_64_pt.common;
+
+	if (common->max_vasz_lg2 == 48)
+		pt_top_set(common, __va(pgtbl_cfg->vtd_cfg.pgd), 3);
+	else
+		pt_top_set(common, __va(pgtbl_cfg->vtd_cfg.pgd), 4);
+}
+#define pt_iommu_setup_ref_table x86_64_pt_iommu_setup_ref_table
+#endif
+
+static u64 x86_64_pt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	if (pts->type == PT_ENTRY_TABLE)
+		return pts->entry & (~(u64)(X86_64_FMT_OA));
+	return pts->entry;
+}
+#define pt_kunit_cmp_mask_entry x86_64_pt_kunit_cmp_mask_entry
+#endif
+
 #endif

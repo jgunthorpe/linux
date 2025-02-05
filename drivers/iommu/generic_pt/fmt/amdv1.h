@@ -446,4 +446,80 @@ static const struct pt_iommu_amdv1_cfg amdv1_kunit_fmt_cfgs[] = {
 enum { KUNIT_FMT_FEATURES = 0 };
 #endif
 
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_AMD_IOMMU) && \
+	!defined(AMDV1_IOMMUFD_SELFTEST)
+#include <linux/io-pgtable.h>
+#include "../../amd/amd_iommu_types.h"
+
+#define PT_KUNIT_IO_PGTBL_DYNAMIC_TOP 1
+
+static struct io_pgtable_ops *
+amdv1pt_iommu_alloc_io_pgtable(struct pt_iommu_amdv1_cfg *cfg,
+			       struct device *iommu_dev,
+			       struct io_pgtable_cfg **pgtbl_cfg)
+{
+	struct amd_io_pgtable *pgtable;
+	struct io_pgtable_ops *pgtbl_ops;
+
+	/*
+	 * AMD expects that io_pgtable_cfg is allocated to its type by the
+	 * caller.
+	 */
+	pgtable = kzalloc(sizeof(*pgtable), GFP_KERNEL);
+	if (!pgtable)
+		return NULL;
+
+	pgtable->pgtbl.cfg.iommu_dev = iommu_dev;
+	pgtable->pgtbl.cfg.amd.nid = NUMA_NO_NODE;
+	pgtbl_ops =
+		alloc_io_pgtable_ops(AMD_IOMMU_V1, &pgtable->pgtbl.cfg, NULL);
+	if (!pgtbl_ops) {
+		kfree(pgtable);
+		return NULL;
+	}
+	*pgtbl_cfg = &pgtable->pgtbl.cfg;
+	return pgtbl_ops;
+}
+#define pt_iommu_alloc_io_pgtable amdv1pt_iommu_alloc_io_pgtable
+
+static void amdv1pt_iommu_free_pgtbl_cfg(struct io_pgtable_cfg *pgtbl_cfg)
+{
+	struct amd_io_pgtable *pgtable =
+		container_of(pgtbl_cfg, struct amd_io_pgtable, pgtbl.cfg);
+
+	kfree(pgtable);
+}
+#define pt_iommu_free_pgtbl_cfg amdv1pt_iommu_free_pgtbl_cfg
+
+static void amdv1pt_iommu_setup_ref_table(struct pt_iommu_amdv1 *iommu_table,
+					  struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct amd_io_pgtable *pgtable =
+		container_of(pgtbl_cfg, struct amd_io_pgtable, pgtbl.cfg);
+	struct pt_common *common = &iommu_table->amdpt.common;
+	struct pt_iommu_amdv1_hw_info info;
+
+	pt_top_set(common, (struct pt_table_p *)pgtable->root,
+		   pgtable->mode - 1);
+	WARN_ON(pgtable->mode - 1 > PT_MAX_TOP_LEVEL || pgtable->mode <= 0);
+
+#define pt_iommu_hw_info CONCATENATE(CONCATENATE(pt_iommu_, PTPFX), hw_info)
+	pt_iommu_hw_info(iommu_table, &info);
+#undef pt_iommu_hw_info
+
+	WARN_ON(info.mode != pgtable->mode);
+}
+#define pt_iommu_setup_ref_table amdv1pt_iommu_setup_ref_table
+
+static u64 amdv1pt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	if (pts->type == PT_ENTRY_TABLE)
+		return pts->entry & (~(u64)(AMDV1PT_FMT_OA));
+	return pts->entry;
+}
+#define pt_kunit_cmp_mask_entry amdv1pt_kunit_cmp_mask_entry
+#endif
+
 #endif

@@ -330,4 +330,55 @@ static const struct pt_iommu_dart_cfg dart_kunit_fmt_cfgs[] = {
 #define kunit_fmt_cfgs dart_kunit_fmt_cfgs
 enum { KUNIT_FMT_FEATURES = BIT(PT_FEAT_DART_V2) };
 #endif
+
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_IOMMU_IO_PGTABLE_DART)
+#include <linux/io-pgtable.h>
+
+static struct io_pgtable_ops *
+dartpt_iommu_alloc_io_pgtable(struct pt_iommu_dart_cfg *cfg,
+			      struct device *iommu_dev,
+			      struct io_pgtable_cfg **unused_pgtbl_cfg)
+{
+	struct io_pgtable_cfg pgtbl_cfg = {};
+	enum io_pgtable_fmt fmt;
+
+	pgtbl_cfg.ias = cfg->common.hw_max_vasz_lg2;
+	pgtbl_cfg.oas = cfg->common.hw_max_oasz_lg2;
+	pgtbl_cfg.pgsize_bitmap = cfg->pgsize_bitmap;
+	pgtbl_cfg.coherent_walk = true;
+
+	if (cfg->common.features & BIT(PT_FEAT_DART_V2))
+		fmt = APPLE_DART2;
+	else
+		fmt = APPLE_DART;
+
+	return alloc_io_pgtable_ops(fmt, &pgtbl_cfg, NULL);
+}
+#define pt_iommu_alloc_io_pgtable dartpt_iommu_alloc_io_pgtable
+
+static void dartpt_iommu_setup_ref_table(struct pt_iommu_dart *iommu_table,
+					 struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct pt_common *common = &iommu_table->dartpt.common;
+
+	/* FIXME should test multi-ttbr tables */
+	WARN_ON(pgtbl_cfg->apple_dart_cfg.n_ttbrs != 1);
+	pt_top_set(common, __va(pgtbl_cfg->apple_dart_cfg.ttbr[0]), 1);
+}
+#define pt_iommu_setup_ref_table dartpt_iommu_setup_ref_table
+
+static u64 dartpt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	if (pts->type == PT_ENTRY_TABLE) {
+		if (pts_feature(pts, PT_FEAT_DART_V2))
+			return pts->entry & (~(u64)DART_FMT2_PTE_OA);
+		return pts->entry & (~(u64)DART_FMT1_PTE_OA);
+	}
+	return pts->entry;
+}
+#define pt_kunit_cmp_mask_entry dartpt_kunit_cmp_mask_entry
+#endif
+
 #endif
