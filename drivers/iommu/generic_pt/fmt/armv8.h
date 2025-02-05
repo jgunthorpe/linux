@@ -1135,4 +1135,107 @@ enum {
 			     BIT(PT_FEAT_ARMV8_LVA) | BIT(PT_FEAT_ARMV8_AARCH32)
 };
 #endif
+
+#if defined(GENERIC_PT_KUNIT) && IS_ENABLED(CONFIG_IOMMU_IO_PGTABLE_LPAE)
+#include <linux/io-pgtable.h>
+
+/* Unmapping part of a huge page triggers WARN_ON in io-pgtable */
+#define PT_KUNIT_UNMAP_EXACT 1
+
+static struct io_pgtable_ops *
+armv8pt_iommu_alloc_io_pgtable(struct pt_iommu_armv8_cfg *cfg,
+			       struct device *iommu_dev,
+			       struct io_pgtable_cfg **unused_pgtbl_cfg)
+{
+	struct io_pgtable_cfg pgtbl_cfg = {};
+	enum io_pgtable_fmt fmt;
+
+	pgtbl_cfg.ias = cfg->common.hw_max_vasz_lg2;
+	pgtbl_cfg.oas = cfg->common.hw_max_oasz_lg2;
+	if (cfg->tgsz_lg2 == SZLG2_64K)
+		pgtbl_cfg.pgsize_bitmap |= SZ_64K | SZ_512M;
+	if (cfg->tgsz_lg2 == SZLG2_16K)
+		pgtbl_cfg.pgsize_bitmap |= SZ_16K | SZ_32M;
+	if (cfg->tgsz_lg2 == SZLG2_4K)
+		pgtbl_cfg.pgsize_bitmap |= SZ_4K | SZ_2M | SZ_1G;
+	pgtbl_cfg.coherent_walk = true;
+
+	if (cfg->common.features & BIT(PT_FEAT_ARMV8_S2))
+		fmt = ARM_64_LPAE_S2;
+	else
+		fmt = ARM_64_LPAE_S1;
+	if (cfg->common.features & BIT(PT_FEAT_ARMV8_NS))
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_NS;
+	if (cfg->common.features & BIT(PT_FEAT_ARMV8_TTBR1))
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_TTBR1;
+	/* FIXME Note iopgtable does not support DBM on S2 */
+	if (cfg->common.features & BIT(PT_FEAT_ARMV8_DBM))
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_ARM_HD;
+
+	return alloc_io_pgtable_ops(fmt, &pgtbl_cfg, NULL);
+}
+#define pt_iommu_alloc_io_pgtable armv8pt_iommu_alloc_io_pgtable
+
+static void armv8pt_iommu_setup_ref_table(struct pt_iommu_armv8 *iommu_table,
+					  struct io_pgtable_ops *pgtbl_ops)
+{
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(pgtbl_ops)->cfg;
+	struct pt_common *common = &iommu_table->armpt.common;
+	struct pt_iommu_armv8_hw_info info = {};
+
+	pt_iommu_armv8_hw_info(iommu_table, &info);
+
+	/*
+	 * Fields only in info (no pgtbl_cfg equivalent): endi, aa64, s1.tbix,
+	 * s1.epd0/1, s2.sl2. Fields only in pgtbl_cfg (no info equivalent): sh,
+	 * orgn, irgn, mair.
+	 * ttbr cannot be checked.
+	 */
+
+	/* FIXME should determine the level from the pgtbl_cfg */
+	if (pt_feature(common, PT_FEAT_ARMV8_S2)) {
+		WARN(info.ps != pgtbl_cfg->arm_lpae_s2_cfg.vtcr.ps,
+		     "ps mismatch %u != %u\n",
+		     info.ps, pgtbl_cfg->arm_lpae_s2_cfg.vtcr.ps);
+		WARN(info.tg != pgtbl_cfg->arm_lpae_s2_cfg.vtcr.tg,
+		     "tg mismatch %u != %u\n",
+		     info.tg, pgtbl_cfg->arm_lpae_s2_cfg.vtcr.tg);
+		WARN(info.tsz != pgtbl_cfg->arm_lpae_s2_cfg.vtcr.tsz,
+		     "tsz mismatch %u != %u\n",
+		     info.tsz, pgtbl_cfg->arm_lpae_s2_cfg.vtcr.tsz);
+		WARN(info.s2.sl0 != pgtbl_cfg->arm_lpae_s2_cfg.vtcr.sl,
+		     "sl0 mismatch %u != %u\n",
+		     info.s2.sl0, pgtbl_cfg->arm_lpae_s2_cfg.vtcr.sl);
+		pt_top_set(common, __va(pgtbl_cfg->arm_lpae_s2_cfg.vttbr),
+			   pt_top_get_level(common));
+	} else {
+		WARN(info.ps != pgtbl_cfg->arm_lpae_s1_cfg.tcr.ips,
+		     "ps mismatch %u != %u\n",
+		     info.ps, pgtbl_cfg->arm_lpae_s1_cfg.tcr.ips);
+		WARN(info.tg != pgtbl_cfg->arm_lpae_s1_cfg.tcr.tg,
+		     "tg mismatch %u != %u\n",
+		     info.tg, pgtbl_cfg->arm_lpae_s1_cfg.tcr.tg);
+		WARN(info.tsz != pgtbl_cfg->arm_lpae_s1_cfg.tcr.tsz,
+		     "tsz mismatch %u != %u\n",
+		     info.tsz, pgtbl_cfg->arm_lpae_s1_cfg.tcr.tsz);
+		pt_top_set(common, __va(pgtbl_cfg->arm_lpae_s1_cfg.ttbr),
+			   pt_top_get_level(common));
+	}
+}
+#define pt_iommu_setup_ref_table armv8pt_iommu_setup_ref_table
+
+static u64 armv8pt_kunit_cmp_mask_entry(struct pt_state *pts)
+{
+	unsigned int tgsz_lg2 = armv8pt_tgsz_lg2(pts);
+
+	/* 58, 56 are the SW bits */
+	if (pts->type == PT_ENTRY_TABLE)
+		return pts->entry &
+		       ~(GENMASK_ULL(58, 56) | GENMASK_ULL(47, tgsz_lg2));
+	return pts->entry & (~(u64)ARMV8PT_FMT_CONTIG);
+}
+#define pt_kunit_cmp_mask_entry armv8pt_kunit_cmp_mask_entry
+#endif
+
 #endif
