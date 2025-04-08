@@ -3,6 +3,12 @@
 #ifndef _LINUX_FILEATTR_H
 #define _LINUX_FILEATTR_H
 
+#include <linux/types.h>
+#include <uapi/linux/fs.h>
+
+struct dentry;
+struct mnt_idmap;
+
 /* Flags shared betwen flags/xflags */
 #define FS_COMMON_FL \
 	(FS_SYNC_FL | FS_IMMUTABLE_FL | FS_APPEND_FL | \

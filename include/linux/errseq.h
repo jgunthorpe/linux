@@ -5,6 +5,8 @@
 #ifndef _LINUX_ERRSEQ_H
 #define _LINUX_ERRSEQ_H
 
+#include <linux/types.h>
+
 typedef u32	errseq_t;
 
 errseq_t errseq_set(errseq_t *eseq, int err);

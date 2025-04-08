@@ -3,6 +3,7 @@
 #define _ASM_X86_FTRACE_H
 
 #include <asm/ptrace.h>
+#include <linux/string.h>
 
 #ifdef CONFIG_FUNCTION_TRACER
 #ifndef CC_USING_FENTRY

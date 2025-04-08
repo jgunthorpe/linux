@@ -2,6 +2,10 @@
 #ifndef _IOMAP_INTERNAL_H
 #define _IOMAP_INTERNAL_H 1
 
+#include <linux/types.h>
+
+struct iomap_ioend;
+
 #define IOEND_BATCH_SIZE	4096
 
 u32 iomap_finish_ioend_buffered(struct iomap_ioend *ioend);

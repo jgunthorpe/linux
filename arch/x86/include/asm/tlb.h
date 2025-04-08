@@ -2,6 +2,8 @@
 #ifndef _ASM_X86_TLB_H
 #define _ASM_X86_TLB_H
 
+struct mmu_gather;
+
 #define tlb_flush tlb_flush
 static inline void tlb_flush(struct mmu_gather *tlb);
 

@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _X86_POSTED_INTR_H
 #define _X86_POSTED_INTR_H
+
+#include <linux/types.h>
+#include <linux/bitmap.h>
 #include <asm/irq_vectors.h>
 
 #define POSTED_INTR_ON  0

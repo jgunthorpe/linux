@@ -5,6 +5,8 @@
 #define _ASM_X86_CLOCKSOURCE_H
 
 #include <asm/vdso/clocksource.h>
+#include <linux/types.h>
+#include <asm/rwonce.h>
 
 extern unsigned int vclocks_used;
 

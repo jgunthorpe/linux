@@ -11,6 +11,7 @@
 #include <linux/build_bug.h>
 #include <linux/kernel.h>
 #include <linux/pgtable.h>
+#include <linux/efi.h>
 
 extern unsigned long efi_fw_vendor, efi_config_table;
 extern unsigned long efi_mixed_mode_stack_pa;

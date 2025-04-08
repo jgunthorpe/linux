@@ -2,6 +2,8 @@
 #ifndef _LINUX_CPU_SMT_H_
 #define _LINUX_CPU_SMT_H_
 
+#include <linux/types.h>
+
 enum cpuhp_smt_control {
 	CPU_SMT_ENABLED,
 	CPU_SMT_DISABLED,

@@ -2,6 +2,8 @@
 #ifndef _LINUX_DIRENT_H
 #define _LINUX_DIRENT_H
 
+#include <linux/types.h>
+
 struct linux_dirent64 {
 	u64		d_ino;
 	s64		d_off;

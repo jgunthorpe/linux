@@ -5,6 +5,10 @@
 #ifndef __CRYPTO_SHA3_H__
 #define __CRYPTO_SHA3_H__
 
+#include <linux/types.h>
+
+struct shash_desc;
+
 #define SHA3_224_DIGEST_SIZE	(224 / 8)
 #define SHA3_224_BLOCK_SIZE	(200 - 2 * SHA3_224_DIGEST_SIZE)
 
