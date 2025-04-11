@@ -238,7 +238,9 @@ static int iommu_v2_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	u64 *pte;
 	unsigned long map_size;
 	unsigned long mapped_size = 0;
+#if 0
 	unsigned long o_iova = iova;
+#endif
 	size_t size = pgcount << __ffs(pgsize);
 	int ret = 0;
 	bool updated = false;
@@ -266,6 +268,7 @@ static int iommu_v2_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	}
 
 out:
+#if 0
 	if (updated) {
 		struct protection_domain *pdom = io_pgtable_ops_to_domain(ops);
 		unsigned long flags;
@@ -274,7 +277,7 @@ out:
 		amd_iommu_domain_flush_pages(pdom, o_iova, size);
 		spin_unlock_irqrestore(&pdom->lock, flags);
 	}
-
+#endif
 	if (mapped)
 		*mapped += mapped_size;
 
