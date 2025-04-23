@@ -81,9 +81,9 @@ struct fwctl_device {
 	const struct fwctl_ops *ops;
 };
 
-struct fwctl_device *_fwctl_alloc_device(struct device *parent,
-					 const struct fwctl_ops *ops,
-					 size_t size);
+struct fwctl_device *_fwctl_alloc_device(size_t size, struct device *parent,
+					 const struct fwctl_ops *ops);
+
 /**
  * fwctl_alloc_device - Allocate a fwctl
  * @parent: Physical device that provides the FW interface
@@ -95,14 +95,8 @@ struct fwctl_device *_fwctl_alloc_device(struct device *parent,
  * Upon success the pointer must be freed via fwctl_put(). Returns a 'drv_struct
  * \*' on success, NULL on error.
  */
-#define fwctl_alloc_device(parent, ops, drv_struct, member)               \
-	({                                                                \
-		static_assert(__same_type(struct fwctl_device,            \
-					  ((drv_struct *)NULL)->member)); \
-		static_assert(offsetof(drv_struct, member) == 0);         \
-		(drv_struct *)_fwctl_alloc_device(parent, ops,            \
-						  sizeof(drv_struct));    \
-	})
+#define fwctl_alloc_device(parent, ops, drv_struct, member) \
+	alloc_container(drv_struct, member, _fwctl_alloc_device, parent, ops)
 
 static inline struct fwctl_device *fwctl_get(struct fwctl_device *fwctl)
 {

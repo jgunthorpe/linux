@@ -19,6 +19,10 @@
  * features for the device.
  */
 
+struct cxl_fwctl_device {
+	struct fwctl_device fwctl;
+};
+
 /* All the features below are exclusive to the kernel */
 static const uuid_t cxl_exclusive_feats[] = {
 	CXL_FEAT_PATROL_SCRUB_UUID,
@@ -689,12 +693,13 @@ int devm_cxl_setup_fwctl(struct device *host, struct cxl_memdev *cxlmd)
 	if (!cxlfs->entries->num_user_features)
 		return -ENODEV;
 
-	struct fwctl_device *fwctl_dev __free(free_fwctl_dev) =
-		_fwctl_alloc_device(&cxlmd->dev, &cxlctl_ops, sizeof(*fwctl_dev));
+	struct cxl_fwctl_device *fwctl_dev __free(free_fwctl_dev) =
+		fwctl_alloc_device(&cxlmd->dev, &cxlctl_ops,
+				   struct cxl_fwctl_device, fwctl);
 	if (!fwctl_dev)
 		return -ENOMEM;
 
-	rc = fwctl_register(fwctl_dev);
+	rc = fwctl_register(&fwctl_dev->fwctl);
 	if (rc)
 		return rc;
 

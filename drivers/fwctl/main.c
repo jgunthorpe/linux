@@ -315,9 +315,8 @@ _alloc_device(struct device *parent, const struct fwctl_ops *ops, size_t size)
 }
 
 /* Drivers use the fwctl_alloc_device() wrapper */
-struct fwctl_device *_fwctl_alloc_device(struct device *parent,
-					 const struct fwctl_ops *ops,
-					 size_t size)
+struct fwctl_device *_fwctl_alloc_device(size_t size, struct device *parent,
+					 const struct fwctl_ops *ops)
 {
 	struct fwctl_device *fwctl __free(fwctl) =
 		_alloc_device(parent, ops, size);
