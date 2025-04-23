@@ -272,19 +272,12 @@ iommufd_object_put_and_try_destroy(struct iommufd_ctx *ictx,
  * to finalize the object, or call iommufd_object_abort_and_destroy() to revert
  * the allocation.
  */
-struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
-					     size_t size,
+struct iommufd_object *_iommufd_object_alloc(size_t size,
+					     struct iommufd_ctx *ictx,
 					     enum iommufd_object_type type);
 
-#define __iommufd_object_alloc(ictx, ptr, type, obj)                           \
-	container_of(_iommufd_object_alloc(                                    \
-			     ictx,                                             \
-			     sizeof(*(ptr)) + BUILD_BUG_ON_ZERO(               \
-						      offsetof(typeof(*(ptr)), \
-							       obj) != 0),     \
-			     type),                                            \
-		     typeof(*(ptr)), obj)
-
+#define __iommufd_object_alloc(ictx, ptr, type, obj) \
+	alloc_container(typeof(*ptr), obj, _iommufd_object_alloc, ictx, type)
 #define iommufd_object_alloc(ictx, ptr, type) \
 	__iommufd_object_alloc(ictx, ptr, type, obj)
 
@@ -293,18 +286,12 @@ struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
  * or iommufd_object_abort_and_destroy(), as the core automatically does that.
  */
 struct iommufd_object *
-_iommufd_object_alloc_ucmd(struct iommufd_ucmd *ucmd, size_t size,
+_iommufd_object_alloc_ucmd(size_t size, struct iommufd_ucmd *ucmd,
 			   enum iommufd_object_type type);
 
-#define __iommufd_object_alloc_ucmd(ucmd, ptr, type, obj)                      \
-	container_of(_iommufd_object_alloc_ucmd(                               \
-			     ucmd,                                             \
-			     sizeof(*(ptr)) + BUILD_BUG_ON_ZERO(               \
-						      offsetof(typeof(*(ptr)), \
-							       obj) != 0),     \
-			     type),                                            \
-		     typeof(*(ptr)), obj)
-
+#define __iommufd_object_alloc_ucmd(ucmd, ptr, type, obj)                    \
+	alloc_container(typeof(*ptr), obj, _iommufd_object_alloc_ucmd, ucmd, \
+			type)
 #define iommufd_object_alloc_ucmd(ucmd, ptr, type) \
 	__iommufd_object_alloc_ucmd(ucmd, ptr, type, obj)
 

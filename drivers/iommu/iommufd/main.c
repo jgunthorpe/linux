@@ -31,8 +31,8 @@ struct iommufd_object_ops {
 static const struct iommufd_object_ops iommufd_object_ops[];
 static struct miscdevice vfio_misc_dev;
 
-struct iommufd_object *_iommufd_object_alloc(struct iommufd_ctx *ictx,
-					     size_t size,
+struct iommufd_object *_iommufd_object_alloc(size_t size,
+					     struct iommufd_ctx *ictx,
 					     enum iommufd_object_type type)
 {
 	struct iommufd_object *obj;
@@ -63,8 +63,8 @@ out_free:
 	return ERR_PTR(rc);
 }
 
-struct iommufd_object *_iommufd_object_alloc_ucmd(struct iommufd_ucmd *ucmd,
-						  size_t size,
+struct iommufd_object *_iommufd_object_alloc_ucmd(size_t size,
+						  struct iommufd_ucmd *ucmd,
 						  enum iommufd_object_type type)
 {
 	struct iommufd_object *new_obj;
@@ -82,7 +82,7 @@ struct iommufd_object *_iommufd_object_alloc_ucmd(struct iommufd_ucmd *ucmd,
 	if (WARN_ON(iommufd_object_ops[type].abort))
 		return ERR_PTR(-EOPNOTSUPP);
 
-	new_obj = _iommufd_object_alloc(ucmd->ictx, size, type);
+	new_obj = _iommufd_object_alloc(size, ucmd->ictx, type);
 	if (IS_ERR(new_obj))
 		return new_obj;
 

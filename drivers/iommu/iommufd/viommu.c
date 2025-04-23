@@ -68,8 +68,9 @@ int iommufd_viommu_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		goto out_put_hwpt;
 	}
 
-	viommu = (struct iommufd_viommu *)_iommufd_object_alloc_ucmd(
-		ucmd, viommu_size, IOMMUFD_OBJ_VIOMMU);
+	viommu = alloc_container_sz(typeof(*viommu), viommu_size, obj,
+				    _iommufd_object_alloc_ucmd, ucmd,
+				    IOMMUFD_OBJ_VIOMMU);
 	if (IS_ERR(viommu)) {
 		rc = PTR_ERR(viommu);
 		goto out_put_hwpt;
@@ -194,8 +195,9 @@ int iommufd_vdevice_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		vdev_size = viommu->ops->vdevice_size;
 	}
 
-	vdev = (struct iommufd_vdevice *)_iommufd_object_alloc(
-		ucmd->ictx, vdev_size, IOMMUFD_OBJ_VDEVICE);
+	vdev = alloc_container_sz(typeof(*vdev), vdev_size, obj,
+				  _iommufd_object_alloc, ucmd->ictx,
+				  IOMMUFD_OBJ_VDEVICE);
 	if (IS_ERR(vdev)) {
 		rc = PTR_ERR(vdev);
 		goto out_unlock_igroup;
@@ -397,8 +399,9 @@ int iommufd_hw_queue_alloc_ioctl(struct iommufd_ucmd *ucmd)
 		goto out_put_viommu;
 	}
 
-	hw_queue = (struct iommufd_hw_queue *)_iommufd_object_alloc_ucmd(
-		ucmd, hw_queue_size, IOMMUFD_OBJ_HW_QUEUE);
+	hw_queue = alloc_container_sz(typeof(*hw_queue), hw_queue_size, obj,
+				      _iommufd_object_alloc_ucmd, ucmd,
+				      IOMMUFD_OBJ_HW_QUEUE);
 	if (IS_ERR(hw_queue)) {
 		rc = PTR_ERR(hw_queue);
 		goto out_put_viommu;
