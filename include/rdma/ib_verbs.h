@@ -3054,18 +3054,10 @@ struct ib_client {
 };
 
 struct ib_device *_ib_alloc_device(size_t size, struct net *net);
-#define ib_alloc_device(drv_struct, member)                                    \
-	container_of(_ib_alloc_device(sizeof(struct drv_struct) +              \
-				      BUILD_BUG_ON_ZERO(offsetof(              \
-					      struct drv_struct, member)),     \
-				      &init_net),			       \
-		     struct drv_struct, member)
-
-#define ib_alloc_device_with_net(drv_struct, member, net)		       \
-	container_of(_ib_alloc_device(sizeof(struct drv_struct) +              \
-				      BUILD_BUG_ON_ZERO(offsetof(              \
-					struct drv_struct, member)), net),     \
-		     struct drv_struct, member)
+#define ib_alloc_device(drv_struct, member) \
+	alloc_container(struct drv_struct, member, _ib_alloc_device, &init_net)
+#define ib_alloc_device_with_net(drv_struct, member, net) \
+	alloc_container(struct drv_struct, member, _ib_alloc_device, net)
 
 void ib_dealloc_device(struct ib_device *device);
 
