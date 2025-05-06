@@ -151,6 +151,21 @@ enum {
 	PT_FEAT_AMDV1_FORCE_COHERENCE,
 };
 
+struct pt_riscv_32 {
+	struct pt_common common;
+};
+
+struct pt_riscv_64 {
+	struct pt_common common;
+};
+
+enum {
+	/*
+	 * Support the 64k contiguous page size following the Svnapot extension.
+	 */
+	PT_FEAT_RSICV_SVNAPOT_64K = PT_FEAT_FMT_START,
+};
+
 struct pt_x86_64 {
 	struct pt_common common;
 };
