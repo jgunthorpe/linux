@@ -290,6 +290,24 @@ armv8pt_install_leaf_entry(struct pt_state *pts, pt_oaddr_t oa,
 }
 #define pt_install_leaf_entry armv8pt_install_leaf_entry
 
+static inline void armv8pt_change_leaf_oasz(struct pt_state *pts, pt_oaddr_t oa,
+					    unsigned int new_oasz_lg2)
+{
+	const u64 entry_mask = ARMV8PT_FMT_CONTIG;
+	u64 *entryp = pt_cur_table(pts, u64) + pts->index;
+	unsigned int isz_lg2 = pt_table_item_lg2sz(pts);
+	u64 *end = entryp + log2_to_int(new_oasz_lg2 - isz_lg2);
+	u64 new_bits = 0;
+
+	if (new_oasz_lg2 != isz_lg2)
+		new_bits = ARMV8PT_FMT_CONTIG;
+
+	for (; entryp != end; entryp++)
+		pt_entry_replace_bits64(entryp, READ_ONCE(*entryp), entry_mask,
+					new_bits);
+}
+#define pt_change_leaf_oasz armv8pt_change_leaf_oasz
+
 static inline bool armv8pt_install_table(struct pt_state *pts,
 					 pt_oaddr_t table_pa,
 					 const struct pt_write_attrs *attrs)

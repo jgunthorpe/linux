@@ -184,6 +184,31 @@ riscvpt_install_leaf_entry(struct pt_state *pts, pt_oaddr_t oa,
 }
 #define pt_install_leaf_entry riscvpt_install_leaf_entry
 
+static inline void riscvpt_change_leaf_oasz(struct pt_state *pts, pt_oaddr_t oa,
+					    unsigned int new_oasz_lg2)
+{
+	const u64 entry_mask = RISCVPT_PPN | RISCVPT_N | RISCVPT_PPN64_64K_SZ;
+	u64 *entryp = pt_cur_table(pts, u64) + pts->index;
+	unsigned int isz_lg2 = pt_table_item_lg2sz(pts);
+	u64 new_bits;
+
+	new_bits = FIELD_PREP(RISCVPT_PPN, log2_div(oa, PT_GRANULE_LG2SZ));
+
+	if (pts_feature(pts, PT_FEAT_RSICV_SVNAPOT_64K) && pts->level == 0 &&
+	    new_oasz_lg2 != PT_GRANULE_LG2SZ) {
+		u64 *end = entryp + log2_to_int(new_oasz_lg2 - isz_lg2);
+
+		new_bits |= RISCVPT_N | RISCVPT_PPN64_64K_SZ;
+		for (; entryp != end; entryp++)
+			pt_entry_replace_bits64(entryp, pts->entry, entry_mask,
+						new_bits);
+	} else {
+		pt_entry_replace_bits64(entryp, pts->entry, entry_mask,
+					new_bits);
+	}
+}
+#define pt_change_leaf_oasz riscvpt_change_leaf_oasz
+
 static inline bool riscvpt_install_table(struct pt_state *pts,
 					 pt_oaddr_t table_pa,
 					 const struct pt_write_attrs *attrs)
