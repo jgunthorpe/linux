@@ -3606,6 +3606,74 @@ void pci_configure_ari(struct pci_dev *dev)
 	}
 }
 
+/*
+ * The spec has specific language about what bits must be supported in an ACS
+ * capability. In some cases if the capability does not support the bit then it
+ * really acts as though the bit is enabled. e.g.:
+ *
+ *    ACS P2P Request Redirect: must be implemented by Root Ports that support
+ *     peer-to-peer traffic with other Root Ports
+ *
+ * Meaning if RR is not supported then P2P is definately not supported and the
+ * device is effectively behaving as if RR is set.
+ *
+ * Summarizing the spec requirements:
+ *      DSP   Root Port   MFD
+ * SV    M        M        M
+ * RR    M        E        E
+ * CR    M        E        E
+ * UF    M        E        N/A
+ * TB    M        M        N/A
+ * DT    M        E        E
+ *   - M=Must Be Implemented
+ *   - E=If not implemented the behavior is effecitvely as though it is enabled.
+ *
+ * Therefore take the simple approach and assume the above flags are enabled
+ * if the cap is 0.
+ *
+ * ACS Enhanced eliminated undefined areas of the spec around MMIO in root ports
+ * and switch ports. If those ports have no MMIO then it is not relevant.
+ * PCI_ACS_UNCLAIMED_RR eliminates the undefined area around an upstream switch
+ * window that is not fully decoded by the downstream windows.
+ *
+ * Though the spec is written on the assumption that existing devices without
+ * ACS Enhanced can do whatever they want, Linux has historically assumed what
+ * is now codified as PCI_ACS_DSP_MT_RB | PCI_ACS_DSP_MT_RR |
+ * PCI_ACS_USP_MT_RB | PCI_ACS_USP_MT_RR | PCI_ACS_UNCLAIMED_RR.
+ *
+ * Changing how Linux understands existing ACS prior to ACS Enhanced would break
+ * alot of systems.
+ *
+ * Thus continue as historical Linux has always done if ACS Enhanced is not
+ * supported, while if ACS Enhanced is supported follow it.
+ *
+ * Due to ACS Enhanced bits being force set to 0 by older Linux kernels, and
+ * those values would break old kernels on the edge cases they cover, the only
+ * compatible thing for a new device to implement is ACS Enhanced supported with
+ * the control bits (except PCI_ACS_IORB) wired to follow ACS_RR.
+ */
+static u16 pci_acs_ctrl_mask(struct pci_dev *pdev, u16 hw_cap)
+{
+	/*
+	 * Egress Control enables use of the Egress Control Vector which is not
+	 * present without the cap.
+	 */
+	u16 mask = PCI_ACS_EC;
+
+	mask |= hw_cap & (PCI_ACS_SV | PCI_ACS_TB | PCI_ACS_RR | PCI_ACS_CR |
+			  PCI_ACS_UF | PCI_ACS_DT);
+
+	/*
+	 * If ACS Enhanced is supported the device reports what it is doing
+	 * through these bits which may not be settable.
+	 */
+	if (hw_cap & PCI_ACS_ENHANCED)
+		mask |= PCI_ACS_IORB | PCI_ACS_DSP_MT_RB | PCI_ACS_DSP_MT_RR |
+			PCI_ACS_USP_MT_RB | PCI_ACS_USP_MT_RR |
+			PCI_ACS_UNCLAIMED_RR;
+	return mask;
+}
+
 static bool pci_acs_flags_enabled(struct pci_dev *pdev, u16 acs_flags)
 {
 	int pos;
@@ -3615,15 +3683,9 @@ static bool pci_acs_flags_enabled(struct pci_dev *pdev, u16 acs_flags)
 	if (!pos)
 		return false;
 
-	/*
-	 * Except for egress control, capabilities are either required
-	 * or only required if controllable.  Features missing from the
-	 * capability field can therefore be assumed as hard-wired enabled.
-	 */
 	pci_read_config_word(pdev, pos + PCI_ACS_CAP, &cap);
-	acs_flags &= (cap | PCI_ACS_EC);
-
 	pci_read_config_word(pdev, pos + PCI_ACS_CTRL, &ctrl);
+	acs_flags &= pci_acs_ctrl_mask(pdev, cap);
 	return (ctrl & acs_flags) == acs_flags;
 }
 
