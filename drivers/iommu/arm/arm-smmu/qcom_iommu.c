@@ -66,7 +66,6 @@ struct qcom_iommu_ctx {
 struct qcom_iommu_domain {
 	struct io_pgtable_ops	*pgtbl_ops;
 	spinlock_t		 pgtbl_lock;
-	struct mutex		 init_mutex; /* Protects iommu pointer */
 	struct iommu_domain	 domain;
 	struct qcom_iommu_dev	*iommu;
 	struct iommu_fwspec	*fwspec;
@@ -213,41 +212,15 @@ static irqreturn_t qcom_iommu_fault(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-static int qcom_iommu_init_domain(struct iommu_domain *domain,
-				  struct qcom_iommu_dev *qcom_iommu,
-				  struct device *dev)
+static int qcom_iommu_attach_domain(struct qcom_iommu_domain *qcom_domain,
+				    struct device *dev)
 {
-	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct io_pgtable_ops *pgtbl_ops;
-	struct io_pgtable_cfg pgtbl_cfg;
+	struct qcom_iommu_dev *qcom_iommu = qcom_domain->iommu;
+	struct iommu_fwspec *fwspec = qcom_domain->fwspec;
+	struct io_pgtable_cfg *pgtbl_cfg =
+		&io_pgtable_ops_to_pgtable(qcom_domain->pgtbl_ops)->cfg;
 	int i, ret = 0;
 	u32 reg;
-
-	mutex_lock(&qcom_domain->init_mutex);
-	if (qcom_domain->iommu)
-		goto out_unlock;
-
-	pgtbl_cfg = (struct io_pgtable_cfg) {
-		.pgsize_bitmap	= domain->pgsize_bitmap,
-		.ias		= 32,
-		.oas		= 40,
-		.tlb		= &qcom_flush_ops,
-		.iommu_dev	= qcom_iommu->dev,
-	};
-
-	qcom_domain->iommu = qcom_iommu;
-	qcom_domain->fwspec = fwspec;
-
-	pgtbl_ops = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &pgtbl_cfg, qcom_domain);
-	if (!pgtbl_ops) {
-		dev_err(qcom_iommu->dev, "failed to allocate pagetable ops\n");
-		ret = -ENOMEM;
-		goto out_clear_iommu;
-	}
-
-	domain->geometry.aperture_end = (1ULL << pgtbl_cfg.ias) - 1;
-	domain->geometry.force_aperture = true;
 
 	for (i = 0; i < fwspec->num_ids; i++) {
 		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
@@ -256,14 +229,14 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 			ret = qcom_scm_restore_sec_cfg(qcom_iommu->sec_id, ctx->asid);
 			if (ret) {
 				dev_err(qcom_iommu->dev, "secure init failed: %d\n", ret);
-				goto out_clear_iommu;
+				return ret;
 			}
 			ctx->secure_init = true;
 		}
 
 		/* Secured QSMMU-500/QSMMU-v2 contexts cannot be programmed */
 		if (ctx->secured_ctx) {
-			ctx->domain = domain;
+			ctx->domain = &qcom_domain->domain;
 			continue;
 		}
 
@@ -276,21 +249,21 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 
 		/* TTBRs */
 		iommu_writeq(ctx, ARM_SMMU_CB_TTBR0,
-				pgtbl_cfg.arm_lpae_s1_cfg.ttbr |
+				pgtbl_cfg->arm_lpae_s1_cfg.ttbr |
 				FIELD_PREP(ARM_SMMU_TTBRn_ASID, ctx->asid));
 		iommu_writeq(ctx, ARM_SMMU_CB_TTBR1, 0);
 
 		/* TCR */
 		iommu_writel(ctx, ARM_SMMU_CB_TCR2,
-				arm_smmu_lpae_tcr2(&pgtbl_cfg));
+				arm_smmu_lpae_tcr2(pgtbl_cfg));
 		iommu_writel(ctx, ARM_SMMU_CB_TCR,
-			     arm_smmu_lpae_tcr(&pgtbl_cfg) | ARM_SMMU_TCR_EAE);
+			     arm_smmu_lpae_tcr(pgtbl_cfg) | ARM_SMMU_TCR_EAE);
 
 		/* MAIRs (stage-1 only) */
 		iommu_writel(ctx, ARM_SMMU_CB_S1_MAIR0,
-				pgtbl_cfg.arm_lpae_s1_cfg.mair);
+				pgtbl_cfg->arm_lpae_s1_cfg.mair);
 		iommu_writel(ctx, ARM_SMMU_CB_S1_MAIR1,
-				pgtbl_cfg.arm_lpae_s1_cfg.mair >> 32);
+				pgtbl_cfg->arm_lpae_s1_cfg.mair >> 32);
 
 		/* SCTLR */
 		reg = ARM_SMMU_SCTLR_CFIE | ARM_SMMU_SCTLR_CFRE |
@@ -303,58 +276,74 @@ static int qcom_iommu_init_domain(struct iommu_domain *domain,
 
 		iommu_writel(ctx, ARM_SMMU_CB_SCTLR, reg);
 
-		ctx->domain = domain;
+		ctx->domain = &qcom_domain->domain;
 	}
-
-	mutex_unlock(&qcom_domain->init_mutex);
-
-	/* Publish page table ops for map/unmap */
-	qcom_domain->pgtbl_ops = pgtbl_ops;
-
 	return 0;
-
-out_clear_iommu:
-	qcom_domain->iommu = NULL;
-out_unlock:
-	mutex_unlock(&qcom_domain->init_mutex);
-	return ret;
 }
 
 static struct iommu_domain *qcom_iommu_domain_alloc_paging(struct device *dev)
 {
+	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
 	struct qcom_iommu_domain *qcom_domain;
+	struct io_pgtable_ops *pgtbl_ops;
+	struct io_pgtable_cfg pgtbl_cfg;
+	int ret;
 
-	/*
-	 * Allocate the domain and initialise some of its data structures.
-	 * We can't really do anything meaningful until we've added a
-	 * master.
-	 */
 	qcom_domain = kzalloc(sizeof(*qcom_domain), GFP_KERNEL);
 	if (!qcom_domain)
 		return NULL;
 
-	mutex_init(&qcom_domain->init_mutex);
 	spin_lock_init(&qcom_domain->pgtbl_lock);
-	qcom_domain->domain.pgsize_bitmap = SZ_4K;
+
+	pgtbl_cfg = (struct io_pgtable_cfg) {
+		.pgsize_bitmap	= SZ_4K,
+		.ias		= 32,
+		.oas		= 40,
+		.tlb		= &qcom_flush_ops,
+		.iommu_dev	= qcom_iommu->dev,
+	};
+
+	qcom_domain->iommu = qcom_iommu;
+
+	/*
+	 * This driver doesn't keep track of devices attached to a domain,
+	 * so each domain is single device. The single fwspec is used
+	 * to push the invalidations.
+	 */
+	qcom_domain->fwspec = dev_iommu_fwspec_get(dev);
+
+	pgtbl_ops = alloc_io_pgtable_ops(ARM_32_LPAE_S1, &pgtbl_cfg, qcom_domain);
+	if (!pgtbl_ops) {
+		dev_err(qcom_iommu->dev, "failed to allocate pagetable ops\n");
+		ret = -ENOMEM;
+		goto err_free;
+	}
+
+	qcom_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
+	qcom_domain->domain.geometry.aperture_end = (1ULL << pgtbl_cfg.ias) - 1;
+	qcom_domain->domain.geometry.force_aperture = true;
+	qcom_domain->pgtbl_ops = pgtbl_ops;
 
 	return &qcom_domain->domain;
+
+err_free:
+	kfree(qcom_domain);
+	return ERR_PTR(ret);
 }
 
 static void qcom_iommu_domain_free(struct iommu_domain *domain)
 {
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
 
-	if (qcom_domain->iommu) {
-		/*
-		 * NOTE: unmap can be called after client device is powered
-		 * off, for example, with GPUs or anything involving dma-buf.
-		 * So we cannot rely on the device_link.  Make sure the IOMMU
-		 * is on to avoid unclocked accesses in the TLB inv path:
-		 */
-		pm_runtime_get_sync(qcom_domain->iommu->dev);
-		free_io_pgtable_ops(qcom_domain->pgtbl_ops);
-		pm_runtime_put_sync(qcom_domain->iommu->dev);
-	}
+	/*
+	 * NOTE: unmap can be called after client device is powered
+	 * off, for example, with GPUs or anything involving dma-buf.
+	 * So we cannot rely on the device_link.  Make sure the IOMMU
+	 * is on to avoid unclocked accesses in the TLB inv path:
+	 */
+	pm_runtime_get_sync(qcom_domain->iommu->dev);
+	free_io_pgtable_ops(qcom_domain->pgtbl_ops);
+	pm_runtime_put_sync(qcom_domain->iommu->dev);
 
 	kfree(qcom_domain);
 }
@@ -366,25 +355,16 @@ static int qcom_iommu_attach_dev(struct iommu_domain *domain,
 	struct qcom_iommu_domain *qcom_domain = to_qcom_iommu_domain(domain);
 	int ret;
 
-	if (!qcom_iommu) {
-		dev_err(dev, "cannot attach to IOMMU, is it on the same bus?\n");
-		return -ENXIO;
-	}
+	if (qcom_domain->iommu != qcom_iommu ||
+	    qcom_domain->fwspec != dev_iommu_fwspec_get(dev))
+		return -EINVAL;
 
 	/* Ensure that the domain is finalized */
 	pm_runtime_get_sync(qcom_iommu->dev);
-	ret = qcom_iommu_init_domain(domain, qcom_iommu, dev);
+	ret = qcom_iommu_attach_domain(qcom_domain, dev);
 	pm_runtime_put_sync(qcom_iommu->dev);
 	if (ret < 0)
 		return ret;
-
-	/*
-	 * Sanity check the domain. We don't support domains across
-	 * different IOMMUs.
-	 */
-	if (qcom_domain->iommu != qcom_iommu)
-		return -EINVAL;
-
 	return 0;
 }
 
@@ -392,21 +372,13 @@ static int qcom_iommu_identity_attach(struct iommu_domain *identity_domain,
 				      struct device *dev,
 				      struct iommu_domain *old)
 {
-	struct qcom_iommu_domain *qcom_domain;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
 	unsigned int i;
 
-	if (old == identity_domain || !old)
-		return 0;
-
-	qcom_domain = to_qcom_iommu_domain(old);
-	if (WARN_ON(!qcom_domain->iommu))
-		return -EINVAL;
-
 	pm_runtime_get_sync(qcom_iommu->dev);
 	for (i = 0; i < fwspec->num_ids; i++) {
-		struct qcom_iommu_ctx *ctx = to_ctx(qcom_domain, fwspec->ids[i]);
+		struct qcom_iommu_ctx *ctx = qcom_iommu->ctxs[fwspec->ids[i]];
 
 		/* Disable the context bank: */
 		iommu_writel(ctx, ARM_SMMU_CB_SCTLR, 0);
