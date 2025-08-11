@@ -215,7 +215,11 @@ static __always_inline struct pt_range _pt_top_range(struct pt_common *common,
 		.top_table =
 			(struct pt_table_p *)(top_of_table &
 					      ~(uintptr_t)PT_TOP_LEVEL_MASK),
+#ifdef PT_FIXED_TOP_LEVEL
+		.top_level = PT_FIXED_TOP_LEVEL,
+#else
 		.top_level = top_of_table % (1 << PT_TOP_LEVEL_BITS),
+#endif
 	};
 	struct pt_state pts = { .range = &range, .level = range.top_level };
 	unsigned int max_vasz_lg2;

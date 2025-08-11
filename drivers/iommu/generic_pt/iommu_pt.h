@@ -1204,6 +1204,9 @@ int pt_iommu_init(struct pt_iommu_table *fmt_table,
 	common->features = cfg->common.features;
 	common->max_vasz_lg2 = cfg->common.hw_max_vasz_lg2;
 	common->max_oasz_lg2 = cfg->common.hw_max_oasz_lg2;
+#ifdef PT_FIXED_TOP_LEVEL
+	pt_top_set_level(common, PT_FIXED_TOP_LEVEL);
+#endif
 	ret = pt_iommu_fmt_init(fmt_table, cfg);
 	if (ret)
 		return ret;
