@@ -65,6 +65,9 @@ struct iommu_group {
 	struct list_head entry;
 	unsigned int owner_cnt;
 	void *owner;
+
+	/* Used by the device_group() callbacks */
+	u32 bus_data;
 };
 
 struct group_device {
@@ -989,18 +992,7 @@ static const struct kobj_type iommu_group_ktype = {
 	.release = iommu_group_release,
 };
 
-/**
- * iommu_group_alloc - Allocate a new group
- *
- * This function is called by an iommu driver to allocate a new iommu
- * group.  The iommu group represents the minimum granularity of the iommu.
- * Upon successful return, the caller holds a reference to the supplied
- * group in order to hold the group until devices are added.  Use
- * iommu_group_put() to release this extra reference count, allowing the
- * group to be automatically reclaimed once it has no devices or external
- * references.
- */
-struct iommu_group *iommu_group_alloc(void)
+static struct iommu_group *iommu_group_alloc_data(u32 bus_data)
 {
 	struct iommu_group *group;
 	int ret;
@@ -1009,6 +1001,7 @@ struct iommu_group *iommu_group_alloc(void)
 	if (!group)
 		return ERR_PTR(-ENOMEM);
 
+	group->bus_data = bus_data;
 	group->kobj.kset = iommu_group_kset;
 	mutex_init(&group->mutex);
 	INIT_LIST_HEAD(&group->devices);
@@ -1058,6 +1051,22 @@ struct iommu_group *iommu_group_alloc(void)
 	pr_debug("Allocated group %d\n", group->id);
 
 	return group;
+}
+
+/**
+ * iommu_group_alloc - Allocate a new group
+ *
+ * This function is called by an iommu driver to allocate a new iommu
+ * group.  The iommu group represents the minimum granularity of the iommu.
+ * Upon successful return, the caller holds a reference to the supplied
+ * group in order to hold the group until devices are added.  Use
+ * iommu_group_put() to release this extra reference count, allowing the
+ * group to be automatically reclaimed once it has no devices or external
+ * references.
+ */
+struct iommu_group *iommu_group_alloc(void)
+{
+	return iommu_group_alloc_data(0);
 }
 EXPORT_SYMBOL_GPL(iommu_group_alloc);
 
