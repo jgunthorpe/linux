@@ -53,6 +53,8 @@ struct iommufd_ctx {
 	struct list_head sw_msi_list;
 	unsigned int sw_msi_id;
 
+	struct device *any_iommu_dev;
+
 	u8 account_mode;
 	/* Compatibility with VFIO no iommu */
 	u8 no_iommu_mode;

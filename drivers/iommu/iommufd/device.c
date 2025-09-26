@@ -223,6 +223,13 @@ struct iommufd_device *iommufd_device_bind(struct iommufd_ctx *ictx,
 	int rc;
 
 	/*
+	 * Hack: store the iommu device in the ictx so we can use it for the
+	 * dmabuf attach.
+	 */
+	if (dev->iommu && dev->iommu && dev->iommu->iommu_dev)
+		WRITE_ONCE(ictx->any_iommu_dev, dev->iommu->iommu_dev->dev);
+
+	/*
 	 * iommufd always sets IOMMU_CACHE because we offer no way for userspace
 	 * to restore cache coherency.
 	 */
