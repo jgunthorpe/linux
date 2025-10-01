@@ -1419,36 +1419,14 @@ static bool arm_smmu_capable(struct device *dev, enum iommu_cap cap)
 	}
 }
 
-static
-struct arm_smmu_device *arm_smmu_get_by_fwnode(struct fwnode_handle *fwnode)
+static int arm_smmu_probe_device_fwspec(struct iommu_device *iommu,
+					struct device *dev)
 {
-	struct device *dev = bus_find_device_by_fwnode(&platform_bus_type, fwnode);
-
-	put_device(dev);
-	return dev ? dev_get_drvdata(dev) : NULL;
-}
-
-static struct iommu_device *arm_smmu_probe_device(struct device *dev)
-{
-	struct arm_smmu_device *smmu = NULL;
+	struct arm_smmu_device *smmu =
+		container_of(iommu, struct arm_smmu_device, iommu);
 	struct arm_smmu_master_cfg *cfg;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	int i, ret;
-
-	if (using_legacy_binding) {
-		ret = arm_smmu_register_legacy_master(dev, &smmu);
-
-		/*
-		 * If dev->iommu_fwspec is initally NULL, arm_smmu_register_legacy_master()
-		 * will allocate/initialise a new one. Thus we need to update fwspec for
-		 * later use.
-		 */
-		fwspec = dev_iommu_fwspec_get(dev);
-		if (ret)
-			goto out_free;
-	} else {
-		smmu = arm_smmu_get_by_fwnode(fwspec->iommu_fwnode);
-	}
 
 	ret = -EINVAL;
 	for (i = 0; i < fwspec->num_ids; i++) {
@@ -1491,12 +1469,30 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 	device_link_add(dev, smmu->dev,
 			DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_SUPPLIER);
 
-	return &smmu->iommu;
+	return 0;
 
 out_cfg_free:
 	kfree(cfg);
 out_free:
-	return ERR_PTR(ret);
+	return ret;
+}
+
+static struct iommu_device *arm_smmu_probe_device(struct device *dev)
+{
+	struct arm_smmu_device *smmu = NULL;
+	int ret;
+
+	if (WARN_ON(!using_legacy_binding))
+		return ERR_PTR(-EINVAL);
+
+	ret = arm_smmu_register_legacy_master(dev, &smmu);
+	if (ret)
+		return ERR_PTR(ret);
+
+	ret = arm_smmu_probe_device_fwspec(&smmu->iommu, dev);
+	if (ret)
+		return ERR_PTR(ret);
+	return &smmu->iommu;
 }
 
 static void arm_smmu_release_device(struct device *dev)
@@ -1635,6 +1631,7 @@ static const struct iommu_ops arm_smmu_ops = {
 	.blocked_domain		= &arm_smmu_blocked_domain,
 	.capable		= arm_smmu_capable,
 	.domain_alloc_paging	= arm_smmu_domain_alloc_paging,
+	.probe_device_fwspec	= arm_smmu_probe_device_fwspec,
 	.probe_device		= arm_smmu_probe_device,
 	.release_device		= arm_smmu_release_device,
 	.probe_finalize		= arm_smmu_probe_finalize,
