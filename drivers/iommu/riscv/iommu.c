@@ -1476,32 +1476,27 @@ static int riscv_iommu_of_xlate(struct device *dev, const struct of_phandle_args
 	return iommu_fwspec_add_ids(dev, args->args, 1);
 }
 
-static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
+static int riscv_iommu_probe_device_fwspec(struct iommu_device *iommu,
+					   struct device *dev)
 {
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct riscv_iommu_device *iommu;
+	struct riscv_iommu_device *iommu =
+		container_of(iommu, struct iommu_device, iommu);
 	struct riscv_iommu_info *info;
 	struct riscv_iommu_dc *dc;
 	u64 tc;
 	int i;
-
-	if (!fwspec || !fwspec->iommu_fwnode->dev || !fwspec->num_ids)
-		return ERR_PTR(-ENODEV);
-
-	iommu = dev_get_drvdata(fwspec->iommu_fwnode->dev);
-	if (!iommu)
-		return ERR_PTR(-ENODEV);
 
 	/*
 	 * IOMMU hardware operating in fail-over BARE mode will provide
 	 * identity translation for all connected devices anyway...
 	 */
 	if (iommu->ddt_mode <= RISCV_IOMMU_DDTP_IOMMU_MODE_BARE)
-		return ERR_PTR(-ENODEV);
+		return -ENODEV;
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 	/*
 	 * Allocate and pre-configure device context entries in
 	 * the device directory. Do not mark the context valid yet.
@@ -1513,7 +1508,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
 		if (!dc) {
 			kfree(info);
-			return ERR_PTR(-ENODEV);
+			return -ENODEV;
 		}
 		if (READ_ONCE(dc->tc) & RISCV_IOMMU_DC_TC_V)
 			dev_warn(dev, "already attached to IOMMU device directory\n");
@@ -1522,7 +1517,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 	dev_iommu_priv_set(dev, info);
 
-	return &iommu->iommu;
+	return 0;
 }
 
 static void riscv_iommu_release_device(struct device *dev)
@@ -1539,7 +1534,7 @@ static const struct iommu_ops riscv_iommu_ops = {
 	.release_domain = &riscv_iommu_blocking_domain,
 	.domain_alloc_paging = riscv_iommu_alloc_paging_domain,
 	.device_group = riscv_iommu_device_group,
-	.probe_device = riscv_iommu_probe_device,
+	.probe_device_fwspec = riscv_iommu_probe_device_fwspec,
 	.release_device	= riscv_iommu_release_device,
 };
 
