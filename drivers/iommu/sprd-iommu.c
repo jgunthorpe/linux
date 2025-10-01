@@ -385,33 +385,19 @@ static phys_addr_t sprd_iommu_iova_to_phys(struct iommu_domain *domain,
 	return pa;
 }
 
-static struct iommu_device *sprd_iommu_probe_device(struct device *dev)
+static int sprd_iommu_probe_device_fwspec(struct iommu_device *iommu,
+					  struct device *dev)
 {
-	struct sprd_iommu_device *sdev = dev_iommu_priv_get(dev);
+	struct sprd_iommu_device *sdev = container_of(iommu, struct sprd_iommu_device, iommu);
 
-	return &sdev->iommu;
-}
-
-static int sprd_iommu_of_xlate(struct device *dev,
-			       const struct of_phandle_args *args)
-{
-	struct platform_device *pdev;
-
-	if (!dev_iommu_priv_get(dev)) {
-		pdev = of_find_device_by_node(args->np);
-		dev_iommu_priv_set(dev, platform_get_drvdata(pdev));
-		platform_device_put(pdev);
-	}
-
+	dev_iommu_priv_set(dev, sdev);
 	return 0;
 }
 
-
 static const struct iommu_ops sprd_iommu_ops = {
 	.domain_alloc_paging = sprd_iommu_domain_alloc_paging,
-	.probe_device	= sprd_iommu_probe_device,
+	.probe_device_fwspec = sprd_iommu_probe_device_fwspec,
 	.device_group	= generic_single_device_group,
-	.of_xlate	= sprd_iommu_of_xlate,
 	.owner		= THIS_MODULE,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= sprd_iommu_attach_device,
