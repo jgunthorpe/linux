@@ -859,16 +859,19 @@ static phys_addr_t mtk_iommu_iova_to_phys(struct iommu_domain *domain,
 	return pa;
 }
 
-static struct iommu_device *mtk_iommu_probe_device(struct device *dev)
+static int mtk_iommu_probe_device_fwspec(struct iommu_device *iommu,
+					 struct device *dev)
 {
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-	struct mtk_iommu_data *data = dev_iommu_priv_get(dev);
+	struct mtk_iommu_data *data =
+		container_of(iommu, struct mtk_iommu_data, iommu);
 	struct device_link *link;
 	struct device *larbdev;
 	unsigned int larbid, larbidx, i;
 
+	dev_iommu_priv_set(dev, data);
 	if (!MTK_IOMMU_IS_TYPE(data->plat_data, MTK_IOMMU_TYPE_MM))
-		return &data->iommu;
+		return 0;
 
 	/*
 	 * Link the consumer device with the smi-larb device(supplier).
@@ -877,25 +880,25 @@ static struct iommu_device *mtk_iommu_probe_device(struct device *dev)
 	 */
 	larbid = MTK_M4U_TO_LARB(fwspec->ids[0]);
 	if (larbid >= MTK_LARB_NR_MAX)
-		return ERR_PTR(-EINVAL);
+		return -EINVAL;
 
 	for (i = 1; i < fwspec->num_ids; i++) {
 		larbidx = MTK_M4U_TO_LARB(fwspec->ids[i]);
 		if (larbid != larbidx) {
 			dev_err(dev, "Can only use one larb. Fail@larb%d-%d.\n",
 				larbid, larbidx);
-			return ERR_PTR(-EINVAL);
+			return -EINVAL;
 		}
 	}
 	larbdev = data->larb_imu[larbid].dev;
 	if (!larbdev)
-		return ERR_PTR(-EINVAL);
+		return -EINVAL;
 
 	link = device_link_add(dev, larbdev,
 			       DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
 	if (!link)
 		dev_err(dev, "Unable to link %s\n", dev_name(larbdev));
-	return &data->iommu;
+	return 0;
 }
 
 static void mtk_iommu_release_device(struct device *dev)
@@ -959,21 +962,10 @@ static struct iommu_group *mtk_iommu_device_group(struct device *dev)
 static int mtk_iommu_of_xlate(struct device *dev,
 			      const struct of_phandle_args *args)
 {
-	struct platform_device *m4updev;
-
 	if (args->args_count != 1) {
 		dev_err(dev, "invalid #iommu-cells(%d) property for IOMMU\n",
 			args->args_count);
 		return -EINVAL;
-	}
-
-	if (!dev_iommu_priv_get(dev)) {
-		/* Get the m4u device */
-		m4updev = of_find_device_by_node(args->np);
-		if (WARN_ON(!m4updev))
-			return -EINVAL;
-
-		dev_iommu_priv_set(dev, platform_get_drvdata(m4updev));
 	}
 
 	return iommu_fwspec_add_ids(dev, args->args, 1);
@@ -1012,7 +1004,7 @@ static void mtk_iommu_get_resv_regions(struct device *dev,
 static const struct iommu_ops mtk_iommu_ops = {
 	.identity_domain = &mtk_iommu_identity_domain,
 	.domain_alloc_paging = mtk_iommu_domain_alloc_paging,
-	.probe_device	= mtk_iommu_probe_device,
+	.probe_device_fwspec = mtk_iommu_probe_device_fwspec,
 	.release_device	= mtk_iommu_release_device,
 	.device_group	= mtk_iommu_device_group,
 	.of_xlate	= mtk_iommu_of_xlate,
