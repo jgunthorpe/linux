@@ -142,6 +142,8 @@ static void __iommu_group_free_device(struct iommu_group *group,
 				      struct group_device *grp_dev);
 static void iommu_domain_init(struct iommu_domain *domain, unsigned int type,
 			      const struct iommu_ops *ops);
+static struct iommu_device *
+iommu_from_fwnode(const struct fwnode_handle *fwnode);
 
 #define IOMMU_GROUP_ATTR(_name, _mode, _show, _store)		\
 struct iommu_group_attribute iommu_group_attr_##_name =		\
@@ -406,13 +408,75 @@ void dev_iommu_priv_set(struct device *dev, void *priv)
 }
 EXPORT_SYMBOL_GPL(dev_iommu_priv_set);
 
+static int iommu_do_probe_device(struct device *dev)
+{
+	struct iommu_device *iommu;
+	int ret;
+
+	lockdep_assert_held(&iommu_probe_device_lock);
+
+	if (dev->iommu->fwspec) {
+		struct iommu_device *fwspec_iommu;
+
+		fwspec_iommu =
+			iommu_from_fwnode(dev->iommu->fwspec->iommu_fwnode);
+		if (!fwspec_iommu)
+			return -ENODEV;
+
+		if (fwspec_iommu->ops->probe_device_fwspec) {
+			ret = fwspec_iommu->ops->probe_device_fwspec(
+				fwspec_iommu, dev);
+			if (ret)
+				return ret;
+			iommu = fwspec_iommu;
+		} else {
+			iommu = fwspec_iommu->ops->probe_device(dev);
+			if (IS_ERR(iommu))
+				return PTR_ERR(iommu);
+			if (WARN_ON(iommu != fwspec_iommu)) {
+				ret = -EINVAL;
+				goto err_release;
+			}
+		}
+	} else {
+		/*
+		 * At this point, relevant devices either now have a fwspec
+		 * which will match ops registered with a non-NULL fwnode, or we
+		 * can reasonably assume that only one of Intel, AMD, s390, PAMU
+		 * or legacy SMMUv2 can be present, and that any of their
+		 * registered instances has suitable ops for probing, and thus
+		 * cheekily co-opt the same mechanism.
+		 */
+		iommu = iommu_from_fwnode(NULL);
+		if (!iommu)
+			return -ENODEV;
+		/* Non fwspec drivers must identify their instance internally */
+		if (WARN_ON(!iommu->ops->probe_device))
+			return -EINVAL;
+		iommu = iommu->ops->probe_device(dev);
+		if (IS_ERR(iommu))
+			return PTR_ERR(iommu);
+	}
+
+	if (!try_module_get(iommu->ops->owner)) {
+		ret = -EINVAL;
+		goto err_release;
+	}
+
+	dev->iommu->iommu_dev = iommu;
+
+err_release:
+	if (iommu->ops->release_device)
+		iommu->ops->release_device(dev);
+	return ret;
+}
+
 /*
  * Init the dev->iommu and dev->iommu_group in the struct device and get the
  * driver probed
  */
 static int iommu_init_device(struct device *dev)
 {
-	const struct iommu_ops *ops;
 	struct iommu_device *iommu_dev;
 	struct iommu_group *group;
 	int ret;
@@ -434,36 +498,17 @@ static int iommu_init_device(struct device *dev)
 		if (!dev->iommu || dev->iommu_group)
 			return -ENODEV;
 	}
-	/*
-	 * At this point, relevant devices either now have a fwspec which will
-	 * match ops registered with a non-NULL fwnode, or we can reasonably
-	 * assume that only one of Intel, AMD, s390, PAMU or legacy SMMUv2 can
-	 * be present, and that any of their registered instances has suitable
-	 * ops for probing, and thus cheekily co-opt the same mechanism.
-	 */
-	ops = iommu_fwspec_ops(dev->iommu->fwspec);
-	if (!ops) {
-		ret = -ENODEV;
-		goto err_free;
-	}
 
-	if (!try_module_get(ops->owner)) {
-		ret = -EINVAL;
+	ret = iommu_do_probe_device(dev);
+	if (ret)
 		goto err_free;
-	}
-
-	iommu_dev = ops->probe_device(dev);
-	if (IS_ERR(iommu_dev)) {
-		ret = PTR_ERR(iommu_dev);
-		goto err_module_put;
-	}
-	dev->iommu->iommu_dev = iommu_dev;
+	iommu_dev = dev->iommu->iommu_dev;
 
 	ret = iommu_device_link(iommu_dev, dev);
 	if (ret)
 		goto err_release;
 
-	group = ops->device_group(dev);
+	group = iommu_dev->ops->device_group(dev);
 	if (WARN_ON_ONCE(group == NULL))
 		group = ERR_PTR(-EINVAL);
 	if (IS_ERR(group)) {
@@ -473,17 +518,17 @@ static int iommu_init_device(struct device *dev)
 	dev->iommu_group = group;
 
 	dev->iommu->max_pasids = dev_iommu_get_max_pasids(dev);
-	if (ops->is_attach_deferred)
-		dev->iommu->attach_deferred = ops->is_attach_deferred(dev);
+	if (iommu_dev->ops->is_attach_deferred)
+		dev->iommu->attach_deferred =
+			iommu_dev->ops->is_attach_deferred(dev);
 	return 0;
 
 err_unlink:
 	iommu_device_unlink(iommu_dev, dev);
 err_release:
-	if (ops->release_device)
-		ops->release_device(dev);
-err_module_put:
-	module_put(ops->owner);
+	if (iommu_dev->ops->release_device)
+		iommu_dev->ops->release_device(dev);
+	module_put(iommu_dev->ops->owner);
 err_free:
 	dev->iommu->iommu_dev = NULL;
 	dev_iommu_free(dev);
@@ -2855,9 +2900,10 @@ bool iommu_default_passthrough(void)
 }
 EXPORT_SYMBOL_GPL(iommu_default_passthrough);
 
-static const struct iommu_device *iommu_from_fwnode(const struct fwnode_handle *fwnode)
+static struct iommu_device *iommu_from_fwnode(
+	const struct fwnode_handle *fwnode)
 {
-	const struct iommu_device *iommu, *ret = NULL;
+	struct iommu_device *iommu, *ret = NULL;
 
 	spin_lock(&iommu_device_lock);
 	list_for_each_entry(iommu, &iommu_device_list, list)

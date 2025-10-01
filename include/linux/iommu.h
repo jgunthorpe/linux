@@ -48,6 +48,7 @@ struct iommufd_ctx;
 struct iommufd_viommu;
 struct msi_desc;
 struct msi_msg;
+struct iommu_device;
 
 #define IOMMU_FAULT_PERM_READ	(1 << 0) /* read */
 #define IOMMU_FAULT_PERM_WRITE	(1 << 1) /* write */
@@ -680,6 +681,8 @@ struct iommu_ops {
 		struct device *dev, struct iommu_domain *parent, u32 flags,
 		const struct iommu_user_data *user_data);
 
+	int (*probe_device_fwspec)(struct iommu_device *iommu,
+				   struct device *dev);
 	struct iommu_device *(*probe_device)(struct device *dev);
 	void (*release_device)(struct device *dev);
 	void (*probe_finalize)(struct device *dev);
