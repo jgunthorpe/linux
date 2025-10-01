@@ -406,42 +406,33 @@ static phys_addr_t mtk_iommu_v1_iova_to_phys(struct iommu_domain *domain, dma_ad
 
 static const struct iommu_ops mtk_iommu_v1_ops;
 
-/*
- * MTK generation one iommu HW only support one iommu domain, and all the client
- * sharing the same iova address space.
- */
-static int mtk_iommu_v1_create_mapping(struct device *dev,
+static int mtk_iommu_v1_iommu_of_xlate(struct device *dev,
 				       const struct of_phandle_args *args)
 {
-	struct mtk_iommu_v1_data *data;
-	struct platform_device *m4updev;
-	struct dma_iommu_mapping *mtk_mapping;
-	int ret;
-
 	if (args->args_count != 1) {
 		dev_err(dev, "invalid #iommu-cells(%d) property for IOMMU\n",
 			args->args_count);
 		return -EINVAL;
 	}
 
-	ret = iommu_fwspec_init(dev, of_fwnode_handle(args->np));
-	if (ret)
-		return ret;
+	return iommu_fwspec_add_ids(dev, args->args, 1);
+}
 
-	if (!dev_iommu_priv_get(dev)) {
-		/* Get the m4u device */
-		m4updev = of_find_device_by_node(args->np);
-		if (WARN_ON(!m4updev))
-			return -EINVAL;
+static int mtk_iommu_v1_probe_device_fwspec(struct iommu_device *iommu,
+					    struct device *dev)
+{
+	struct mtk_iommu_v1_data *data =
+		container_of(iommu, struct mtk_iommu_v1_data, iommu);
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct dma_iommu_mapping *mtk_mapping;
+	int idx = 0, larbid, larbidx;
+	struct device_link *link;
+	struct device *larbdev;
 
-		dev_iommu_priv_set(dev, platform_get_drvdata(m4updev));
-	}
-
-	ret = iommu_fwspec_add_ids(dev, args->args, 1);
-	if (ret)
-		return ret;
-
-	data = dev_iommu_priv_get(dev);
+	/*
+	 * MTK generation one iommu HW only support one iommu domain, and all the client
+	 * sharing the same iova address space.
+	 */
 	mtk_mapping = data->mapping;
 	if (!mtk_mapping) {
 		/* MTK iommu support 4GB iova address space. */
@@ -452,61 +443,30 @@ static int mtk_iommu_v1_create_mapping(struct device *dev,
 		data->mapping = mtk_mapping;
 	}
 
-	return 0;
-}
-
-static struct iommu_device *mtk_iommu_v1_probe_device(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = NULL;
-	struct of_phandle_args iommu_spec;
-	struct mtk_iommu_v1_data *data;
-	int err, idx = 0, larbid, larbidx;
-	struct device_link *link;
-	struct device *larbdev;
-
-	while (!of_parse_phandle_with_args(dev->of_node, "iommus",
-					   "#iommu-cells",
-					   idx, &iommu_spec)) {
-
-		err = mtk_iommu_v1_create_mapping(dev, &iommu_spec);
-		of_node_put(iommu_spec.np);
-		if (err)
-			return ERR_PTR(err);
-
-		/* dev->iommu_fwspec might have changed */
-		fwspec = dev_iommu_fwspec_get(dev);
-		idx++;
-	}
-
-	if (!fwspec)
-		return ERR_PTR(-ENODEV);
-
-	data = dev_iommu_priv_get(dev);
-
 	/* Link the consumer device with the smi-larb device(supplier) */
 	larbid = mt2701_m4u_to_larb(fwspec->ids[0]);
 	if (larbid >= MT2701_LARB_NR_MAX)
-		return ERR_PTR(-EINVAL);
+		return -EINVAL;
 
 	for (idx = 1; idx < fwspec->num_ids; idx++) {
 		larbidx = mt2701_m4u_to_larb(fwspec->ids[idx]);
 		if (larbid != larbidx) {
 			dev_err(dev, "Can only use one larb. Fail@larb%d-%d.\n",
 				larbid, larbidx);
-			return ERR_PTR(-EINVAL);
+			return -EINVAL;
 		}
 	}
 
 	larbdev = data->larb_imu[larbid].dev;
 	if (!larbdev)
-		return ERR_PTR(-EINVAL);
+		return -EINVAL;
 
 	link = device_link_add(dev, larbdev,
 			       DL_FLAG_PM_RUNTIME | DL_FLAG_STATELESS);
 	if (!link)
 		dev_err(dev, "Unable to link %s\n", dev_name(larbdev));
 
-	return &data->iommu;
+	return 0;
 }
 
 static void mtk_iommu_v1_probe_finalize(struct device *dev)
@@ -576,7 +536,8 @@ static int mtk_iommu_v1_hw_init(const struct mtk_iommu_v1_data *data)
 static const struct iommu_ops mtk_iommu_v1_ops = {
 	.identity_domain = &mtk_iommu_v1_identity_domain,
 	.domain_alloc_paging = mtk_iommu_v1_domain_alloc_paging,
-	.probe_device	= mtk_iommu_v1_probe_device,
+	.probe_device_fwspec = mtk_iommu_v1_probe_device_fwspec,
+	.of_xlate            = mtk_iommu_v1_iommu_of_xlate,
 	.probe_finalize = mtk_iommu_v1_probe_finalize,
 	.release_device	= mtk_iommu_v1_release_device,
 	.device_group	= generic_device_group,
