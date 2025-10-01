@@ -1122,21 +1122,20 @@ static void rk_iommu_domain_free(struct iommu_domain *domain)
 	kfree(rk_domain);
 }
 
-static struct iommu_device *rk_iommu_probe_device(struct device *dev)
+static int rk_iommu_probe_device_fwspec(struct iommu_device *iommu,
+					struct device *dev)
 {
 	struct rk_iommudata *data;
-	struct rk_iommu *iommu;
 
-	data = dev_iommu_priv_get(dev);
+	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
-		return ERR_PTR(-ENODEV);
-
-	iommu = rk_iommu_from_dev(dev);
+		return -ENOMEM;
+	data->iommu = container_of(iommu, struct rk_iommu, iommu);
+	dev_iommu_priv_set(dev, data);
 
 	data->link = device_link_add(dev, iommu->dev,
 				     DL_FLAG_STATELESS | DL_FLAG_PM_RUNTIME);
-
-	return &iommu->iommu;
+	return 0;
 }
 
 static void rk_iommu_release_device(struct device *dev)
@@ -1144,35 +1143,15 @@ static void rk_iommu_release_device(struct device *dev)
 	struct rk_iommudata *data = dev_iommu_priv_get(dev);
 
 	device_link_del(data->link);
-}
-
-static int rk_iommu_of_xlate(struct device *dev,
-			     const struct of_phandle_args *args)
-{
-	struct platform_device *iommu_dev;
-	struct rk_iommudata *data;
-
-	iommu_dev = of_find_device_by_node(args->np);
-
-	data = devm_kzalloc(&iommu_dev->dev, sizeof(*data), GFP_KERNEL);
-	if (!data)
-		return -ENOMEM;
-
-	data->iommu = platform_get_drvdata(iommu_dev);
-	dev_iommu_priv_set(dev, data);
-
-	platform_device_put(iommu_dev);
-
-	return 0;
+	kfree(data);
 }
 
 static const struct iommu_ops rk_iommu_ops = {
 	.identity_domain = &rk_identity_domain,
 	.domain_alloc_paging = rk_iommu_domain_alloc_paging,
-	.probe_device = rk_iommu_probe_device,
+	.probe_device_fwspec = rk_iommu_probe_device_fwspec,
 	.release_device = rk_iommu_release_device,
 	.device_group = generic_single_device_group,
-	.of_xlate = rk_iommu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= rk_iommu_attach_device,
 		.map_pages	= rk_iommu_map,
