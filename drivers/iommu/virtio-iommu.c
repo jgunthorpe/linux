@@ -1000,35 +1000,17 @@ static void viommu_get_resv_regions(struct device *dev, struct list_head *head)
 
 static const struct bus_type *virtio_bus_type;
 
-static int viommu_match_node(struct device *dev, const void *data)
-{
-	return device_match_fwnode(dev->parent, data);
-}
-
-static struct viommu_dev *viommu_get_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct device *dev = bus_find_device(virtio_bus_type, NULL, fwnode,
-					     viommu_match_node);
-
-	put_device(dev);
-
-	return dev ? dev_to_virtio(dev)->priv : NULL;
-}
-
-static struct iommu_device *viommu_probe_device(struct device *dev)
+static int viommu_probe_device_fwspec(struct iommu_device *iommu,
+				      struct device *dev)
 {
 	int ret;
 	struct viommu_endpoint *vdev;
-	struct viommu_dev *viommu = NULL;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	viommu = viommu_get_by_fwnode(fwspec->iommu_fwnode);
-	if (!viommu)
-		return ERR_PTR(-ENODEV);
+	struct viommu_dev *viommu =
+		container_of(iommu, struct viommu_dev, iommu);
 
 	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
 	if (!vdev)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	vdev->dev = dev;
 	vdev->viommu = viommu;
@@ -1042,13 +1024,13 @@ static struct iommu_device *viommu_probe_device(struct device *dev)
 			goto err_free_dev;
 	}
 
-	return &viommu->iommu;
+	return 0;
 
 err_free_dev:
 	iommu_put_resv_regions(dev, &vdev->resv_regions);
 	kfree(vdev);
 
-	return ERR_PTR(ret);
+	return ret;
 }
 
 static void viommu_release_device(struct device *dev)
@@ -1090,7 +1072,7 @@ static const struct iommu_ops viommu_ops = {
 	.capable		= viommu_capable,
 	.domain_alloc_identity	= viommu_domain_alloc_identity,
 	.domain_alloc_paging	= viommu_domain_alloc_paging,
-	.probe_device		= viommu_probe_device,
+	.probe_device_fwspec	= viommu_probe_device_fwspec,
 	.release_device		= viommu_release_device,
 	.device_group		= viommu_device_group,
 	.get_resv_regions	= viommu_get_resv_regions,
