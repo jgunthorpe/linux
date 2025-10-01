@@ -969,12 +969,12 @@ static int tegra_mc_probe(struct platform_device *pdev)
 			err);
 
 	if (IS_ENABLED(CONFIG_TEGRA_IOMMU_SMMU) && mc->soc->smmu) {
-		mc->smmu = tegra_smmu_probe(&pdev->dev, mc->soc->smmu, mc);
-		if (IS_ERR(mc->smmu)) {
-			dev_err(&pdev->dev, "failed to probe SMMU: %ld\n",
-				PTR_ERR(mc->smmu));
-			mc->smmu = NULL;
-		}
+		struct tegra_smmu *smmu;
+
+		smmu = tegra_smmu_probe(&pdev->dev, mc->soc->smmu, mc);
+		if (IS_ERR(smmu))
+			dev_err(&pdev->dev, "failed to probe SMMU: %pe\n",
+				smmu);
 	}
 
 	return 0;

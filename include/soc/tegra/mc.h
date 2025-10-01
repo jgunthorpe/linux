@@ -201,7 +201,6 @@ struct tegra_mc_soc {
 struct tegra_mc {
 	struct tegra_bpmp *bpmp;
 	struct device *dev;
-	struct tegra_smmu *smmu;
 	void __iomem *regs;
 	void __iomem *bcast_ch_regs;
 	void __iomem **ch_regs;

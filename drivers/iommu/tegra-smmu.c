@@ -820,74 +820,13 @@ static phys_addr_t tegra_smmu_iova_to_phys(struct iommu_domain *domain,
 	return SMMU_PFN_PHYS(pfn) + SMMU_OFFSET_IN_PAGE(iova);
 }
 
-static struct tegra_smmu *tegra_smmu_find(struct device_node *np)
+static int tegra_smmu_probe_device_fwspec(struct iommu_device *iommu,
+					  struct device *dev)
 {
-	struct platform_device *pdev;
-	struct tegra_mc *mc;
+	struct tegra_smmu *smmu = container_of(iommu, struct tegra_smmu, iommu);
 
-	pdev = of_find_device_by_node(np);
-	if (!pdev)
-		return NULL;
-
-	mc = platform_get_drvdata(pdev);
-	if (!mc) {
-		put_device(&pdev->dev);
-		return NULL;
-	}
-
-	return mc->smmu;
-}
-
-static int tegra_smmu_configure(struct tegra_smmu *smmu, struct device *dev,
-				const struct of_phandle_args *args)
-{
-	const struct iommu_ops *ops = smmu->iommu.ops;
-	int err;
-
-	err = iommu_fwspec_init(dev, dev_fwnode(smmu->dev));
-	if (err < 0) {
-		dev_err(dev, "failed to initialize fwspec: %d\n", err);
-		return err;
-	}
-
-	err = ops->of_xlate(dev, args);
-	if (err < 0) {
-		dev_err(dev, "failed to parse SW group ID: %d\n", err);
-		return err;
-	}
-
+	dev_iommu_priv_set(dev, smmu);
 	return 0;
-}
-
-static struct iommu_device *tegra_smmu_probe_device(struct device *dev)
-{
-	struct device_node *np = dev->of_node;
-	struct tegra_smmu *smmu = NULL;
-	struct of_phandle_args args;
-	unsigned int index = 0;
-	int err;
-
-	while (of_parse_phandle_with_args(np, "iommus", "#iommu-cells", index,
-					  &args) == 0) {
-		smmu = tegra_smmu_find(args.np);
-		if (smmu) {
-			err = tegra_smmu_configure(smmu, dev, &args);
-
-			if (err < 0) {
-				of_node_put(args.np);
-				return ERR_PTR(err);
-			}
-		}
-
-		of_node_put(args.np);
-		index++;
-	}
-
-	smmu = dev_iommu_priv_get(dev);
-	if (!smmu)
-		return ERR_PTR(-ENODEV);
-
-	return &smmu->iommu;
 }
 
 static const struct tegra_smmu_group_soc *
@@ -969,20 +908,7 @@ static struct iommu_group *tegra_smmu_device_group(struct device *dev)
 static int tegra_smmu_of_xlate(struct device *dev,
 			       const struct of_phandle_args *args)
 {
-	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
-	struct tegra_mc *mc = platform_get_drvdata(iommu_pdev);
 	u32 id = args->args[0];
-
-	/*
-	 * Note: we are here releasing the reference of &iommu_pdev->dev, which
-	 * is mc->dev. Although some functions in tegra_smmu_ops may keep using
-	 * its private data beyond this point, it's still safe to do so because
-	 * the SMMU parent device is the same as the MC, so the reference count
-	 * isn't strictly necessary.
-	 */
-	put_device(&iommu_pdev->dev);
-
-	dev_iommu_priv_set(dev, mc->smmu);
 
 	return iommu_fwspec_add_ids(dev, &id, 1);
 }
@@ -1001,7 +927,7 @@ static const struct iommu_ops tegra_smmu_ops = {
 	.identity_domain = &tegra_smmu_identity_domain,
 	.def_domain_type = &tegra_smmu_def_domain_type,
 	.domain_alloc_paging = tegra_smmu_domain_alloc_paging,
-	.probe_device = tegra_smmu_probe_device,
+	.probe_device_fwspec = tegra_smmu_probe_device_fwspec,
 	.device_group = tegra_smmu_device_group,
 	.of_xlate = tegra_smmu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
@@ -1114,16 +1040,6 @@ struct tegra_smmu *tegra_smmu_probe(struct device *dev,
 	smmu = devm_kzalloc(dev, sizeof(*smmu), GFP_KERNEL);
 	if (!smmu)
 		return ERR_PTR(-ENOMEM);
-
-	/*
-	 * This is a bit of a hack. Ideally we'd want to simply return this
-	 * value. However iommu_device_register() will attempt to add
-	 * all devices to the IOMMU before we get that far. In order
-	 * not to rely on global variables to track the IOMMU instance, we
-	 * set it here so that it can be looked up from the .probe_device()
-	 * callback via the IOMMU device's .drvdata field.
-	 */
-	mc->smmu = smmu;
 
 	smmu->asids = devm_bitmap_zalloc(dev, soc->num_asids, GFP_KERNEL);
 	if (!smmu->asids)
