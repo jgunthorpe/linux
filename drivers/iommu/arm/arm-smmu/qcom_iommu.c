@@ -522,13 +522,21 @@ static bool qcom_iommu_capable(struct device *dev, enum iommu_cap cap)
 	}
 }
 
-static struct iommu_device *qcom_iommu_probe_device(struct device *dev)
+static int qcom_iommu_probe_device_fwspec(struct iommu_device *iommu,
+					  struct device *dev)
 {
-	struct qcom_iommu_dev *qcom_iommu = dev_iommu_priv_get(dev);
+	struct qcom_iommu_dev *qcom_iommu =
+		container_of(iommu, struct qcom_iommu_dev, iommu);
+	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct device_link *link;
+	unsigned int asid = fwspec->ids[0];
 
-	if (!qcom_iommu)
-		return ERR_PTR(-ENODEV);
+	/* make sure the asid specified in dt is valid, so we don't have
+	 * to sanity check this elsewhere:
+	 */
+	if (WARN_ON(asid > qcom_iommu->max_asid) ||
+	    WARN_ON(qcom_iommu->ctxs[asid] == NULL))
+		return -EINVAL;
 
 	/*
 	 * Establish the link between iommu and master, so that the
@@ -539,17 +547,16 @@ static struct iommu_device *qcom_iommu_probe_device(struct device *dev)
 	if (!link) {
 		dev_err(qcom_iommu->dev, "Unable to create device link between %s and %s\n",
 			dev_name(qcom_iommu->dev), dev_name(dev));
-		return ERR_PTR(-ENODEV);
+		return -ENODEV;
 	}
 
-	return &qcom_iommu->iommu;
+	dev_iommu_priv_set(dev, qcom_iommu);
+	return 0;
 }
 
 static int qcom_iommu_of_xlate(struct device *dev,
 			       const struct of_phandle_args *args)
 {
-	struct qcom_iommu_dev *qcom_iommu;
-	struct platform_device *iommu_pdev;
 	unsigned asid = args->args[0];
 
 	if (args->args_count != 1) {
@@ -559,34 +566,6 @@ static int qcom_iommu_of_xlate(struct device *dev,
 		return -EINVAL;
 	}
 
-	iommu_pdev = of_find_device_by_node(args->np);
-	if (WARN_ON(!iommu_pdev))
-		return -EINVAL;
-
-	qcom_iommu = platform_get_drvdata(iommu_pdev);
-
-	/* make sure the asid specified in dt is valid, so we don't have
-	 * to sanity check this elsewhere:
-	 */
-	if (WARN_ON(asid > qcom_iommu->max_asid) ||
-	    WARN_ON(qcom_iommu->ctxs[asid] == NULL)) {
-		put_device(&iommu_pdev->dev);
-		return -EINVAL;
-	}
-
-	if (!dev_iommu_priv_get(dev)) {
-		dev_iommu_priv_set(dev, qcom_iommu);
-	} else {
-		/* make sure devices iommus dt node isn't referring to
-		 * multiple different iommu devices.  Multiple context
-		 * banks are ok, but multiple devices are not:
-		 */
-		if (WARN_ON(qcom_iommu != dev_iommu_priv_get(dev))) {
-			put_device(&iommu_pdev->dev);
-			return -EINVAL;
-		}
-	}
-
 	return iommu_fwspec_add_ids(dev, &asid, 1);
 }
 
@@ -594,7 +573,7 @@ static const struct iommu_ops qcom_iommu_ops = {
 	.identity_domain = &qcom_iommu_identity_domain,
 	.capable	= qcom_iommu_capable,
 	.domain_alloc_paging = qcom_iommu_domain_alloc_paging,
-	.probe_device	= qcom_iommu_probe_device,
+	.probe_device_fwspec = qcom_iommu_probe_device_fwspec,
 	.device_group	= generic_device_group,
 	.of_xlate	= qcom_iommu_of_xlate,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
