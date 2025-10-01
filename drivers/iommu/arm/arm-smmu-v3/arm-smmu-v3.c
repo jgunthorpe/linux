@@ -3413,15 +3413,6 @@ arm_smmu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 
 static struct platform_driver arm_smmu_driver;
 
-static
-struct arm_smmu_device *arm_smmu_get_by_fwnode(struct fwnode_handle *fwnode)
-{
-	struct device *dev = bus_find_device_by_fwnode(&platform_bus_type, fwnode);
-
-	put_device(dev);
-	return dev ? dev_get_drvdata(dev) : NULL;
-}
-
 static bool arm_smmu_sid_in_range(struct arm_smmu_device *smmu, u32 sid)
 {
 	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB)
@@ -3515,23 +3506,20 @@ static void arm_smmu_remove_master(struct arm_smmu_master *master)
 	kfree(master->streams);
 }
 
-static struct iommu_device *arm_smmu_probe_device(struct device *dev)
+static int arm_smmu_probe_device_fwspec(struct iommu_device *iommu,
+					struct device *dev)
 {
 	int ret;
-	struct arm_smmu_device *smmu;
+	struct arm_smmu_device *smmu =
+		container_of(iommu, struct arm_smmu_device, iommu);
 	struct arm_smmu_master *master;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 
 	if (WARN_ON_ONCE(dev_iommu_priv_get(dev)))
-		return ERR_PTR(-EBUSY);
-
-	smmu = arm_smmu_get_by_fwnode(fwspec->iommu_fwnode);
-	if (!smmu)
-		return ERR_PTR(-ENODEV);
+		return -EBUSY;
 
 	master = kzalloc(sizeof(*master), GFP_KERNEL);
 	if (!master)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 
 	master->dev = dev;
 	master->smmu = smmu;
@@ -3569,11 +3557,11 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 		pci_prepare_ats(to_pci_dev(dev), stu);
 	}
 
-	return &smmu->iommu;
+	return 0;
 
 err_free_master:
 	kfree(master);
-	return ERR_PTR(ret);
+	return ret;
 }
 
 static void arm_smmu_release_device(struct device *dev)
@@ -3682,7 +3670,7 @@ static const struct iommu_ops arm_smmu_ops = {
 	.hw_info		= arm_smmu_hw_info,
 	.domain_alloc_sva       = arm_smmu_sva_domain_alloc,
 	.domain_alloc_paging_flags = arm_smmu_domain_alloc_paging_flags,
-	.probe_device		= arm_smmu_probe_device,
+	.probe_device_fwspec	= arm_smmu_probe_device_fwspec,
 	.release_device		= arm_smmu_release_device,
 	.device_group		= arm_smmu_device_group,
 	.of_xlate		= arm_smmu_of_xlate,
