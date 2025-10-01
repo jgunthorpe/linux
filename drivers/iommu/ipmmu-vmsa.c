@@ -709,20 +709,6 @@ static phys_addr_t ipmmu_iova_to_phys(struct iommu_domain *io_domain,
 	return domain->iop->iova_to_phys(domain->iop, iova);
 }
 
-static int ipmmu_init_platform_device(struct device *dev,
-				      const struct of_phandle_args *args)
-{
-	struct platform_device *ipmmu_pdev;
-
-	ipmmu_pdev = of_find_device_by_node(args->np);
-	if (!ipmmu_pdev)
-		return -ENODEV;
-
-	dev_iommu_priv_set(dev, platform_get_drvdata(ipmmu_pdev));
-
-	return 0;
-}
-
 static const struct soc_device_attribute soc_needs_opt_in[] = {
 	{ .family = "R-Car Gen3", },
 	{ .family = "R-Car Gen4", },
@@ -779,13 +765,7 @@ static int ipmmu_of_xlate(struct device *dev,
 	if (!ipmmu_device_is_allowed(dev))
 		return -ENODEV;
 
-	iommu_fwspec_add_ids(dev, spec->args, 1);
-
-	/* Initialize once - xlate() will call multiple times */
-	if (to_ipmmu(dev))
-		return 0;
-
-	return ipmmu_init_platform_device(dev, spec);
+	return iommu_fwspec_add_ids(dev, spec->args, 1);
 }
 
 static int ipmmu_init_arm_mapping(struct device *dev)
@@ -831,17 +811,14 @@ error:
 	return ret;
 }
 
-static struct iommu_device *ipmmu_probe_device(struct device *dev)
+static int ipmmu_probe_device_fwspec(struct iommu_device *iommu,
+				     struct device *dev)
 {
-	struct ipmmu_vmsa_device *mmu = to_ipmmu(dev);
+	struct ipmmu_vmsa_device *mmu =
+		container_of(iommu, struct ipmmu_vmsa_device, iommu);
 
-	/*
-	 * Only let through devices that have been verified in xlate()
-	 */
-	if (!mmu)
-		return ERR_PTR(-ENODEV);
-
-	return &mmu->iommu;
+	dev_iommu_priv_set(dev, mmu);
+	return 0;
 }
 
 static void ipmmu_probe_finalize(struct device *dev)
@@ -874,7 +851,7 @@ static void ipmmu_release_device(struct device *dev)
 static const struct iommu_ops ipmmu_ops = {
 	.identity_domain = &ipmmu_iommu_identity_domain,
 	.domain_alloc_paging = ipmmu_domain_alloc_paging,
-	.probe_device = ipmmu_probe_device,
+	.probe_device_fwspec = ipmmu_probe_device_fwspec,
 	.release_device = ipmmu_release_device,
 	.probe_finalize = ipmmu_probe_finalize,
 	/*
