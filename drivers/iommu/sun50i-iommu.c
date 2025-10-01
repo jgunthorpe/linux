@@ -820,24 +820,20 @@ static int sun50i_iommu_attach_device(struct iommu_domain *domain,
 	return 0;
 }
 
-static struct iommu_device *sun50i_iommu_probe_device(struct device *dev)
+static int sun50i_iommu_probe_device_fwspec(struct iommu_device *iommu_dev,
+					    struct device *dev)
 {
-	struct sun50i_iommu *iommu;
+	struct sun50i_iommu *iommu =
+		container_of(iommu_dev, struct sun50i_iommu, iommu);
 
-	iommu = sun50i_iommu_from_dev(dev);
-	if (!iommu)
-		return ERR_PTR(-ENODEV);
-
-	return &iommu->iommu;
+	dev_iommu_priv_set(dev, iommu);
+	return 0;
 }
 
 static int sun50i_iommu_of_xlate(struct device *dev,
 				 const struct of_phandle_args *args)
 {
-	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
 	unsigned id = args->args[0];
-
-	dev_iommu_priv_set(dev, platform_get_drvdata(iommu_pdev));
 
 	return iommu_fwspec_add_ids(dev, &id, 1);
 }
@@ -847,7 +843,7 @@ static const struct iommu_ops sun50i_iommu_ops = {
 	.device_group	= generic_single_device_group,
 	.domain_alloc_paging = sun50i_iommu_domain_alloc_paging,
 	.of_xlate	= sun50i_iommu_of_xlate,
-	.probe_device	= sun50i_iommu_probe_device,
+	.probe_device_fwspec	= sun50i_iommu_probe_device_fwspec,
 	.default_domain_ops = &(const struct iommu_domain_ops) {
 		.attach_dev	= sun50i_iommu_attach_device,
 		.flush_iotlb_all = sun50i_iommu_flush_iotlb_all,
