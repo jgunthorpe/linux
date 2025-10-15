@@ -1079,6 +1079,9 @@ static int pfn_reader_user_update_pinned(struct pfn_reader_user *user,
 struct pfn_reader_dmabuf {
 	struct dma_buf_phys_vec phys;
 	unsigned long start_offset;
+
+	struct scatterlist *cur_sg;
+	unsigned int cur_offset;
 };
 
 static int pfn_reader_dmabuf_init(struct pfn_reader_dmabuf *dmabuf,
@@ -1088,8 +1091,85 @@ static int pfn_reader_dmabuf_init(struct pfn_reader_dmabuf *dmabuf,
 	if (WARN_ON(iopt_dmabuf_revoked(pages)))
 		return -EINVAL;
 
-	dmabuf->phys = pages->dmabuf.phys;
+	if (pages->dmabuf.sgt) {
+		dmabuf->cur_sg = pages->dmabuf.sgt->sgl;
+	} else {
+		dmabuf->phys = pages->dmabuf.phys;
+		dmabuf->cur_sg = NULL;
+	}
 	dmabuf->start_offset = pages->dmabuf.start;
+	dmabuf->cur_offset = 0;
+	return 0;
+}
+
+static int pfn_reader_fill_dmabuf_sg(struct pfn_reader_dmabuf *dmabuf,
+				     struct pfn_batch *batch,
+				     unsigned long start_index,
+				     unsigned long last_index)
+{
+	unsigned long start = dmabuf->start_offset + start_index * PAGE_SIZE;
+	unsigned long last = dmabuf->start_offset + last_index * PAGE_SIZE;
+	struct scatterlist *sg = dmabuf->cur_sg;
+	unsigned long cur = dmabuf->cur_offset;
+
+	/* FIXME need to block accesses */
+
+	if (WARN_ON(dmabuf->cur_offset > start))
+		return -EINVAL;
+
+	/*
+	 * This works in PAGE_SIZE indexes, if the dmabuf is sliced and
+	 * starts/ends at a sub page offset then the batch to domain code will
+	 * adjust it.
+	 */
+	while (true) {
+		if (cur <= start && start < cur + sg_dma_len(sg)) {
+			/* HACK See remarks in attach */
+			unsigned long page_start = round_down(start, PAGE_SIZE);
+			unsigned long sg_last = cur + sg_dma_len(sg) - 1;
+			phys_addr_t paddr = sg_dma_address(sg);
+			/* FIXME need to figure out BATCH_MMIO vs CPU */
+			enum batch_kind kind = BATCH_MMIO;
+
+			paddr += page_start - cur;
+
+			/*
+			 * The exporter has to have physical mappings that are
+			 * related to the file offset in a PAGE_SIZE way.
+                         */
+			if (paddr % PAGE_SIZE)
+				return -EINVAL;
+
+			if (sg_last >= last) {
+				batch_add_pfn_num(
+					batch, PHYS_PFN(paddr),
+					DIV_ROUND_UP(last - page_start,
+						     PAGE_SIZE),
+					kind);
+				break;
+			} else {
+				if ((sg_last % PAGE_SIZE) != (PAGE_SIZE - 1))
+					return -EINVAL;
+
+				if (!batch_add_pfn_num(
+					    batch, PHYS_PFN(paddr),
+					    DIV_ROUND_UP(sg_last - page_start,
+							 PAGE_SIZE),
+					    kind))
+					break;
+				start = sg_last + 1;
+			}
+		}
+		cur += sg_dma_len(sg);
+		sg = sg_next(sg);
+
+		/* scatterlist is not the same size as the dmabuf */
+		if (WARN_ON(!sg))
+			return -EINVAL;
+	}
+
+	dmabuf->cur_sg = sg;
+	dmabuf->cur_offset = cur;
 	return 0;
 }
 
@@ -1100,11 +1180,16 @@ static int pfn_reader_fill_dmabuf(struct pfn_reader_dmabuf *dmabuf,
 {
 	unsigned long start = dmabuf->start_offset + start_index * PAGE_SIZE;
 
+	if (dmabuf->cur_sg)
+		return pfn_reader_fill_dmabuf_sg(dmabuf, batch, start_index,
+						 last_index);
+
 	/*
-	 * start/last_index and start are all PAGE_SIZE aligned, the batch is
-	 * always filled using page size aligned PFNs just like the other types.
-	 * If the dmabuf has been sliced on a sub page offset then the common
-	 * batch to domain code will adjust it before mapping to the domain.
+	 * start/last_index and start_offset are all PAGE_SIZE aligned, the
+	 * batch is always filled using page size aligned PFNs just like the
+	 * other types. If the dmabuf has been sliced with a sub page offset
+	 * then the common batch to domain code will adjust it before mapping to
+	 * the domain.
 	 */
 	batch_add_pfn_num(batch, PHYS_PFN(dmabuf->phys.paddr + start),
 			  last_index - start_index + 1, BATCH_MMIO);
@@ -1480,13 +1565,59 @@ sym_vfio_pci_dma_buf_iommufd_map(struct dma_buf_attachment *attachment,
 	return rc;
 }
 
+static int iopt_map_dmabuf_pinned(struct iopt_pages *pages,
+				  struct dma_buf_attachment *attach)
+{
+	struct sg_table *sgt;
+	int rc;
+
+	rc = dma_buf_pin(attach);
+	if (rc)
+		return rc;
+
+	sgt = dma_buf_map_attachment(attach, DMA_BIDIRECTIONAL);
+	if (IS_ERR(sgt)) {
+		rc = PTR_ERR(sgt);
+		goto err_unpin;
+	}
+
+	/*
+	 * Although the sg list is valid now, the content of the pages may be
+	 * not up-to-date. Wait for the exporter to finish the migration.
+         */
+	rc = dma_resv_wait_timeout(attach->dmabuf->resv, DMA_RESV_USAGE_KERNEL,
+				   false, MAX_SCHEDULE_TIMEOUT);
+	if (rc == 0) {
+		rc = -ETIMEDOUT;
+		goto err_unpin;
+	}
+	if (rc < 0)
+		goto err_unpin;
+
+	pages->dmabuf.sgt = sgt;
+	return 0;
+
+err_unpin:
+	dma_buf_unpin(attach);
+	return rc;
+}
+
 static int iopt_map_dmabuf(struct iommufd_ctx *ictx, struct iopt_pages *pages,
 			   struct dma_buf *dmabuf)
 {
+	struct device *any_iommu_dev = READ_ONCE(ictx->any_iommu_dev);
 	struct dma_buf_attachment *attach;
 	int rc;
 
-	attach = dma_buf_dynamic_attach(dmabuf, iommufd_global_device(),
+	/*
+	 * HACK user must register a vfio device to iommufd before they can try
+	 * to use dmabuf. A iommu device is used for attaching because it
+	 * reliably causes the DMA API to return dma_addr_t == phys_addr_t.
+	 */
+	if (!any_iommu_dev)
+		any_iommu_dev = iommufd_global_device();
+
+	attach = dma_buf_dynamic_attach(dmabuf, any_iommu_dev,
 					&iopt_dmabuf_attach_revoke_ops, pages);
 	if (IS_ERR(attach))
 		return PTR_ERR(attach);
@@ -1502,6 +1633,8 @@ static int iopt_map_dmabuf(struct iommufd_ctx *ictx, struct iopt_pages *pages,
 	}
 
 	rc = sym_vfio_pci_dma_buf_iommufd_map(attach, &pages->dmabuf.phys);
+	if (rc == -EOPNOTSUPP && any_iommu_dev != iommufd_global_device())
+		rc = iopt_map_dmabuf_pinned(pages, attach);
 	if (rc)
 		goto err_detach;
 
@@ -1656,6 +1789,8 @@ void iopt_release_pages(struct kref *kref)
 	if (iopt_is_dmabuf(pages) && pages->dmabuf.attach) {
 		struct dma_buf *dmabuf = pages->dmabuf.attach->dmabuf;
 
+		if (pages->dmabuf.sgt)
+			dma_buf_unpin(pages->dmabuf.attach);
 		dma_buf_detach(dmabuf, pages->dmabuf.attach);
 		dma_buf_put(dmabuf);
 		WARN_ON(!list_empty(&pages->dmabuf.tracker));
