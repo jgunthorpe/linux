@@ -324,12 +324,8 @@ vfio_check_precopy_ioctl(struct vfio_device *vdev, unsigned int cmd,
 
 struct vfio_device *_vfio_alloc_device(size_t size, struct device *dev,
 				       const struct vfio_device_ops *ops);
-#define vfio_alloc_device(dev_struct, member, dev, ops)				\
-	container_of(_vfio_alloc_device(sizeof(struct dev_struct) +		\
-					BUILD_BUG_ON_ZERO(offsetof(		\
-						struct dev_struct, member)),	\
-					dev, ops),				\
-		     struct dev_struct, member)
+#define vfio_alloc_device(dev_struct, member, dev, ops) \
+	alloc_container(struct dev_struct, member, _vfio_alloc_device, dev, ops)
 
 static inline void vfio_put_device(struct vfio_device *device)
 {
