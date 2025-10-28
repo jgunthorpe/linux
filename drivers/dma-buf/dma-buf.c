@@ -14,6 +14,7 @@
 #include <linux/fs.h>
 #include <linux/slab.h>
 #include <linux/dma-buf.h>
+#include <linux/dma-buf-mapping.h>
 #include <linux/dma-fence.h>
 #include <linux/dma-fence-unwrap.h>
 #include <linux/anon_inodes.h>
@@ -915,10 +916,33 @@ dma_buf_pin_on_map(struct dma_buf_attachment *attach)
  *     - dma_buf_move_notify()
  */
 
+static int dma_buf_sgt_compat_attach(struct dma_buf *dmabuf,
+				     struct dma_buf_attachment *attach)
+{
+	if (attach->dmabuf->ops->attach)
+		return attach->dmabuf->ops->attach(dmabuf, attach);
+	return 0;
+}
+
+static void dma_buf_sgt_compat_detach(struct dma_buf *dmabuf,
+				      struct dma_buf_attachment *attach)
+{
+	if (attach->dmabuf->ops->detach)
+		attach->dmabuf->ops->detach(dmabuf, attach);
+}
+
+static const struct dma_buf_mapping_sgt_exp_ops dma_buf_sgt_compat_exp_ops = {
+	.ops = {
+		.attach = dma_buf_sgt_compat_attach,
+		.detach = dma_buf_sgt_compat_detach,
+	},
+};
+
 /**
- * dma_buf_dynamic_attach - Add the device to dma_buf's attachments list
+ * dma_buf_mapping_attach - Add the device to dma_buf's attachments list
  * @dmabuf:		[in]	buffer to attach device to.
- * @dev:		[in]	device to be attached.
+ * @importer_mappings:	[in]	mapping types supported by the importer
+ * @match_len:		[in]	length of @importer_mappings
  * @importer_ops:	[in]	importer operations for the attachment
  * @importer_priv:	[in]	importer private pointer for the attachment
  *
@@ -937,33 +961,72 @@ dma_buf_pin_on_map(struct dma_buf_attachment *attach)
  * accessible to @dev, and cannot be moved to a more suitable place. This is
  * indicated with the error code -EBUSY.
  */
-struct dma_buf_attachment *
-dma_buf_dynamic_attach(struct dma_buf *dmabuf, struct device *dev,
-		       const struct dma_buf_attach_ops *importer_ops,
-		       void *importer_priv)
+struct dma_buf_attachment *dma_buf_mapping_attach(
+	struct dma_buf *dmabuf, struct dma_buf_mapping_match *importer_mappings,
+	size_t match_len, const struct dma_buf_attach_ops *importer_ops,
+	void *importer_priv)
 {
+	struct dma_buf_match_args match_args = {
+		.dmabuf = dmabuf,
+		.imp_mappings = importer_mappings,
+		.imp_len = match_len,
+	};
 	struct dma_buf_attachment *attach;
 	int ret;
 
-	if (WARN_ON(!dmabuf || !dev))
+	if (WARN_ON(!dmabuf))
 		return ERR_PTR(-EINVAL);
 
 	if (WARN_ON(importer_ops && !importer_ops->move_notify))
 		return ERR_PTR(-EINVAL);
 
+
 	attach = kzalloc(sizeof(*attach), GFP_KERNEL);
 	if (!attach)
 		return ERR_PTR(-ENOMEM);
 
-	attach->dev = dev;
+	if (dmabuf->ops->match_mapping) {
+		ret = dmabuf->ops->match_mapping(&match_args);
+		if (ret)
+			goto err_attach;
+	} else {
+		/*
+		 * Older exporters only support the sgt type. This does not
+		 * require p2p because old exporters will check it through the
+		 * attach->peer2peer.
+		 */
+		struct dma_buf_mapping_match sgt_match[] = {
+			DMA_BUF_EMAPPING_SGT(&dma_buf_sgt_compat_exp_ops,
+					     false),
+		};
+
+		ret = dma_buf_match_mapping(&match_args, sgt_match,
+					    ARRAY_SIZE(sgt_match));
+		if (ret)
+			goto err_attach;
+	}
+
+	attach->map_type = importer_mappings[match_args.imp_match_idx];
+	attach->map_type.exp_ops = match_args.exp_ops;
+
+	/*
+	 * Setup the SGT type variables stored in attach because importers and
+	 * exporters that do not natively use mappings expect them to be there.
+	 * When converting to use mappings users should use the match versions
+	 * of these instead.
+	 */
+	if (attach->map_type.type == &dma_buf_mapping_sgt_type) {
+		attach->dev = attach->map_type.sgt_data.importing_dma_device;
+		attach->peer2peer =
+			attach->map_type.sgt_data.importer_accepts_p2p;
+	}
+
 	attach->dmabuf = dmabuf;
-	if (importer_ops)
-		attach->peer2peer = importer_ops->allow_peer2peer;
 	attach->importer_ops = importer_ops;
 	attach->importer_priv = importer_priv;
 
-	if (dmabuf->ops->attach) {
-		ret = dmabuf->ops->attach(dmabuf, attach);
+	if (attach->map_type.exp_ops->attach) {
+		ret = attach->map_type.exp_ops->attach(dmabuf, attach);
 		if (ret)
 			goto err_attach;
 	}
@@ -977,22 +1040,50 @@ err_attach:
 	kfree(attach);
 	return ERR_PTR(ret);
 }
-EXPORT_SYMBOL_NS_GPL(dma_buf_dynamic_attach, "DMA_BUF");
+EXPORT_SYMBOL_NS_GPL(dma_buf_mapping_attach, "DMA_BUF");
 
 /**
- * dma_buf_attach - Wrapper for dma_buf_dynamic_attach
+ * dma_buf_attach - Wrapper for dma_buf_mapping_attach
  * @dmabuf:	[in]	buffer to attach device to.
  * @dev:	[in]	device to be attached.
  *
- * Wrapper to call dma_buf_dynamic_attach() for drivers which still use a static
+ * Wrapper to call dma_buf_mapping_attach() for drivers which still use a static
  * mapping.
  */
 struct dma_buf_attachment *dma_buf_attach(struct dma_buf *dmabuf,
 					  struct device *dev)
 {
-	return dma_buf_dynamic_attach(dmabuf, dev, NULL, NULL);
+	struct dma_buf_mapping_match sgt_match[] = {
+		DMA_BUF_IMAPPING_SGT(dev, false),
+	};
+
+	return dma_buf_mapping_attach(dmabuf, sgt_match, ARRAY_SIZE(sgt_match),
+				      NULL, NULL);
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_attach, "DMA_BUF");
+
+/**
+ * dma_buf_dynamic_attach - Add the device to dma_buf's attachments list
+ * @dmabuf:		[in]	buffer to attach device to.
+ * @dev:		[in]	device to be attached.
+ * @importer_ops:	[in]	importer operations for the attachment
+ * @importer_priv:	[in]	importer private pointer for the attachment
+ *
+ * Wrapper to call dma_buf_mapping_attach() for drivers which only support SGT.
+ */
+struct dma_buf_attachment *
+dma_buf_dynamic_attach(struct dma_buf *dmabuf, struct device *dev,
+		       const struct dma_buf_attach_ops *importer_ops,
+		       void *importer_priv)
+{
+	struct dma_buf_mapping_match sgt_match[] = {
+		DMA_BUF_IMAPPING_SGT(dev, importer_ops->allow_peer2peer),
+	};
+
+	return dma_buf_mapping_attach(dmabuf, sgt_match, ARRAY_SIZE(sgt_match),
+				      importer_ops, importer_priv);
+}
+EXPORT_SYMBOL_NS_GPL(dma_buf_dynamic_attach, "DMA_BUF");
 
 /**
  * dma_buf_detach - Remove the given attachment from dmabuf's attachments list
@@ -1012,8 +1103,8 @@ void dma_buf_detach(struct dma_buf *dmabuf, struct dma_buf_attachment *attach)
 	list_del(&attach->node);
 	dma_resv_unlock(dmabuf->resv);
 
-	if (dmabuf->ops->detach)
-		dmabuf->ops->detach(dmabuf, attach);
+	if (attach->map_type.exp_ops->detach)
+		attach->map_type.exp_ops->detach(dmabuf, attach);
 
 	kfree(attach);
 }
