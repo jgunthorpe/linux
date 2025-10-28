@@ -916,6 +916,20 @@ dma_buf_pin_on_map(struct dma_buf_attachment *attach)
  *     - dma_buf_move_notify()
  */
 
+static struct sg_table *
+dma_buf_sgt_compat_map_dma_buf(struct dma_buf_attachment *attach,
+			       enum dma_data_direction dir)
+{
+	return attach->dmabuf->ops->map_dma_buf(attach, dir);
+}
+
+static void dma_buf_sgt_compat_unmap_dma_buf(struct dma_buf_attachment *attach,
+					     struct sg_table *sgt,
+					     enum dma_data_direction dir)
+{
+	attach->dmabuf->ops->unmap_dma_buf(attach, sgt, dir);
+}
+
 static int dma_buf_sgt_compat_attach(struct dma_buf *dmabuf,
 				     struct dma_buf_attachment *attach)
 {
@@ -931,11 +945,14 @@ static void dma_buf_sgt_compat_detach(struct dma_buf *dmabuf,
 		attach->dmabuf->ops->detach(dmabuf, attach);
 }
 
+/* Route the classic map/unmap ops through the exp ops for old importers */
 static const struct dma_buf_mapping_sgt_exp_ops dma_buf_sgt_compat_exp_ops = {
 	.ops = {
 		.attach = dma_buf_sgt_compat_attach,
 		.detach = dma_buf_sgt_compat_detach,
 	},
+	.map_dma_buf = dma_buf_sgt_compat_map_dma_buf,
+	.unmap_dma_buf = dma_buf_sgt_compat_unmap_dma_buf,
 };
 
 /**
@@ -1161,6 +1178,13 @@ void dma_buf_unpin(struct dma_buf_attachment *attach)
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_unpin, "DMA_BUF");
 
+static inline const struct dma_buf_mapping_sgt_exp_ops *
+to_sgt_exp_ops(struct dma_buf_attachment *attach)
+{
+	return container_of(attach->map_type.exp_ops,
+			    struct dma_buf_mapping_sgt_exp_ops, ops);
+}
+
 /**
  * dma_buf_map_attachment - Returns the scatterlist table of the attachment;
  * mapped into _device_ address space. Is a wrapper for map_dma_buf() of the
@@ -1190,7 +1214,8 @@ struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *attach,
 
 	might_sleep();
 
-	if (WARN_ON(!attach || !attach->dmabuf))
+	if (WARN_ON(!attach || !attach->dmabuf ||
+		    attach->map_type.type != &dma_buf_mapping_sgt_type))
 		return ERR_PTR(-EINVAL);
 
 	dma_resv_assert_held(attach->dmabuf->resv);
@@ -1206,7 +1231,7 @@ struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *attach,
 			return ERR_PTR(ret);
 	}
 
-	sg_table = attach->dmabuf->ops->map_dma_buf(attach, direction);
+	sg_table = to_sgt_exp_ops(attach)->map_dma_buf(attach, direction);
 	if (!sg_table)
 		sg_table = ERR_PTR(-ENOMEM);
 	if (IS_ERR(sg_table))
@@ -1299,13 +1324,14 @@ void dma_buf_unmap_attachment(struct dma_buf_attachment *attach,
 {
 	might_sleep();
 
-	if (WARN_ON(!attach || !attach->dmabuf || !sg_table))
+	if (WARN_ON(!attach || !attach->dmabuf || !sg_table ||
+		    attach->map_type.type != &dma_buf_mapping_sgt_type))
 		return;
 
 	dma_resv_assert_held(attach->dmabuf->resv);
 
 	mangle_sg_table(sg_table);
-	attach->dmabuf->ops->unmap_dma_buf(attach, sg_table, direction);
+	to_sgt_exp_ops(attach)->unmap_dma_buf(attach, sg_table, direction);
 
 	if (dma_buf_pin_on_map(attach))
 		attach->dmabuf->ops->unpin(attach);
