@@ -294,3 +294,33 @@ struct dma_buf_mapping_type dma_buf_mapping_sgt_type = {
 	.match = dma_buf_sgt_match,
 };
 EXPORT_SYMBOL_NS_GPL(dma_buf_mapping_sgt_type, "DMA_BUF");
+
+static inline const struct dma_buf_mapping_pal_exp_ops *
+to_pal_exp_ops(struct dma_buf_attachment *attach)
+{
+	return container_of(attach->map_type.exp_ops,
+			    struct dma_buf_mapping_pal_exp_ops, ops);
+}
+
+struct dma_buf_phys_list *dma_buf_get_phys(struct dma_buf_attachment *attach)
+{
+	dma_resv_assert_held(attach->dmabuf->resv);
+	return to_pal_exp_ops(attach)->get_phys(attach);
+}
+/*
+ * Restricted, iommufd is the only importer allowed to prevent misuse of this
+ * API.
+ */
+EXPORT_SYMBOL_FOR_MODULES(dma_buf_get_phys, "iommufd");
+
+void dma_buf_free_phys(struct dma_buf_attachment *attach,
+		       struct dma_buf_phys_list *phys)
+{
+	kfree(phys);
+}
+EXPORT_SYMBOL_NS_GPL(dma_buf_free_phys, "DMA_BUF");
+
+struct dma_buf_mapping_type dma_buf_mapping_pal_type = {
+	.name = "Physical Address List",
+};
+EXPORT_SYMBOL_NS_GPL(dma_buf_mapping_pal_type, "DMA_BUF");

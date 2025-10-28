@@ -100,4 +100,43 @@ DMA_BUF_EMAPPING_SGT(const struct dma_buf_mapping_sgt_exp_ops *exp_ops,
 	};
 }
 
+/*
+ * Physical Address List mapping type
+ *
+ * Use of the Physical Address List type is restricted to prevent abuse of the
+ * physical addresess API. Please check with the DMA BUF maintainers before
+ * trying to use it.
+ */
+struct dma_buf_phys_list {
+	size_t length;
+	struct dma_buf_phys_vec phys[] __counted_by(length);
+};
+
+extern struct dma_buf_mapping_type dma_buf_mapping_pal_type;
+
+struct dma_buf_mapping_pal_exp_ops {
+	struct dma_buf_mapping_exp_ops ops;
+	struct dma_buf_phys_list *(*get_phys)(struct dma_buf_attachment *attach);
+};
+
+struct dma_buf_phys_list *dma_buf_get_phys(struct dma_buf_attachment *attach);
+void dma_buf_free_phys(struct dma_buf_attachment *attach,
+		       struct dma_buf_phys_list *phys);
+
+static inline struct dma_buf_mapping_match DMA_BUF_IMAPPING_PAL(void)
+{
+	return (struct dma_buf_mapping_match){
+		.type = &dma_buf_mapping_pal_type,
+	};
+}
+
+static inline struct dma_buf_mapping_match
+DMA_BUF_EMAPPING_PAL(const struct dma_buf_mapping_pal_exp_ops *exp_ops)
+{
+	return (struct dma_buf_mapping_match){
+		.type = &dma_buf_mapping_pal_type,
+		.exp_ops = &exp_ops->ops,
+	};
+}
+
 #endif
