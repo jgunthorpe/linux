@@ -278,3 +278,19 @@ int dma_buf_match_mapping(struct dma_buf_match_args *args,
 	return -EINVAL;
 }
 EXPORT_SYMBOL_NS_GPL(dma_buf_match_mapping, "DMA_BUF");
+
+static int dma_buf_sgt_match(struct dma_buf *dmabuf,
+			     const struct dma_buf_mapping_match *exp,
+			     const struct dma_buf_mapping_match *imp)
+{
+	if (exp->sgt_data.exporter_requires_p2p &&
+	    !imp->sgt_data.importer_accepts_p2p)
+		return -EOPNOTSUPP;
+	return 0;
+}
+
+struct dma_buf_mapping_type dma_buf_mapping_sgt_type = {
+	.name = "DMA Mapped Scatter Gather List",
+	.match = dma_buf_sgt_match,
+};
+EXPORT_SYMBOL_NS_GPL(dma_buf_mapping_sgt_type, "DMA_BUF");
