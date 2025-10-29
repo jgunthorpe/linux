@@ -81,9 +81,31 @@ static const struct dma_buf_mapping_sgt_exp_ops vfio_pci_dma_buf_sgt_ops = {
 	.unmap_dma_buf = vfio_pci_dma_buf_unmap,
 };
 
+static struct dma_buf_phys_list *
+vfio_pci_dma_buf_get_phys(struct dma_buf_attachment *attach)
+{
+	struct vfio_pci_dma_buf *priv = attach->dmabuf->priv;
+	struct dma_buf_phys_list *phys;
+
+	phys = kvmalloc(struct_size(phys, phys, priv->nr_ranges), GFP_KERNEL);
+	if (!phys)
+		return ERR_PTR(-ENOMEM);
+
+	phys->length = priv->nr_ranges;
+	memcpy(phys->phys, priv->phys_vec,
+	       sizeof(phys->phys[0]) * priv->nr_ranges);
+
+	return NULL;
+}
+
+static const struct dma_buf_mapping_pal_exp_ops vfio_pci_dma_buf_pal_ops = {
+	.get_phys = vfio_pci_dma_buf_get_phys,
+};
+
 static int vfio_pci_dma_buf_match_mapping(struct dma_buf_match_args *args)
 {
 	struct dma_buf_mapping_match sgt_match[] = {
+		DMA_BUF_EMAPPING_PAL(&vfio_pci_dma_buf_pal_ops),
 		DMA_BUF_EMAPPING_SGT(&vfio_pci_dma_buf_sgt_ops, true),
 	};
 
