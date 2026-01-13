@@ -6,9 +6,10 @@
 #include <linux/io-pgtable.h>
 
 #include "arm-smmu-v3.h"
+#include "../../entry_sync.h"
 
 struct arm_smmu_test_writer {
-	struct arm_smmu_entry_writer writer;
+	struct entry_sync_writer64 writer;
 	struct kunit *test;
 	const __le64 *init_entry;
 	const __le64 *target_entry;
@@ -51,7 +52,7 @@ static bool arm_smmu_entry_differs_in_used_bits(const __le64 *entry,
 }
 
 static void
-arm_smmu_test_writer_record_syncs(struct arm_smmu_entry_writer *writer)
+arm_smmu_test_writer_record_syncs(struct entry_sync_writer64 *writer)
 {
 	struct arm_smmu_test_writer *test_writer =
 		container_of(writer, struct arm_smmu_test_writer, writer);
@@ -92,7 +93,7 @@ arm_smmu_test_writer_record_syncs(struct arm_smmu_entry_writer *writer)
 }
 
 static void
-arm_smmu_v3_test_debug_print_used_bits(struct arm_smmu_entry_writer *writer,
+arm_smmu_v3_test_debug_print_used_bits(struct entry_sync_writer64 *writer,
 				       const __le64 *ste)
 {
 	__le64 used_bits[NUM_ENTRY_QWORDS] = {};
@@ -103,12 +104,12 @@ arm_smmu_v3_test_debug_print_used_bits(struct arm_smmu_entry_writer *writer,
 			     sizeof(used_bits), false);
 }
 
-static const struct arm_smmu_entry_writer_ops test_ste_ops = {
+static const struct entry_sync_writer_ops64 test_ste_ops = {
 	.sync = arm_smmu_test_writer_record_syncs,
 	.get_used = arm_smmu_get_ste_used,
 };
 
-static const struct arm_smmu_entry_writer_ops test_cd_ops = {
+static const struct entry_sync_writer_ops64 test_cd_ops = {
 	.sync = arm_smmu_test_writer_record_syncs,
 	.get_used = arm_smmu_get_cd_used,
 };
@@ -122,6 +123,7 @@ static void arm_smmu_v3_test_ste_expect_transition(
 	struct arm_smmu_test_writer test_writer = {
 		.writer = {
 			.ops = &test_ste_ops,
+			.num_quantas = NUM_ENTRY_QWORDS,
 		},
 		.test = test,
 		.init_entry = cur->data,
@@ -131,6 +133,7 @@ static void arm_smmu_v3_test_ste_expect_transition(
 		.invalid_entry_written = false,
 
 	};
+	__le64 memory[ENTRY_SYNC_MEMORY_LEN(&test_writer.writer)];
 
 	pr_debug("STE initial value: ");
 	print_hex_dump_debug("    ", DUMP_PREFIX_NONE, 16, 8, cur_copy.data,
@@ -142,7 +145,8 @@ static void arm_smmu_v3_test_ste_expect_transition(
 	arm_smmu_v3_test_debug_print_used_bits(&test_writer.writer,
 					       target->data);
 
-	arm_smmu_write_entry(&test_writer.writer, cur_copy.data, target->data);
+	entry_sync_write64(&test_writer.writer, cur_copy.data, target->data,
+			   memory, sizeof(memory));
 
 	KUNIT_EXPECT_EQ(test, test_writer.invalid_entry_written, !hitless);
 	KUNIT_EXPECT_EQ(test, test_writer.num_syncs, num_syncs_expected);
@@ -406,6 +410,7 @@ static void arm_smmu_v3_test_cd_expect_transition(
 	struct arm_smmu_test_writer test_writer = {
 		.writer = {
 			.ops = &test_cd_ops,
+			.num_quantas = NUM_ENTRY_QWORDS,
 		},
 		.test = test,
 		.init_entry = cur->data,
@@ -415,6 +420,7 @@ static void arm_smmu_v3_test_cd_expect_transition(
 		.invalid_entry_written = false,
 
 	};
+	__le64 memory[ENTRY_SYNC_MEMORY_LEN(&test_writer.writer)];
 
 	pr_debug("CD initial value: ");
 	print_hex_dump_debug("    ", DUMP_PREFIX_NONE, 16, 8, cur_copy.data,
@@ -426,7 +432,8 @@ static void arm_smmu_v3_test_cd_expect_transition(
 	arm_smmu_v3_test_debug_print_used_bits(&test_writer.writer,
 					       target->data);
 
-	arm_smmu_write_entry(&test_writer.writer, cur_copy.data, target->data);
+	entry_sync_write64(&test_writer.writer, cur_copy.data, target->data,
+			   memory, sizeof(memory));
 
 	KUNIT_EXPECT_EQ(test, test_writer.invalid_entry_written, !hitless);
 	KUNIT_EXPECT_EQ(test, test_writer.num_syncs, num_syncs_expected);

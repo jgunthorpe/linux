@@ -80,6 +80,8 @@ config ARM_SMMU_V3
 	select IOMMU_IO_PGTABLE_LPAE
 	select GENERIC_MSI_IRQ
 	select IOMMUFD_DRIVER if IOMMUFD
+	select IOMMU_ENTRY_SYNC
+	select IOMMU_ENTRY_SYNC64
 	help
 	  Support for implementations of the ARM System MMU architecture
 	  version 3 providing translation support to a PCIe root complex.

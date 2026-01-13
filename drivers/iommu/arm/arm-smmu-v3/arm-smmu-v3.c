@@ -32,6 +32,7 @@
 
 #include "arm-smmu-v3.h"
 #include "../../dma-iommu.h"
+#include "../../entry_sync.h"
 
 static bool disable_msipolling;
 module_param(disable_msipolling, bool, 0444);
@@ -47,10 +48,6 @@ enum arm_smmu_msi_index {
 	PRIQ_MSI_INDEX,
 	ARM_SMMU_MAX_MSIS,
 };
-
-#define NUM_ENTRY_QWORDS 8
-static_assert(sizeof(struct arm_smmu_ste) == NUM_ENTRY_QWORDS * sizeof(u64));
-static_assert(sizeof(struct arm_smmu_cd) == NUM_ENTRY_QWORDS * sizeof(u64));
 
 static phys_addr_t arm_smmu_msi_cfg[ARM_SMMU_MAX_MSIS][3] = {
 	[EVTQ_MSI_INDEX] = {
@@ -1082,141 +1079,6 @@ void arm_smmu_get_ste_used(const __le64 *ent, __le64 *used_bits)
 }
 EXPORT_SYMBOL_IF_KUNIT(arm_smmu_get_ste_used);
 
-/*
- * Figure out if we can do a hitless update of entry to become target. Returns a
- * bit mask where 1 indicates that qword needs to be set disruptively.
- * unused_update is an intermediate value of entry that has unused bits set to
- * their new values.
- */
-static u8 arm_smmu_entry_qword_diff(struct arm_smmu_entry_writer *writer,
-				    const __le64 *entry, const __le64 *target,
-				    __le64 *unused_update)
-{
-	__le64 target_used[NUM_ENTRY_QWORDS] = {};
-	__le64 cur_used[NUM_ENTRY_QWORDS] = {};
-	u8 used_qword_diff = 0;
-	unsigned int i;
-
-	writer->ops->get_used(entry, cur_used);
-	writer->ops->get_used(target, target_used);
-
-	for (i = 0; i != NUM_ENTRY_QWORDS; i++) {
-		/*
-		 * Check that masks are up to date, the make functions are not
-		 * allowed to set a bit to 1 if the used function doesn't say it
-		 * is used.
-		 */
-		WARN_ON_ONCE(target[i] & ~target_used[i]);
-
-		/* Bits can change because they are not currently being used */
-		unused_update[i] = (entry[i] & cur_used[i]) |
-				   (target[i] & ~cur_used[i]);
-		/*
-		 * Each bit indicates that a used bit in a qword needs to be
-		 * changed after unused_update is applied.
-		 */
-		if ((unused_update[i] & target_used[i]) != target[i])
-			used_qword_diff |= 1 << i;
-	}
-	return used_qword_diff;
-}
-
-static bool entry_set(struct arm_smmu_entry_writer *writer, __le64 *entry,
-		      const __le64 *target, unsigned int start,
-		      unsigned int len)
-{
-	bool changed = false;
-	unsigned int i;
-
-	for (i = start; len != 0; len--, i++) {
-		if (entry[i] != target[i]) {
-			WRITE_ONCE(entry[i], target[i]);
-			changed = true;
-		}
-	}
-
-	if (changed)
-		writer->ops->sync(writer);
-	return changed;
-}
-
-/*
- * Update the STE/CD to the target configuration. The transition from the
- * current entry to the target entry takes place over multiple steps that
- * attempts to make the transition hitless if possible. This function takes care
- * not to create a situation where the HW can perceive a corrupted entry. HW is
- * only required to have a 64 bit atomicity with stores from the CPU, while
- * entries are many 64 bit values big.
- *
- * The difference between the current value and the target value is analyzed to
- * determine which of three updates are required - disruptive, hitless or no
- * change.
- *
- * In the most general disruptive case we can make any update in three steps:
- *  - Disrupting the entry (V=0)
- *  - Fill now unused qwords, execpt qword 0 which contains V
- *  - Make qword 0 have the final value and valid (V=1) with a single 64
- *    bit store
- *
- * However this disrupts the HW while it is happening. There are several
- * interesting cases where a STE/CD can be updated without disturbing the HW
- * because only a small number of bits are changing (S1DSS, CONFIG, etc) or
- * because the used bits don't intersect. We can detect this by calculating how
- * many 64 bit values need update after adjusting the unused bits and skip the
- * V=0 process. This relies on the IGNORED behavior described in the
- * specification.
- */
-VISIBLE_IF_KUNIT
-void arm_smmu_write_entry(struct arm_smmu_entry_writer *writer, __le64 *entry,
-			  const __le64 *target)
-{
-	__le64 unused_update[NUM_ENTRY_QWORDS];
-	u8 used_qword_diff;
-
-	used_qword_diff =
-		arm_smmu_entry_qword_diff(writer, entry, target, unused_update);
-	if (hweight8(used_qword_diff) == 1) {
-		/*
-		 * Only one qword needs its used bits to be changed. This is a
-		 * hitless update, update all bits the current STE/CD is
-		 * ignoring to their new values, then update a single "critical
-		 * qword" to change the STE/CD and finally 0 out any bits that
-		 * are now unused in the target configuration.
-		 */
-		unsigned int critical_qword_index = ffs(used_qword_diff) - 1;
-
-		/*
-		 * Skip writing unused bits in the critical qword since we'll be
-		 * writing it in the next step anyways. This can save a sync
-		 * when the only change is in that qword.
-		 */
-		unused_update[critical_qword_index] =
-			entry[critical_qword_index];
-		entry_set(writer, entry, unused_update, 0, NUM_ENTRY_QWORDS);
-		entry_set(writer, entry, target, critical_qword_index, 1);
-		entry_set(writer, entry, target, 0, NUM_ENTRY_QWORDS);
-	} else if (used_qword_diff) {
-		/*
-		 * At least two qwords need their inuse bits to be changed. This
-		 * requires a breaking update, zero the V bit, write all qwords
-		 * but 0, then set qword 0
-		 */
-		unused_update[0] = 0;
-		entry_set(writer, entry, unused_update, 0, 1);
-		entry_set(writer, entry, target, 1, NUM_ENTRY_QWORDS - 1);
-		entry_set(writer, entry, target, 0, 1);
-	} else {
-		/*
-		 * No inuse bit changed. Sanity check that all unused bits are 0
-		 * in the entry. The target was already sanity checked by
-		 * compute_qword_diff().
-		 */
-		WARN_ON_ONCE(
-			entry_set(writer, entry, target, 0, NUM_ENTRY_QWORDS));
-	}
-}
-EXPORT_SYMBOL_IF_KUNIT(arm_smmu_write_entry);
-
 static void arm_smmu_sync_cd(struct arm_smmu_master *master,
 			     int ssid, bool leaf)
 {
@@ -1308,7 +1170,8 @@ static struct arm_smmu_cd *arm_smmu_alloc_cd_ptr(struct arm_smmu_master *master,
 }
 
 struct arm_smmu_cd_writer {
-	struct arm_smmu_entry_writer writer;
+	struct entry_sync_writer64 writer;
+	struct arm_smmu_master *master;
 	unsigned int ssid;
 };
 
@@ -1334,15 +1197,15 @@ void arm_smmu_get_cd_used(const __le64 *ent, __le64 *used_bits)
 }
 EXPORT_SYMBOL_IF_KUNIT(arm_smmu_get_cd_used);
 
-static void arm_smmu_cd_writer_sync_entry(struct arm_smmu_entry_writer *writer)
+static void arm_smmu_cd_writer_sync_entry(struct entry_sync_writer64 *writer)
 {
 	struct arm_smmu_cd_writer *cd_writer =
 		container_of(writer, struct arm_smmu_cd_writer, writer);
 
-	arm_smmu_sync_cd(writer->master, cd_writer->ssid, true);
+	arm_smmu_sync_cd(cd_writer->master, cd_writer->ssid, true);
 }
 
-static const struct arm_smmu_entry_writer_ops arm_smmu_cd_writer_ops = {
+static const struct entry_sync_writer_ops64 arm_smmu_cd_writer_ops = {
 	.sync = arm_smmu_cd_writer_sync_entry,
 	.get_used = arm_smmu_get_cd_used,
 };
@@ -1356,10 +1219,13 @@ void arm_smmu_write_cd_entry(struct arm_smmu_master *master, int ssid,
 	struct arm_smmu_cd_writer cd_writer = {
 		.writer = {
 			.ops = &arm_smmu_cd_writer_ops,
-			.master = master,
+			.num_quantas = CTXDESC_CD_DWORDS,
+			.vbit_quanta = 0,
 		},
+		.master = master,
 		.ssid = ssid,
 	};
+	__le64 memory[ENTRY_SYNC_MEMORY_LEN(&cd_writer.writer)];
 
 	if (ssid != IOMMU_NO_PASID && cur_valid != target_valid) {
 		if (cur_valid)
@@ -1368,7 +1234,8 @@ void arm_smmu_write_cd_entry(struct arm_smmu_master *master, int ssid,
 			master->cd_table.used_ssids++;
 	}
 
-	arm_smmu_write_entry(&cd_writer.writer, cdptr->data, target->data);
+	entry_sync_write64(&cd_writer.writer, cdptr->data, target->data, memory,
+			   sizeof(memory));
 }
 
 void arm_smmu_make_s1_cd(struct arm_smmu_cd *target,
@@ -1521,11 +1388,12 @@ static void arm_smmu_write_strtab_l1_desc(struct arm_smmu_strtab_l1 *dst,
 }
 
 struct arm_smmu_ste_writer {
-	struct arm_smmu_entry_writer writer;
+	struct entry_sync_writer64 writer;
+	struct arm_smmu_master *master;
 	u32 sid;
 };
 
-static void arm_smmu_ste_writer_sync_entry(struct arm_smmu_entry_writer *writer)
+static void arm_smmu_ste_writer_sync_entry(struct entry_sync_writer64 *writer)
 {
 	struct arm_smmu_ste_writer *ste_writer =
 		container_of(writer, struct arm_smmu_ste_writer, writer);
@@ -1537,10 +1405,10 @@ static void arm_smmu_ste_writer_sync_entry(struct arm_smmu_entry_writer *writer)
 		},
 	};
 
-	arm_smmu_cmdq_issue_cmd_with_sync(writer->master->smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd_with_sync(ste_writer->master->smmu, &cmd);
 }
 
-static const struct arm_smmu_entry_writer_ops arm_smmu_ste_writer_ops = {
+static const struct entry_sync_writer_ops64 arm_smmu_ste_writer_ops = {
 	.sync = arm_smmu_ste_writer_sync_entry,
 	.get_used = arm_smmu_get_ste_used,
 };
@@ -1553,12 +1421,15 @@ static void arm_smmu_write_ste(struct arm_smmu_master *master, u32 sid,
 	struct arm_smmu_ste_writer ste_writer = {
 		.writer = {
 			.ops = &arm_smmu_ste_writer_ops,
-			.master = master,
+			.num_quantas = STRTAB_STE_DWORDS
 		},
+		.master = master,
 		.sid = sid,
 	};
+	__le64 memory[ENTRY_SYNC_MEMORY_LEN(&ste_writer.writer)];
 
-	arm_smmu_write_entry(&ste_writer.writer, ste->data, target->data);
+	entry_sync_write64(&ste_writer.writer, ste->data, target->data, memory,
+			   sizeof(memory));
 
 	/* It's likely that we'll want to use the new STE soon */
 	if (!(smmu->options & ARM_SMMU_OPT_SKIP_PREFETCH)) {
