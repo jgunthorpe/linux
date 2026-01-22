@@ -354,22 +354,25 @@ void vfio_pci_dma_buf_move(struct vfio_pci_core_device *vdev, bool revoked)
 			dma_resv_wait_timeout(priv->dmabuf->resv,
 					      DMA_RESV_USAGE_BOOKKEEP, false,
 					      MAX_SCHEDULE_TIMEOUT);
+			dma_resv_unlock(priv->dmabuf->resv);
+
 			if (revoked) {
 				kref_put(&priv->kref, vfio_pci_dma_buf_done);
 				/* Let's wait till all DMA unmap are completed. */
 				wait = wait_for_completion_timeout(
 					&priv->comp, MAX_SCHEDULE_TIMEOUT);
 				/*
-				 * If you see this WARN_ON, it means that importer
-				 * didn't call to DMA unmap to release memory, which
-				 * is against dma-buf contract.
+				 * If you see this WARN_ON, it means that
+				 * importer didn't call unmap in response to
+				 * dma_buf_invalidate_mappings() which is not
+				 * allowed if dma_buf_attach_revocable().
 				 */
-				WARN_ON(!wait);
+				WARN(!wait,
+				     "Timed out waiting for DMABUF unmap, importer has a broken invalidate_mapping()");
 			} else {
 				kref_init(&priv->kref);
 				reinit_completion(&priv->comp);
 			}
-			dma_resv_unlock(priv->dmabuf->resv);
 		}
 		fput(priv->dmabuf->file);
 	}
