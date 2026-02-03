@@ -190,6 +190,9 @@ int bnxt_re_query_device(struct ib_device *ibdev,
 	size_t outlen = (udata) ? udata->outlen : 0;
 	int rc = 0;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	memset(ib_attr, 0, sizeof(*ib_attr));
 	memcpy(&ib_attr->fw_ver, dev_attr->fw_ver,
 	       min(sizeof(dev_attr->fw_ver),
@@ -693,6 +696,9 @@ int bnxt_re_dealloc_pd(struct ib_pd *ib_pd, struct ib_udata *udata)
 	struct bnxt_re_pd *pd = container_of(ib_pd, struct bnxt_re_pd, ib_pd);
 	struct bnxt_re_dev *rdev = pd->rdev;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	if (udata) {
 		rdma_user_mmap_entry_remove(pd->pd_db_mmap);
 		pd->pd_db_mmap = NULL;
@@ -719,6 +725,9 @@ int bnxt_re_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	struct bnxt_re_user_mmap_entry *entry = NULL;
 	u32 active_pds;
 	int rc = 0;
+
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
 
 	pd->rdev = rdev;
 	if (bnxt_qplib_alloc_pd(&rdev->qplib_res, &pd->qplib_pd)) {
@@ -833,6 +842,9 @@ int bnxt_re_create_ah(struct ib_ah *ib_ah, struct rdma_ah_init_attr *init_attr,
 	u32 active_ahs;
 	u8 nw_type;
 	int rc;
+
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
 
 	if (!(rdma_ah_get_ah_flags(ah_attr) & IB_AH_GRH)) {
 		ibdev_err(&rdev->ibdev, "Failed to alloc AH: GRH not set");
@@ -994,6 +1006,9 @@ int bnxt_re_destroy_qp(struct ib_qp *ib_qp, struct ib_udata *udata)
 	struct bnxt_qplib_nq *rcq_nq = NULL;
 	unsigned int flags;
 	int rc;
+
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
 
 	bnxt_re_debug_rem_qpinfo(rdev, qp);
 
@@ -1845,6 +1860,9 @@ int bnxt_re_destroy_srq(struct ib_srq *ib_srq, struct ib_udata *udata)
 	struct bnxt_re_dev *rdev = srq->rdev;
 	struct bnxt_qplib_srq *qplib_srq = &srq->qplib_srq;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	if (rdev->chip_ctx->modes.toggle_bits & BNXT_QPLIB_SRQ_TOGGLE_BIT) {
 		free_page((unsigned long)srq->uctx_srq_page);
 		hash_del(&srq->hash_entry);
@@ -1994,6 +2012,9 @@ int bnxt_re_modify_srq(struct ib_srq *ib_srq, struct ib_srq_attr *srq_attr,
 					       ib_srq);
 	struct bnxt_re_dev *rdev = srq->rdev;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	switch (srq_attr_mask) {
 	case IB_SRQ_MAX_WR:
 		/* SRQ resize is not supported */
@@ -2109,6 +2130,9 @@ int bnxt_re_modify_qp(struct ib_qp *ib_qp, struct ib_qp_attr *qp_attr,
 	int rc, entries;
 	unsigned int flags;
 	u8 nw_type;
+
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
 
 	if (qp_attr_mask & ~(IB_QP_ATTR_STANDARD_BITS | IB_QP_RATE_LIMIT))
 		return -EOPNOTSUPP;
@@ -3138,6 +3162,9 @@ int bnxt_re_destroy_cq(struct ib_cq *ib_cq, struct ib_udata *udata)
 	nq = cq->qplib_cq.nq;
 	cctx = rdev->chip_ctx;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	if (cctx->modes.toggle_bits & BNXT_QPLIB_CQ_TOGGLE_BIT) {
 		free_page((unsigned long)cq->uctx_cq_page);
 		hash_del(&cq->hash_entry);
@@ -4085,6 +4112,9 @@ int bnxt_re_dereg_mr(struct ib_mr *ib_mr, struct ib_udata *udata)
 	struct bnxt_re_dev *rdev = mr->rdev;
 	int rc;
 
+	if (!ib_is_udata_in_empty(udata))
+		return -EOPNOTSUPP;
+
 	rc = bnxt_qplib_free_mrw(&rdev->qplib_res, &mr->qplib_mr);
 	if (rc) {
 		ibdev_err(&rdev->ibdev, "Dereg MR failed: %#x\n", rc);
@@ -4192,6 +4222,9 @@ struct ib_mw *bnxt_re_alloc_mw(struct ib_pd *ib_pd, enum ib_mw_type type,
 	struct bnxt_re_mw *mw;
 	u32 active_mws;
 	int rc;
+
+	if (!ib_is_udata_in_empty(udata))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	mw = kzalloc(sizeof(*mw), GFP_KERNEL);
 	if (!mw)
@@ -4320,6 +4353,9 @@ struct ib_mr *bnxt_re_reg_user_mr(struct ib_pd *ib_pd, u64 start, u64 length,
 	struct bnxt_re_dev *rdev = pd->rdev;
 	struct ib_umem *umem;
 	struct ib_mr *ib_mr;
+
+	if (!ib_is_udata_in_empty(udata))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	if (dmah)
 		return ERR_PTR(-EOPNOTSUPP);
@@ -4503,6 +4539,9 @@ struct ib_flow *bnxt_re_create_flow(struct ib_qp *ib_qp,
 	struct bnxt_re_dev *rdev = qp->rdev;
 	struct bnxt_re_flow *flow;
 	int rc;
+
+	if (!ib_is_udata_in_empty(udata))
+		return ERR_PTR(-EOPNOTSUPP);
 
 	if (attr->type != IB_FLOW_ATTR_SNIFFER ||
 	    !rdev->rcfw.roce_mirror)
