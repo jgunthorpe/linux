@@ -3128,6 +3128,43 @@ static inline bool ib_is_udata_cleared(struct ib_udata *udata,
 	return ib_is_buffer_cleared(udata->inbuf + offset, len);
 }
 
+static inline int _ib_copy_validate_udata_in(struct ib_udata *udata, void *req,
+					     size_t kernel_size,
+					     size_t minimum_size)
+{
+	int err;
+
+	if (udata->inlen < minimum_size)
+		return -EINVAL;
+	err = copy_struct_from_user(req, kernel_size, udata->inbuf,
+				    udata->inlen);
+	if (err) {
+		if (err == E2BIG)
+			return -EOPNOTSUPP;
+		return err;
+	}
+	return 0;
+}
+
+/**
+ * ib_copy_validate_udata_in - Copy and validate that the request structure is
+ *                             compatible with this kernel
+ * @_udata: The system calls ib_udata struct
+ * @_req: The name of an on-stack structure that holds the driver data
+ * @_end_member: The member in the struct that is the original end of struct
+ *               from the first kernel to introduce it.
+ *
+ * Check that the udata input request struct is properly formed for this kernel.
+ * Then copy it into req
+ */
+#define ib_copy_validate_udata_in(_udata, _req, _end_member)              \
+	({                                                                \
+		static_assert(__same_type(*(typeof(&(_req)))0, (_req)));  \
+		_ib_copy_validate_udata_in(_udata, &(_req), sizeof(_req), \
+					   offsetofend(typeof(_req),      \
+						       _end_member));     \
+	})
+
 /**
  * ib_modify_qp_is_ok - Check that the supplied attribute mask
  * contains all required attributes and no attributes not allowed for
