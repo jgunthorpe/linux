@@ -765,7 +765,7 @@ int bnxt_re_alloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 
 		pd->pd_db_mmap = &entry->rdma_entry;
 
-		rc = ib_copy_to_udata(udata, &resp, min(sizeof(resp), udata->outlen));
+		rc = ib_respond_udata(udata, resp);
 		if (rc) {
 			rdma_user_mmap_entry_remove(pd->pd_db_mmap);
 			rc = -EFAULT;
@@ -1722,7 +1722,7 @@ int bnxt_re_create_qp(struct ib_qp *ib_qp, struct ib_qp_init_attr *qp_init_attr,
 
 			resp.qpid = qp->qplib_qp.id;
 			resp.rsvd = 0;
-			rc = ib_copy_to_udata(udata, &resp, sizeof(resp));
+			rc = ib_respond_udata(udata, resp);
 			if (rc) {
 				ibdev_err(&rdev->ibdev, "Failed to copy QP udata");
 				goto qp_destroy;
@@ -1983,7 +1983,7 @@ int bnxt_re_create_srq(struct ib_srq *ib_srq,
 			}
 			resp.comp_mask |= BNXT_RE_SRQ_TOGGLE_PAGE_SUPPORT;
 		}
-		rc = ib_copy_to_udata(udata, &resp, sizeof(resp));
+		rc = ib_respond_udata(udata, resp);
 		if (rc) {
 			ibdev_err(&rdev->ibdev, "SRQ copy to udata failed!");
 			bnxt_qplib_destroy_srq(&rdev->qplib_res,
@@ -3275,7 +3275,7 @@ int bnxt_re_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 		resp.tail = cq->qplib_cq.hwq.cons;
 		resp.phase = cq->qplib_cq.period;
 		resp.rsvd = 0;
-		rc = ib_copy_to_udata(udata, &resp, min(sizeof(resp), udata->outlen));
+		rc = ib_respond_udata(udata, resp);
 		if (rc) {
 			ibdev_err(&rdev->ibdev, "Failed to copy CQ udata");
 			bnxt_qplib_destroy_cq(&rdev->qplib_res, &cq->qplib_cq);
@@ -4479,7 +4479,7 @@ int bnxt_re_alloc_ucontext(struct ib_ucontext *ctx, struct ib_udata *udata)
 		}
 	}
 
-	rc = ib_copy_to_udata(udata, &resp, min(udata->outlen, sizeof(resp)));
+	rc = ib_respond_udata(udata, resp);
 	if (rc) {
 		ibdev_err(ibdev, "Failed to copy user context");
 		rc = -EFAULT;
