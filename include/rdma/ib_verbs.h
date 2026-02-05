@@ -3186,6 +3186,38 @@ static inline int _ib_copy_validate_udata_in(struct ib_udata *udata, void *req,
 		ret;                                                          \
 	})
 
+static inline int _ib_respond_udata(struct ib_udata *udata, const void *src,
+				   size_t len)
+{
+	size_t copy_len;
+
+	copy_len = min(len, udata->outlen);
+	if (copy_to_user(udata->outbuf, src, copy_len))
+		return -EFAULT;
+	if (copy_len < udata->outlen) {
+		if (clear_user(udata->outbuf + copy_len,
+			       udata->outlen - copy_len))
+			return -EFAULT;
+	}
+	return 0;
+}
+
+/**
+ * ib_respond_udata - Copy a driver data response to userspace
+ * @_udata: The system calls ib_udata struct
+ * @_rep: Kernel buffer containing the response driver data on the stack
+ *
+ * Copy driver data response structures back to userspace in a way that
+ * is forwards and backwards compatible. Longer kernel structs are truncated,
+ * userspace has made some kind of error if it needed the truncated information.
+ * Shorter structs are zero padded.
+ */
+#define ib_respond_udata(_udata, _rep)                                   \
+	({                                                               \
+		static_assert(__same_type(*(typeof(&(_rep)))0, (_rep))); \
+		_ib_respond_udata(_udata, &(_rep), sizeof(_rep));        \
+	})
+
 /**
  * ib_modify_qp_is_ok - Check that the supplied attribute mask
  * contains all required attributes and no attributes not allowed for
