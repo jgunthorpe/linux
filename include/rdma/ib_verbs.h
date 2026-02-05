@@ -3128,6 +3128,20 @@ static inline bool ib_is_udata_cleared(struct ib_udata *udata,
 	return ib_is_buffer_cleared(udata->inbuf + offset, len);
 }
 
+/**
+ * ib_is_udata_in_empty - Check if the udata is empty
+ * @udata: The system calls ib_udata struct
+ *
+ * This should be used if the driver does not currently define a driver data
+ * struct.
+ */
+static inline bool ib_is_udata_in_empty(struct ib_udata *udata)
+{
+	if (udata && udata->inlen != 0)
+		return ib_is_buffer_cleared(udata->inbuf, udata->inlen);
+	return true;
+}
+
 static inline int _ib_copy_validate_udata_in(struct ib_udata *udata, void *req,
 					     size_t kernel_size,
 					     size_t minimum_size)
