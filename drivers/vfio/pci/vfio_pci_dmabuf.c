@@ -102,10 +102,15 @@ static const struct dma_buf_mapping_sgt_exp_ops vfio_pci_dma_buf_sgt_ops = {
 };
 
 static struct dma_buf_phys_list *
-vfio_pci_dma_pal_map_phys(struct dma_buf_attachment *attach)
+vfio_pci_dma_pal_map_phys(struct dma_buf_attachment *attachment)
 {
-	struct vfio_pci_dma_buf *priv = attach->dmabuf->priv;
+	struct vfio_pci_dma_buf *priv = attachment->dmabuf->priv;
 	struct dma_buf_phys_list *phys;
+
+	dma_resv_assert_held(attachment->dmabuf->resv);
+
+	if (priv->revoked)
+		return ERR_PTR(-ENODEV);
 
 	phys = kvmalloc(struct_size(phys, phys, priv->nr_ranges), GFP_KERNEL);
 	if (!phys)
@@ -159,40 +164,6 @@ static const struct dma_buf_ops vfio_pci_dmabuf_ops = {
 	.release = vfio_pci_dma_buf_release,
 	.match_mapping = vfio_pci_dma_buf_match_mapping,
 };
-
-/*
- * This is a temporary "private interconnect" between VFIO DMABUF and iommufd.
- * It allows the two co-operating drivers to exchange the physical address of
- * the BAR. This is to be replaced with a formal DMABUF system for negotiated
- * interconnect types.
- *
- * If this function succeeds the following are true:
- *  - There is one physical range and it is pointing to MMIO
- *  - When move_notify is called it means revoke, not move, vfio_dma_buf_map
- *    will fail if it is currently revoked
- */
-int vfio_pci_dma_buf_iommufd_map(struct dma_buf_attachment *attachment,
-				 struct phys_vec *phys)
-{
-	struct vfio_pci_dma_buf *priv;
-
-	dma_resv_assert_held(attachment->dmabuf->resv);
-
-	if (attachment->dmabuf->ops != &vfio_pci_dmabuf_ops)
-		return -EOPNOTSUPP;
-
-	priv = attachment->dmabuf->priv;
-	if (priv->revoked)
-		return -ENODEV;
-
-	/* More than one range to iommufd will require proper DMABUF support */
-	if (priv->nr_ranges != 1)
-		return -EOPNOTSUPP;
-
-	*phys = priv->phys_vec[0];
-	return 0;
-}
-EXPORT_SYMBOL_FOR_MODULES(vfio_pci_dma_buf_iommufd_map, "iommufd");
 
 int vfio_pci_core_fill_phys_vec(struct phys_vec *phys_vec,
 				struct vfio_region_dma_range *dma_ranges,
