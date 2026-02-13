@@ -85,25 +85,58 @@ struct kunit_iommu_priv {
 	pt_oaddr_t test_oa;
 	pt_vaddr_t safe_pgsize_bitmap;
 	unsigned long orig_nr_secondary_pagetable;
-
+	struct kunit *test;
+	struct kunit_iommu_inv_iotlb *iotlb;
 };
 PT_IOMMU_CHECK_DOMAIN(struct kunit_iommu_priv, fmt_table.iommu, domain);
+
+static void kunit_iotlb_sync(struct kunit_iommu_priv *priv,
+			     struct iommu_iotlb_gather *gather);
+static void kunit_iotlb_sync_map(struct kunit_iommu_priv *priv,
+				 unsigned long iova, size_t size);
+static void kunit_iotlb_change_top(struct kunit_iommu_priv *priv,
+				   phys_addr_t top_paddr,
+				   unsigned int top_level);
 
 static void pt_kunit_iotlb_sync(struct iommu_domain *domain,
 				struct iommu_iotlb_gather *gather)
 {
+	struct kunit_iommu_priv *priv =
+		container_of(domain, struct kunit_iommu_priv, domain);
+
+	if (priv->iotlb)
+		kunit_iotlb_sync(priv, gather);
+
 	iommu_put_pages_list(&gather->freelist);
+}
+
+static int pt_kunit_iotlb_sync_map(struct iommu_domain *domain,
+				    unsigned long iova, size_t size)
+{
+	struct kunit_iommu_priv *priv =
+		container_of(domain, struct kunit_iommu_priv, domain);
+
+	if (priv->iotlb)
+		kunit_iotlb_sync_map(priv, iova, size);
+
+	return 0;
 }
 
 #define IOMMU_PT_DOMAIN_OPS1(x) IOMMU_PT_DOMAIN_OPS(x)
 static const struct iommu_domain_ops kunit_pt_ops = {
 	IOMMU_PT_DOMAIN_OPS1(PTPFX_RAW),
 	.iotlb_sync = &pt_kunit_iotlb_sync,
+	.iotlb_sync_map = &pt_kunit_iotlb_sync_map,
 };
 
 static void pt_kunit_change_top(struct pt_iommu *iommu_table,
 				phys_addr_t top_paddr, unsigned int top_level)
 {
+	struct kunit_iommu_priv *priv = container_of(
+		iommu_table, struct kunit_iommu_priv, fmt_table.iommu);
+
+	if (priv->iotlb)
+		kunit_iotlb_change_top(priv, top_paddr, top_level);
 }
 
 static spinlock_t *pt_kunit_get_top_lock(struct pt_iommu *iommu_table)
@@ -123,6 +156,8 @@ static int pt_kunit_priv_init(struct kunit *test, struct kunit_iommu_priv *priv)
 {
 	unsigned int va_lg2sz;
 	int ret;
+
+	priv->test = test;
 
 	/* Enough so the memory allocator works */
 	priv->dummy_dev = kunit_device_register(test, "pt_kunit_dev");
@@ -205,3 +240,5 @@ static int pt_kunit_priv_init(struct kunit *test, struct kunit_iommu_priv *priv)
 }
 
 #endif
+
+#include "kunit_iommu_iotlb.h"
