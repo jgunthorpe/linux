@@ -477,6 +477,7 @@ static int pt_kunit_iommu_init(struct kunit *test)
 		return ret;
 	}
 	test->priv = priv;
+	kunit_iotlb_start(test, priv);
 	return 0;
 }
 
