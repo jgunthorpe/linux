@@ -215,8 +215,19 @@ static void test_map_table_to_oa(struct kunit *test)
 
 		cur_va = ALIGN(range.va + priv->smallest_pgsz * 256,
 			       max_pgsize);
-		for (offset = 0; offset != max_pgsize; offset += len)
-			do_map(test, cur_va + offset, paddr + offset, len);
+		for (offset = 0; offset != max_pgsize; offset += len) {
+			int ret;
+
+			ret = iommu_map_nosync(&priv->domain,
+					       cur_va + offset,
+					       paddr + offset, len,
+					       IOMMU_READ | IOMMU_WRITE,
+					       GFP_KERNEL);
+			KUNIT_ASSERT_NO_ERRNO_FN(test, "map_pages", ret);
+		}
+		KUNIT_ASSERT_NO_ERRNO_FN(test, "iotlb_sync_map",
+					 iommu_sync_map(&priv->domain,
+							cur_va, max_pgsize));
 		check_iova(test, cur_va, paddr, max_pgsize);
 		KUNIT_ASSERT_EQ(test, count_valids_single(test, len),
 				log2_div(max_pgsize, pgsz_lg2));
@@ -224,10 +235,21 @@ static void test_map_table_to_oa(struct kunit *test)
 		if (len == max_pgsize) {
 			do_unmap(test, cur_va, max_pgsize);
 		} else {
+			struct iommu_iotlb_gather gather;
+
 			do_unmap(test, cur_va, max_pgsize / 2);
+
+			/* Small steps to avoid clearing the tables */
+			iommu_iotlb_gather_init(&gather);
 			for (offset = max_pgsize / 2; offset != max_pgsize;
 			     offset += len)
-				do_unmap(test, cur_va + offset, len);
+				KUNIT_ASSERT_EQ(
+					test,
+					iommu_unmap_fast(&priv->domain,
+							 cur_va + offset, len,
+							 &gather),
+					len);
+			iommu_iotlb_sync(&priv->domain, &gather);
 		}
 
 		KUNIT_ASSERT_EQ(test, count_valids(test), 0);
@@ -486,3 +508,4 @@ kunit_test_suites(&NS(iommu_suite));
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Kunit for generic page table");
 MODULE_IMPORT_NS("GENERIC_PT_IOMMU");
+MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");

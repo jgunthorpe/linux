@@ -35,6 +35,7 @@
 #include <linux/msi.h>
 #include <uapi/linux/iommufd.h>
 #include <linux/generic_pt/iommu.h>
+#include <kunit/visibility.h>
 
 #include "dma-iommu.h"
 #include "iommu-priv.h"
@@ -2663,6 +2664,7 @@ static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 	}
 	return 0;
 }
+EXPORT_SYMBOL_IF_KUNIT(iommu_map_nosync);
 
 int iommu_sync_map(struct iommu_domain *domain, unsigned long iova, size_t size)
 {
@@ -2672,6 +2674,7 @@ int iommu_sync_map(struct iommu_domain *domain, unsigned long iova, size_t size)
 		return 0;
 	return ops->iotlb_sync_map(domain, iova, size);
 }
+EXPORT_SYMBOL_IF_KUNIT(iommu_sync_map);
 
 int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
