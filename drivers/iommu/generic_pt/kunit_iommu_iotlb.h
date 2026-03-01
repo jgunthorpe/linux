@@ -35,6 +35,7 @@
 
 enum kunit_iommu_inv_model {
 	KUNIT_IOMMU_MODEL_GENERIC,
+	KUNIT_IOMMU_MODEL_AMD,
 };
 
 struct kunit_iommu_inv_iotlb {
@@ -338,6 +339,133 @@ static void kunit_iotlb_erase_xa_range(struct kunit_iommu_inv_iotlb *iotlb,
 }
 
 /*
+ * leaf_sizes and table_sizes are a bitmap of pages sizes that are effected by
+ * the invalidation. U64_MAX selects all.
+ */
+static void kunit_iotlb_erase_range(struct kunit_iommu_inv_iotlb *iotlb,
+				    u64 start, u64 last, u64 leaf_sizes,
+				    u64 table_sizes,
+				    struct kunit_iotlb_range *real_inval)
+{
+	unsigned long start_idx;
+	unsigned long last_idx;
+	unsigned int pgsz_lg2;
+
+	for (pgsz_lg2 = 1; pgsz_lg2 < PT_VADDR_MAX_LG2; pgsz_lg2++) {
+		start_idx = log2_div_t(u64, start, pgsz_lg2);
+		last_idx = log2_div_t(u64, last, pgsz_lg2);
+
+		if (leaf_sizes & BIT_U64(pgsz_lg2))
+			kunit_iotlb_erase_xa_range(iotlb, true, start_idx,
+						   last_idx, pgsz_lg2,
+						   real_inval);
+		if (table_sizes & BIT_U64(pgsz_lg2))
+			kunit_iotlb_erase_xa_range(iotlb, false, start_idx,
+						   last_idx, pgsz_lg2,
+						   real_inval);
+	}
+}
+
+static void kunit_iotlb_erase_all(struct kunit_iommu_inv_iotlb *iotlb,
+				  struct kunit_iotlb_range *real_inval)
+{
+	kunit_iotlb_erase_range(iotlb, 0, U64_MAX, U64_MAX, U64_MAX,
+				real_inval);
+}
+
+/*
+ * The invalidation emulations can remove more from the IOTLB than the unmap
+ * actually requires. We need to check and remap the stuff that shouldn't have
+ * been removed to make the validation steps work. real_inval contains the
+ * actual range of entries that were altered by the invalidation.
+ */
+static void kunit_iotlb_unmap_fixup(struct kunit_iommu_priv *priv,
+				    struct kunit_iotlb_range *real_inval,
+				    struct iommu_iotlb_gather *gather)
+{
+	if (real_inval->start < gather->start)
+		kunit_iotlb_reload_range(priv, real_inval->start,
+					 gather->start - 1, false);
+	if (gather->end < real_inval->last)
+		kunit_iotlb_reload_range(priv, gather->end + 1,
+					 real_inval->last, false);
+
+	/*
+	 * The gather can cross multiple tables but the actual unmap may not
+	 * have if the gather was constructed from multiple unmap calls. In this
+	 * case the tables within the unmapped range need to be restored.
+	 */
+	if (real_inval->table_invals)
+		kunit_iotlb_reload_range(priv, gather->start, gather->end,
+					 true);
+}
+
+/* INVALIDATE_IOMMU_PAGES command for AMD IOMMU */
+struct kunit_amd_inval {
+	u64 address;
+	/* page directoy entries */
+	bool pde;
+	/* Easy version of the 1's size encoding in the address */
+	unsigned int sz_lg2;
+	struct kunit_iotlb_range real_inval;
+};
+
+static void kunit_iotlb_amd_cmd(struct kunit *test,
+				struct kunit_iommu_inv_iotlb *iotlb,
+				struct kunit_amd_inval *cmd)
+{
+	u64 start = cmd->address;
+	u64 last = log2_set_mod_max_t(u64, cmd->address, cmd->sz_lg2);
+
+	if (cmd->sz_lg2 >= 52) {
+		kunit_iotlb_erase_all(iotlb, &cmd->real_inval);
+		return;
+	}
+
+	/*
+	 * Spec says:
+	 *   Software Note: When issuing INVALIDATE_IOMMU_PAGES
+	 *   commands, the size of each invalidate must be greater than
+	 *   or equal to the size of the largest page being invalidated.
+	 * Meaning it never invalidates any IOTLB entry sized greater than
+	 * sz_lg2. Vasant confirmed this.
+	 */
+	kunit_iotlb_erase_range(iotlb, start, last,
+				GENMASK_U64(cmd->sz_lg2, 0),
+				cmd->pde ? GENMASK_U64(cmd->sz_lg2, 0) : 0,
+				&cmd->real_inval);
+}
+
+static void kunit_iotlb_range_gather_amd(struct kunit_iommu_priv *priv,
+					 struct iommu_iotlb_gather *gather)
+{
+	struct kunit *test = priv->test;
+	struct kunit_iommu_inv_iotlb *iotlb = priv->iotlb;
+	struct kunit_amd_inval cmd = {
+		.pde = !iommu_pages_list_empty(&gather->freelist),
+		.real_inval = IOTLB_RANGE_INIT,
+	};
+	u64 cmd_last;
+
+	/*
+	 * AMD can do power of two ranges with an aligned starting point.
+	 * Compute the smallest power of two that covers all the addresses.
+	 */
+	cmd.sz_lg2 = fls_t(unsigned long, gather->start ^ gather->end);
+	/* S bit is 0 if sz_lg2 == 12 */
+	if (cmd.sz_lg2 < 12)
+		cmd.sz_lg2 = 12;
+	cmd.address =
+		log2_set_mod_t(unsigned long, gather->start, 0, cmd.sz_lg2);
+	cmd_last = log2_set_mod_max_t(u64, cmd.address, cmd.sz_lg2);
+
+	KUNIT_ASSERT_LE(test, cmd.address, gather->start);
+	KUNIT_ASSERT_GE(test, cmd_last, gather->end);
+	kunit_iotlb_amd_cmd(test, iotlb, &cmd);
+	kunit_iotlb_unmap_fixup(priv, &cmd.real_inval, gather);
+}
+
+/*
  * Emulate HW with a range invalidation operation using the detailed gather
  * bitmaps to restrict which IOTLB entries are invalidated:
  *  - Invalidate leaf entries only at page sizes belonging to levels in
@@ -447,6 +575,9 @@ static void kunit_iotlb_sync(struct kunit_iommu_priv *priv,
 			iommu_pages_list_empty(&gather->freelist));
 
 	switch (iotlb->model) {
+	case KUNIT_IOMMU_MODEL_AMD:
+		kunit_iotlb_range_gather_amd(priv, gather);
+		break;
 	case KUNIT_IOMMU_MODEL_GENERIC:
 	default:
 		kunit_iotlb_range_gather_generic(priv, gather);
@@ -532,10 +663,14 @@ static void kunit_iotlb_change_top(struct kunit_iommu_priv *priv,
  */
 static void kunit_iotlb_start(struct kunit *test, struct kunit_iommu_priv *priv)
 {
+	const char *format_name = __stringify(PTPFX_RAW);
 	unsigned int i;
 
 	priv->iotlb = kunit_kzalloc(test, sizeof(*priv->iotlb), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, priv->iotlb);
+
+	if (strstr(format_name, "amd"))
+		priv->iotlb->model = KUNIT_IOMMU_MODEL_AMD;
 
 	for (i = 0; i < PT_VADDR_MAX_LG2; i++) {
 		xa_init(&priv->iotlb->leaf_entries[i]);
