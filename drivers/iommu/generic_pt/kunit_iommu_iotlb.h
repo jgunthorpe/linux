@@ -36,6 +36,7 @@
 enum kunit_iommu_inv_model {
 	KUNIT_IOMMU_MODEL_GENERIC,
 	KUNIT_IOMMU_MODEL_AMD,
+	KUNIT_IOMMU_MODEL_VTD,
 };
 
 struct kunit_iommu_inv_iotlb {
@@ -466,6 +467,105 @@ static void kunit_iotlb_range_gather_amd(struct kunit_iommu_priv *priv,
 }
 
 /*
+ * IOTLB Invalidate
+ * PASID-based IOTLB Invalidate Descriptor (P_IOTLB)
+ */
+struct kunit_vtd_iotlb_inval {
+	u64 address;
+	/*
+	 * Address Mask (AM): number of low-order ADDR bits above bit 12 to
+	 * mask for the invalidation. AM=0 means single 4K page. The
+	 * invalidated byte range is [address, address + (4K << am) - 1].
+	 * Spec Table 19.
+	 */
+	unsigned int am;
+	/*
+	 * Invalidation Hint (IH):
+	 *  false (IH=0): Invalidate paging-structure-cache entries in range
+	 *  true  (IH=1): Preserve paging-structure-cache entries
+	 */
+	bool ih;
+
+	struct kunit_iotlb_range real_inval;
+};
+
+/*
+ * The VT-d spec is hard to read here, but consensus is these sections support
+ * the idea that VT-d is the opposite of AMD and removes all the paging
+ * structure, not just the structure enclosed by the range.
+ *
+ * 6.5.3.3 Guidance to Software for Invalidations:
+ *
+ *   - If software modifies a paging-structure entry that references another
+ *     paging structure, it may use one of the following approaches depending
+ *     upon the type and number of translations controlled by the modified
+ *     entry:
+ *
+ *     - Execute page-selective type of IOTLB invalidation command for any
+ *       addresses with each of the page numbers with translations that will use
+ *       the entry. These invalidations must specify an Invalidation Hint (IH)
+ *       value of 0 (so that it invalidates the paging-structure caches).
+ *       However, if no page numbers that will use the entry have translations
+ *       (e.g., because the P flags are 0 in all entries in the paging structure
+ *       referenced by the modified entry), it remains necessary to execute the
+ *       page-selective type of IOTLB invalidation command at least once.
+ *
+ * Jann says this interpretation matches the Intel CPU TLBI behavior.
+ */
+static void kunit_iotlb_vtd_cmd(struct kunit *test,
+				struct kunit_iommu_inv_iotlb *iotlb,
+				struct kunit_vtd_iotlb_inval *cmd)
+{
+	unsigned int sz_lg2 = 12 + cmd->am;
+	u64 last = log2_set_mod_max_t(u64, cmd->address, sz_lg2);
+	u64 start = cmd->address;
+
+	KUNIT_ASSERT_EQ(test, log2_mod_t(u64, start, sz_lg2), 0);
+	KUNIT_ASSERT_LE(test, start, last);
+
+	if (cmd->am >= 52) {
+		kunit_iotlb_erase_all(iotlb, &cmd->real_inval);
+		return;
+	}
+
+	kunit_iotlb_erase_range(iotlb, start, last, U64_MAX,
+				cmd->ih ? 0 : U64_MAX, &cmd->real_inval);
+}
+
+static void kunit_iotlb_range_gather_vtd(struct kunit_iommu_priv *priv,
+					 struct iommu_iotlb_gather *gather)
+{
+	struct kunit *test = priv->test;
+	struct kunit_iommu_inv_iotlb *iotlb = priv->iotlb;
+	struct kunit_vtd_iotlb_inval cmd = {
+		.ih = iommu_pages_list_empty(&gather->freelist),
+		.real_inval = IOTLB_RANGE_INIT,
+	};
+	unsigned int sz_lg2;
+	u64 cmd_last;
+
+	/*
+	 * VT-d PSI uses Address + AM to specify a power-of-two aligned range
+	 * of 4K pages. Compute the smallest such range covering [start, end].
+	 *
+	 * This is equivalent to calculate_psi_aligned_address() in
+	 * drivers/iommu/intel/cache.c: both find the smallest power-of-two
+	 * aligned region covering the gather range.
+	 */
+	sz_lg2 = fls_t(unsigned long, gather->start ^ gather->end);
+	if (sz_lg2 < 12)
+		sz_lg2 = 12;
+	cmd.am = sz_lg2 - 12;
+	cmd.address = log2_set_mod_t(unsigned long, gather->start, 0, sz_lg2);
+	cmd_last = log2_set_mod_max_t(u64, cmd.address, sz_lg2);
+
+	KUNIT_ASSERT_LE(test, cmd.address, gather->start);
+	KUNIT_ASSERT_GE(test, cmd_last, gather->end);
+	kunit_iotlb_vtd_cmd(test, iotlb, &cmd);
+	kunit_iotlb_unmap_fixup(priv, &cmd.real_inval, gather);
+}
+
+/*
  * Emulate HW with a range invalidation operation using the detailed gather
  * bitmaps to restrict which IOTLB entries are invalidated:
  *  - Invalidate leaf entries only at page sizes belonging to levels in
@@ -575,6 +675,9 @@ static void kunit_iotlb_sync(struct kunit_iommu_priv *priv,
 			iommu_pages_list_empty(&gather->freelist));
 
 	switch (iotlb->model) {
+	case KUNIT_IOMMU_MODEL_VTD:
+		kunit_iotlb_range_gather_vtd(priv, gather);
+		break;
 	case KUNIT_IOMMU_MODEL_AMD:
 		kunit_iotlb_range_gather_amd(priv, gather);
 		break;
@@ -671,6 +774,8 @@ static void kunit_iotlb_start(struct kunit *test, struct kunit_iommu_priv *priv)
 
 	if (strstr(format_name, "amd"))
 		priv->iotlb->model = KUNIT_IOMMU_MODEL_AMD;
+	else if (strstr(format_name, "vtdss"))
+		priv->iotlb->model = KUNIT_IOMMU_MODEL_VTD;
 
 	for (i = 0; i < PT_VADDR_MAX_LG2; i++) {
 		xa_init(&priv->iotlb->leaf_entries[i]);
