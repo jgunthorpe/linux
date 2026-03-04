@@ -37,6 +37,7 @@ enum kunit_iommu_inv_model {
 	KUNIT_IOMMU_MODEL_GENERIC,
 	KUNIT_IOMMU_MODEL_AMD,
 	KUNIT_IOMMU_MODEL_VTD,
+	KUNIT_IOMMU_MODEL_RISCV,
 };
 
 struct kunit_iommu_inv_iotlb {
@@ -566,6 +567,70 @@ static void kunit_iotlb_range_gather_vtd(struct kunit_iommu_priv *priv,
 }
 
 /*
+ * RISC-V IOMMU IOTINVAL.VMA/GVMA command
+ * GV/PSCV are used to select the address space and can be ignored for this test
+ */
+struct kunit_riscv_inval {
+	u64 addr;
+	bool av;
+	/* Non-leaf PTE Invalidation Extension, v1.0.1 Section 9.2 */
+	bool nl;
+	/* Address Range Invalidation Extension, v1.0.1 Section 9.3 */
+	unsigned int sz_lg2;
+	struct kunit_iotlb_range real_inval;
+};
+
+static void kunit_iotlb_riscv_cmd(struct kunit *test,
+				  struct kunit_iommu_inv_iotlb *iotlb,
+				  struct kunit_riscv_inval *cmd)
+{
+	if (!cmd->av) {
+		kunit_iotlb_erase_all(iotlb, &cmd->real_inval);
+		return;
+	}
+
+	/*
+	 * Without the S extension (sz_lg2 == 0) only a single address is
+	 * given.
+	 *
+	 * The meaning of the address is not clearly specified in the spec,
+	 * assume the intention is to invalidate any IOTLB entry that contains
+	 * addr, or contains any part of the range.
+	 */
+	kunit_iotlb_erase_range(iotlb, cmd->addr,
+				log2_set_mod_max_t(u64, cmd->addr, cmd->sz_lg2),
+				U64_MAX, cmd->nl ? U64_MAX : 0,
+				&cmd->real_inval);
+}
+
+static void kunit_iotlb_range_gather_riscv(struct kunit_iommu_priv *priv,
+					   struct iommu_iotlb_gather *gather)
+{
+	struct kunit *test = priv->test;
+	struct kunit_iommu_inv_iotlb *iotlb = priv->iotlb;
+	struct kunit_riscv_inval cmd = {
+		.real_inval = IOTLB_RANGE_INIT,
+	};
+
+	if (!iommu_pages_list_empty(&gather->freelist) ||
+	    (gather->end - gather->start) >= SZ_2M - 1) {
+		kunit_iotlb_riscv_cmd(test, iotlb, &cmd);
+	} else {
+		u64 iova = gather->start;
+
+		cmd.av = true;
+		do {
+			cmd.addr = iova;
+			kunit_iotlb_riscv_cmd(test, iotlb, &cmd);
+		} while (!check_add_overflow(
+				 iova, log2_to_int(priv->smallest_pgsz_lg2),
+				 &iova) &&
+			 iova <= gather->end);
+	}
+	kunit_iotlb_unmap_fixup(priv, &cmd.real_inval, gather);
+}
+
+/*
  * Emulate HW with a range invalidation operation using the detailed gather
  * bitmaps to restrict which IOTLB entries are invalidated:
  *  - Invalidate leaf entries only at page sizes belonging to levels in
@@ -675,6 +740,9 @@ static void kunit_iotlb_sync(struct kunit_iommu_priv *priv,
 			iommu_pages_list_empty(&gather->freelist));
 
 	switch (iotlb->model) {
+	case KUNIT_IOMMU_MODEL_RISCV:
+		kunit_iotlb_range_gather_riscv(priv, gather);
+		break;
 	case KUNIT_IOMMU_MODEL_VTD:
 		kunit_iotlb_range_gather_vtd(priv, gather);
 		break;
@@ -776,6 +844,8 @@ static void kunit_iotlb_start(struct kunit *test, struct kunit_iommu_priv *priv)
 		priv->iotlb->model = KUNIT_IOMMU_MODEL_AMD;
 	else if (strstr(format_name, "vtdss"))
 		priv->iotlb->model = KUNIT_IOMMU_MODEL_VTD;
+	else if (strstr(format_name, "riscv"))
+		priv->iotlb->model = KUNIT_IOMMU_MODEL_RISCV;
 
 	for (i = 0; i < PT_VADDR_MAX_LG2; i++) {
 		xa_init(&priv->iotlb->leaf_entries[i]);
