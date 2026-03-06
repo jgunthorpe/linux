@@ -306,6 +306,72 @@ static void test_unmap_split(struct kunit *test)
 		kunit_skip(test, "Test needs two page sizes");
 }
 
+/*
+ * Exercise the FULL_CONT_RIL erratum case that needs three RIL commands.
+ *
+ * Use a level-1 CONT group for each translation granule:
+ *  - 4K:  16 2M entries, 32M or 8192 granules
+ *  - 16K: 32 32M entries, 1G or 65536 granules
+ *  - 64K: 32 512M entries, 16G or 262144 granules
+ *
+ * Let C be the CONT size in translation granules. The range [C - 1, 2C + 1)
+ * contains the complete CONT group [C, 2C). The normal two-command split
+ * slices that CONT group. Extending the trailing RIL to cover it would round
+ * its start below C - 1, outside the gathered range, so an exact third RIL for
+ * [C, 2C) is required.
+ */
+static void test_armv8_three_ril(struct kunit *test)
+{
+	struct kunit_iommu_priv *priv = test->priv;
+	struct pt_range top_range = pt_top_range(priv->common);
+	const char *format_name = __stringify(PTPFX_RAW);
+	pt_vaddr_t tg = priv->smallest_pgsz;
+	pt_vaddr_t cont_num_tg;
+	pt_vaddr_t cont_size;
+	pt_vaddr_t start;
+	pt_vaddr_t len;
+
+	/*
+	 * The KUnit page-table parameters select DBM for the SVA single-RIL
+	 * flow and TTBR1 for the paging-domain FULL_CONT_RIL flow.
+	 */
+	if (!strstr(format_name, "armv8") ||
+	    !pt_feature(priv->common, PT_FEAT_ARMV8_TTBR1) ||
+	    pt_feature(priv->common, PT_FEAT_ARMV8_DBM) || IS_32BIT) {
+		kunit_skip(test, "Test requires ARMv8 TTB1");
+		return;
+	}
+
+	switch (priv->smallest_pgsz_lg2) {
+	case 12:
+		cont_num_tg = BIT_ULL(13);
+		break;
+	case 14:
+		cont_num_tg = BIT_ULL(16);
+		break;
+	case 16:
+		cont_num_tg = BIT_ULL(18);
+		break;
+	default:
+		kunit_skip(test, "Unsupported translation granule");
+		return;
+	}
+
+	cont_size = cont_num_tg * tg;
+	KUNIT_ASSERT_EQ(test, top_range.va & (cont_size - 1), 0);
+	KUNIT_ASSERT_GE(test, top_range.last_va - top_range.va,
+			(2 * cont_num_tg + 1) * tg - 1);
+
+	start = top_range.va + (cont_num_tg - 1) * tg;
+	len = (cont_num_tg + 2) * tg;
+
+	do_map(test, start, (cont_num_tg - 1) * tg, len);
+	KUNIT_ASSERT_EQ(test, count_valids(test), 3);
+
+	do_unmap(test, start, len);
+	KUNIT_ASSERT_EQ(test, count_valids(test), 0);
+}
+
 static void unmap_collisions(struct kunit *test, struct maple_tree *mt,
 			     pt_vaddr_t start, pt_vaddr_t last)
 {
@@ -454,6 +520,7 @@ static struct kunit_case iommu_test_cases[] = {
 	KUNIT_CASE_FMT(test_map_simple),
 	KUNIT_CASE_FMT(test_map_table_to_oa),
 	KUNIT_CASE_FMT(test_unmap_split),
+	KUNIT_CASE_FMT(test_armv8_three_ril),
 	KUNIT_CASE_FMT(test_random_map),
 	KUNIT_CASE_FMT(test_pgsize_boundary),
 	KUNIT_CASE_FMT(test_mixed),

@@ -36,6 +36,7 @@
 enum kunit_iommu_inv_model {
 	KUNIT_IOMMU_MODEL_GENERIC,
 	KUNIT_IOMMU_MODEL_AMD,
+	KUNIT_IOMMU_MODEL_ARMV8,
 	KUNIT_IOMMU_MODEL_VTD,
 	KUNIT_IOMMU_MODEL_RISCV,
 };
@@ -304,11 +305,11 @@ struct kunit_iotlb_range {
 };
 #define IOTLB_RANGE_INIT (struct kunit_iotlb_range){ .start = PT_VADDR_MAX }
 
-static void kunit_iotlb_erase_xa_range(struct kunit_iommu_inv_iotlb *iotlb,
-				       bool leaf, unsigned long start_idx,
-				       unsigned long last_idx,
-				       unsigned int pgsz_lg2,
-				       struct kunit_iotlb_range *real_inval)
+static void __kunit_iotlb_erase_xa_range(
+	struct kunit_iommu_inv_iotlb *iotlb, bool leaf, unsigned long start_idx,
+	unsigned long last_idx, unsigned int pgsz_lg2, u64 inval_start,
+	u64 inval_last, bool require_full,
+	struct kunit_iotlb_range *real_inval)
 {
 	bool erased = false;
 	unsigned long idx;
@@ -324,6 +325,10 @@ static void kunit_iotlb_erase_xa_range(struct kunit_iommu_inv_iotlb *iotlb,
 		u64 start = log2_mul_t(u64, idx, pgsz_lg2);
 		u64 last = log2_set_mod_max_t(u64, start, pgsz_lg2);
 
+		if (require_full &&
+		    (start < inval_start || last > inval_last))
+			continue;
+
 		if (start < real_inval->start)
 			real_inval->start = start;
 		if (last > real_inval->last)
@@ -338,6 +343,16 @@ static void kunit_iotlb_erase_xa_range(struct kunit_iommu_inv_iotlb *iotlb,
 		else
 			real_inval->table_invals |= 1ULL << pgsz_lg2;
 	}
+}
+
+static void kunit_iotlb_erase_xa_range(struct kunit_iommu_inv_iotlb *iotlb,
+				       bool leaf, unsigned long start_idx,
+				       unsigned long last_idx,
+				       unsigned int pgsz_lg2,
+				       struct kunit_iotlb_range *real_inval)
+{
+	__kunit_iotlb_erase_xa_range(iotlb, leaf, start_idx, last_idx,
+				      pgsz_lg2, 0, 0, false, real_inval);
 }
 
 /*
@@ -365,6 +380,26 @@ static void kunit_iotlb_erase_range(struct kunit_iommu_inv_iotlb *iotlb,
 			kunit_iotlb_erase_xa_range(iotlb, false, start_idx,
 						   last_idx, pgsz_lg2,
 						   real_inval);
+	}
+}
+
+/* Erase only leaf entries that are fully contained by the range */
+static void kunit_iotlb_erase_full_leaf_range(
+	struct kunit_iommu_inv_iotlb *iotlb, u64 start, u64 last, u64 leaf_sizes,
+	struct kunit_iotlb_range *real_inval)
+{
+	unsigned long start_idx;
+	unsigned long last_idx;
+	unsigned int pgsz_lg2;
+
+	for (pgsz_lg2 = 1; pgsz_lg2 < PT_VADDR_MAX_LG2; pgsz_lg2++) {
+		start_idx = log2_div_t(u64, start, pgsz_lg2);
+		last_idx = log2_div_t(u64, last, pgsz_lg2);
+
+		if (leaf_sizes & BIT_U64(pgsz_lg2))
+			__kunit_iotlb_erase_xa_range(iotlb, true, start_idx,
+						     last_idx, pgsz_lg2, start,
+						     last, true, real_inval);
 	}
 }
 
@@ -400,6 +435,525 @@ static void kunit_iotlb_unmap_fixup(struct kunit_iommu_priv *priv,
 	if (real_inval->table_invals)
 		kunit_iotlb_reload_range(priv, gather->start, gather->end,
 					 true);
+}
+
+/*
+ * ARM SMMUv3 CMD_TLBI_NH_VA / CMD_TLBI_NH_VAA / CMD_TLBI_S2_IPA commands
+ * SMMUv3 F.b Sections 4.4.2.3, 4.4.2.4, 4.4.3.1
+ *
+ * Fields use natural types rather than the HW bit encodings. "ARM level" (-1
+ * through 3) is used here rather than the generic pt level of (4 through 0)
+ */
+struct kunit_armv8_inval {
+	u64 address;
+	/*
+	 * Translation Granule log2 size. 0 = unspecified (TG=0b00: no range
+	 * invalidation, no TTL hint). 12/14/16 = 4K/16K/64K.
+	 */
+	unsigned int tg;
+	/*
+	 * Translation Table Level hint (ARM level numbering).
+	 * 0 = any level. 1/2/3 = ARM level 1/2/3.
+	 */
+	unsigned int ttl;
+	/*
+	 * Range granule multiplier (5 bits, 0-31). Range in granule-sized
+	 * pages is (num + 1) * 2^scale.
+	 */
+	unsigned int num;
+	/* Range scale exponent (six bits, limited to 31 without DS, 39 with DS). */
+	unsigned int scale;
+	/*
+	 * Leaf=true (Leaf=1): only last-level (leaf) cached entries.
+	 * Leaf=false (Leaf=0): table descriptor cache entries also invalidated.
+	 */
+	bool leaf;
+	/* The SMMU and page table use the DS format. */
+	bool ds;
+	/* A single RIL must fully cover a CONT entry to invalidate it. */
+	bool full_cont_ril;
+	struct kunit_iotlb_range real_inval;
+};
+
+
+static u64 armv8_tg_to_table_sizes(unsigned int tg)
+{
+	switch (tg) {
+	case 12:
+		return SZ_2M | SZ_1G | SZ_512G | BIT_U64(48);
+	case 14:
+		return SZ_32M | SZ_64G | SZ_128T;
+	case 16:
+		return SZ_512M | SZ_4T;
+	}
+	return 0;
+}
+
+static u64 armv8_tg_to_leaf_sizes(unsigned int tg)
+{
+	switch (tg) {
+	case 12:
+		return SZ_4K | SZ_64K | SZ_2M | SZ_32M | SZ_1G | SZ_16G;
+	case 14:
+		return SZ_16K | SZ_2M | SZ_32M | SZ_1G | SZ_64G;
+	case 16:
+		return SZ_64K | SZ_2M | SZ_512M | SZ_16G;
+	}
+	return 0;
+}
+
+static u64 armv8_tg_to_cont_sizes(unsigned int tg)
+{
+	switch (tg) {
+	case 12:
+		return SZ_64K | SZ_32M | SZ_16G;
+	case 14:
+		return SZ_2M | SZ_1G;
+	case 16:
+		return SZ_2M | SZ_16G;
+	}
+	return 0;
+}
+
+/* Return the entry lg2sz for the given ARM level */
+static unsigned int armv8_level_to_pgsz_lg2(unsigned int tg, int arm_level)
+{
+	return (tg - 3) * (3 - arm_level) + tg;
+}
+
+/*
+ * Spec has requirements for what bits in the address are zero, basically
+ * the bits that don't select a table item.
+ */
+static unsigned int armv8_ttl_addr_upper(unsigned int tg, unsigned int ttl)
+{
+	WARN_ON(ttl == 0);
+	return armv8_level_to_pgsz_lg2(tg, ttl) - 1;
+}
+
+/*
+ * Assert that the address meets the alignment requirements for the given
+ * granule/TTL combination.
+ */
+static void kunit_iotlb_armv8_assert_addr_align(struct kunit *test,
+					      const struct kunit_armv8_inval *cmd)
+{
+	unsigned int upper;
+
+	if (cmd->ttl) {
+		upper = armv8_ttl_addr_upper(cmd->tg, cmd->ttl);
+		/*
+		 * 16K granule with DS=0, TTL=1 is reserved. HW treats as TTL=0
+		 * but Address[13:12] must still be zero to avoid unpredictable
+		 * invalidation range.
+		 */
+		if (cmd->tg == 14 && cmd->ttl == 1 && !cmd->ds)
+			upper = 13;
+	} else {
+		upper = armv8_ttl_addr_upper(cmd->tg, 3);
+	}
+
+	/* In the real cmd bits 11:0 are not encoded, check they are zero too */
+	KUNIT_ASSERT_EQ(test, cmd->address & GENMASK_U64(upper, 0), 0);
+}
+
+/*
+ * SMMUv3 F.b Section 4.4 p167:
+ *   "addresses that are provided for TLB invalidation are not required to be
+ *    aligned to the start of a TLB entry address range. To match a TLB entry,
+ *    the least significant bits of the address are ignored as needed, given
+ *    the size of the entry."
+ */
+static void kunit_iotlb_armv8_cmd(struct kunit *test,
+				struct kunit_iommu_inv_iotlb *iotlb,
+				struct kunit_armv8_inval *cmd)
+{
+	u64 leaf_sizes;
+	u64 table_sizes;
+	u64 cont_sizes = 0;
+	u64 range_bytes;
+	u64 last;
+
+	KUNIT_ASSERT_TRUE(test, cmd->tg == 0 || cmd->tg == 12 ||
+					cmd->tg == 14 || cmd->tg == 16);
+	KUNIT_ASSERT_LE(test, cmd->ttl, 3U);
+	KUNIT_ASSERT_LE(test, cmd->num, 31U);
+	KUNIT_ASSERT_LE(test, cmd->scale, cmd->ds ? 39U : 31U);
+
+	if (cmd->tg == 0) {
+		/*
+		 * Non-range mode invalidates all leafs and tables which contain
+		 * the single address.
+		 */
+		KUNIT_ASSERT_EQ(test, cmd->num, 0);
+		KUNIT_ASSERT_EQ(test, cmd->scale, 0);
+		KUNIT_ASSERT_EQ(test, cmd->ttl, 0);
+
+		last = cmd->address;
+		leaf_sizes = U64_MAX;
+		table_sizes = U64_MAX;
+	} else {
+		/* Range mode */
+		/*
+		 * Section 4.4.1 p170: TG!=0, NUM==0, SCALE==0, TTL==0 is
+		 * Reserved (CERROR_ILL).
+		 */
+		KUNIT_ASSERT_FALSE(test, cmd->num == 0 && cmd->scale == 0 &&
+						 cmd->ttl == 0);
+
+		/*
+		 * Section 4.4.1 p169 TTL table: TG=0b10 (16K), TTL=0b01 is
+		 * Reserved (hardware treats as TTL=0b00).
+		 */
+		KUNIT_ASSERT_FALSE(test,
+				   cmd->tg == 14 && cmd->ttl == 1 && !cmd->ds);
+
+		kunit_iotlb_armv8_assert_addr_align(test, cmd);
+
+		/*
+		 * R_QNPXY: if the range exceeds the top of the address space
+		 * (e.g. TTBR1 ending at U64_MAX), hardware does not wrap
+		 */
+		range_bytes = (u64)(cmd->num + 1) << (cmd->scale + cmd->tg);
+		if (check_add_overflow(cmd->address, range_bytes - 1, &last))
+			last = U64_MAX;
+
+		leaf_sizes = armv8_tg_to_leaf_sizes(cmd->tg);
+		if (cmd->full_cont_ril)
+			cont_sizes = armv8_tg_to_cont_sizes(cmd->tg);
+		if (cmd->ttl == 0) {
+			/*
+			 * Invalidate leaf entries at all levels of the matching
+			 * granule, including contiguous sizes, and all table
+			 * entries (Section 4.4.1 p169 TTL table, row TTL=0b00
+			 * with TG!=0b00).
+			 */
+			table_sizes = U64_MAX;
+		} else {
+			/*
+			 * TTL hint only targets leafs at the exact level and
+			 * tables above the hint.
+			 */
+			leaf_sizes &= GENMASK_U64(
+				armv8_level_to_pgsz_lg2(cmd->tg, cmd->ttl - 1) -
+					1,
+				armv8_level_to_pgsz_lg2(cmd->tg, cmd->ttl));
+			table_sizes =
+				armv8_tg_to_table_sizes(cmd->tg) &
+				GENMASK_U64(63, armv8_level_to_pgsz_lg2(
+							cmd->tg, cmd->ttl - 1));
+		}
+	}
+
+	if (cmd->leaf)
+		table_sizes = 0;
+
+	cont_sizes &= leaf_sizes;
+	kunit_iotlb_erase_range(iotlb, cmd->address, last,
+				leaf_sizes & ~cont_sizes,
+				table_sizes, &cmd->real_inval);
+	kunit_iotlb_erase_full_leaf_range(iotlb, cmd->address, last,
+					  cont_sizes, &cmd->real_inval);
+}
+
+static bool armv8_ttl_addr_aligned(u64 address, unsigned int tg, unsigned int ttl)
+{
+	unsigned int upper = armv8_ttl_addr_upper(tg, ttl);
+
+	return !(address & GENMASK_U64(upper, 0));
+}
+
+struct kunit_armv8_ril_range {
+	u64 start_tg;
+	/* Normal integer, not encoded. 0 means no RIL. */
+	u64 num;
+	unsigned int scale;
+};
+
+static u64 armv8_ril_last_tg(const struct kunit_armv8_ril_range *ril)
+{
+	return ril->start_tg + (ril->num << ril->scale) - 1;
+}
+
+/* RIL a encloses the range covered by RIL b */
+static bool armv8_ril_encloses(const struct kunit_armv8_ril_range *a,
+			       const struct kunit_armv8_ril_range *b)
+{
+	return a->start_tg <= b->start_tg &&
+	       armv8_ril_last_tg(a) >= armv8_ril_last_tg(b);
+}
+
+/* Initialize the smallest RIL covering num_tg and ending at last_tg. */
+static struct kunit_armv8_ril_range
+armv8_ril_init_end(u64 last_tg, u64 num_tg)
+{
+	struct kunit_armv8_ril_range ril = {};
+
+	if (!num_tg)
+		return ril;
+
+	ril.scale = fls64((num_tg - 1) / 32);
+	ril.num = DIV_ROUND_UP_ULL(num_tg, 1ULL << ril.scale);
+	if (check_sub_overflow(last_tg, (ril.num << ril.scale) - 1,
+			       &ril.start_tg))
+		ril.num = 0;
+	return ril;
+}
+
+static void armv8_add_ril(struct kunit *test,
+			  struct kunit_iommu_inv_iotlb *iotlb,
+			  struct kunit_armv8_inval *cmd,
+			  const struct kunit_armv8_ril_range *ril,
+			  unsigned int ttl, unsigned int tg)
+{
+	KUNIT_ASSERT_NE(test, ril->num, 0);
+
+	cmd->address = ril->start_tg << tg;
+	cmd->tg = tg;
+	cmd->ttl = ttl;
+	cmd->num = ril->num - 1;
+	cmd->scale = ril->scale;
+
+	/* Verify address alignment for the TTL hint. */
+	if (cmd->ttl &&
+	    !armv8_ttl_addr_aligned(cmd->address, cmd->tg, cmd->ttl))
+		cmd->ttl = 0;
+
+	/* A one-TG RIL without a TTL hint uses a non-range command. */
+	if (!cmd->num && !cmd->scale && !cmd->ttl)
+		cmd->tg = 0;
+
+	kunit_iotlb_armv8_cmd(test, iotlb, cmd);
+}
+
+static int armv8_bitmap_to_level(u8 pt_bitmap)
+{
+	return 3 - (int)__ffs(pt_bitmap);
+}
+
+static unsigned int armv8_compute_ttl(u8 leaf_bitmap, u8 table_bitmap,
+				      unsigned int tg)
+{
+	int ttl;
+
+	if (leaf_bitmap) {
+		/* If TTL is used then only leaves at the TTL are invalidated */
+		if (!is_power_of_2(leaf_bitmap))
+			return 0;
+
+		ttl = armv8_bitmap_to_level(leaf_bitmap);
+		if (table_bitmap) {
+			int table_ttl = armv8_bitmap_to_level(
+						table_bitmap) +
+					1;
+
+			/*
+			 * A RIL invalidation with !leaf_only clears out all
+			 * table levels above the leaf level ttl only.
+			 */
+			if (table_ttl > ttl)
+				return 0;
+		}
+	} else if (table_bitmap) {
+		/*
+		 * Table-only invalidation. Spec says:
+		 *  For operations with Leaf=0, invalidation of cached Table
+		 *  descriptors for the address and scope additionally occurs at
+		 *  levels between the start of the walk and the level before
+		 *  the last level given by TTL.
+		 * Choose a TTL hint that covers the only target table
+		 * descriptor levels.
+		 */
+		ttl = armv8_bitmap_to_level(table_bitmap) + 1;
+
+		/*
+		 * 16K granule, ARM TTL=1 is reserved (SMMUv3 H.a Section
+		 * 4.4.1.1) if DS=0, avoid it always for table invalidations
+		 * since we don't know what instance this will be applied to
+		 * yet.
+		 */
+		if (tg == 14 && ttl == 1)
+			return 0;
+	} else {
+		/* Both bitmaps zero is not allowed */
+		WARN_ON(true);
+		return 0;
+	}
+
+	/*
+	 * Assumes the page table is formed properly and does not trigger the
+	 * 16K TTL=1 condition for leaf-only unless DS is enabled.
+	 *
+	 * ARM level -1 never has a leaf so something has gone wrong. ARM level
+	 * 0 cannot be hinted because TTL=0 means no hint.
+	 */
+	if (WARN_ON(ttl < 0))
+		return 0;
+	return ttl;
+}
+
+enum kunit_armv8_ril_mode {
+	KUNIT_ARMV8_RIL_NORMAL,
+	KUNIT_ARMV8_RIL_SINGLE,
+	KUNIT_ARMV8_RIL_CONT_ERRATA,
+};
+
+/* Number of contiguous entries grouped by CONT at an iommupt leaf level. */
+static unsigned int armv8_cont_count_lg2(unsigned int tg,
+					 unsigned int level)
+{
+	if (tg == 12 && level <= 3)
+		return ilog2(16); /* 64KB, 32MB, 16GB, 8TB */
+	else if (tg == 14 && level == 1)
+		return ilog2(32); /* 1GB */
+	else if (tg == 14 && level == 0)
+		return ilog2(128); /* 2MB */
+	else if (tg == 16 && level <= 2)
+		return ilog2(32); /* 2MB, 16GB, 128TB */
+	return 0;
+}
+
+/*
+ * For the ARM_SMMU_OPT_FULL_CONT_RIL errata any CONT group must be fully
+ * enclosed by a single RIL. The double RIL algorithm in
+ * arm_smmu_tlbi_calc_range() does not guarantee this. So if two RILs were
+ * produced we may need to extend the trailing RIL or add a third RIL to cover
+ * a sliced CONT. Search for the largest CONT that could have been sliced,
+ * extend the trailing RIL when that stays inside the gathered range, or queue
+ * an exact third RIL.
+ */
+static bool armv8_cont_errata(struct kunit_iommu_priv *priv,
+			      struct iommu_iotlb_gather *gather,
+			      const struct kunit_armv8_ril_range *first,
+			      struct kunit_armv8_ril_range *trail,
+			      struct kunit_armv8_inval *cmd,
+			      unsigned int ttl, unsigned int tg)
+{
+	struct kunit_iommu_inv_iotlb *iotlb = priv->iotlb;
+	u8 leaf_levels = gather->pt.leaf_levels_bitmap;
+	u64 range_start_tg = gather->start >> tg;
+	u64 range_last_tg = gather->end >> tg;
+	unsigned int scale_max = cmd->ds ? 39 : 31;
+	struct kunit *test = priv->test;
+
+	/* Table-only invalidation cannot slice a CONT. */
+	if (!leaf_levels)
+		return false;
+
+	/*
+	 * Iterate through all the leaf levels that were changed, from highest
+	 * to lowest iommupt level. Check if a possible CONT at that level has
+	 * been sliced by the double RIL.
+	 */
+	while (leaf_levels) {
+		struct kunit_armv8_ril_range cont = { .num = 1 };
+		unsigned int level = fls(leaf_levels) - 1;
+		struct kunit_armv8_ril_range new_trail;
+		unsigned int cont_count_lg2;
+		u64 new_trail_num_tg;
+		u64 cont_last_tg;
+
+		leaf_levels &= ~BIT(level);
+		cont_count_lg2 = armv8_cont_count_lg2(tg, level);
+		if (!cont_count_lg2)
+			continue;
+
+		/* A NUM=0 RIL with this SCALE covers the entire CONT. */
+		cont.scale = (tg - 3) * level + cont_count_lg2;
+		if (WARN_ON(cont.scale > scale_max))
+			return true;
+
+		cont.start_tg =
+			round_down(trail->start_tg - 1, BIT_ULL(cont.scale));
+		cont_last_tg = armv8_ril_last_tg(&cont);
+		if (cont.start_tg < range_start_tg ||
+		    cont_last_tg > range_last_tg ||
+		    armv8_ril_encloses(first, &cont) ||
+		    armv8_ril_encloses(trail, &cont))
+			continue;
+
+		new_trail_num_tg = range_last_tg - cont.start_tg + 1;
+		new_trail = armv8_ril_init_end(range_last_tg, new_trail_num_tg);
+		if (new_trail.num && new_trail.start_tg >= range_start_tg) {
+			*trail = new_trail;
+			return false;
+		}
+
+		armv8_add_ril(test, iotlb, cmd, &cont, ttl, tg);
+		return false;
+	}
+	return false;
+}
+
+/* Use range invalidation with SMMUv3 commands */
+static void kunit_iotlb_range_gather_armv8(struct kunit_iommu_priv *priv,
+					   struct iommu_iotlb_gather *gather,
+					   enum kunit_armv8_ril_mode ril_mode)
+{
+	struct kunit *test = priv->test;
+	struct kunit_iommu_inv_iotlb *iotlb = priv->iotlb;
+	unsigned int tgsz_lg2 = priv->smallest_pgsz_lg2;
+	unsigned int ttl = armv8_compute_ttl(gather->pt.leaf_levels_bitmap,
+					     gather->pt.table_levels_bitmap,
+					     tgsz_lg2);
+	struct kunit_armv8_inval cmd = {
+		.leaf = iommu_pages_list_empty(&gather->freelist),
+		.ds = pt_feature(priv->common, PT_FEAT_ARMV8_LPA2),
+		.full_cont_ril = ril_mode != KUNIT_ARMV8_RIL_NORMAL,
+		.real_inval = IOTLB_RANGE_INIT,
+	};
+	struct kunit_armv8_ril_range first = {
+		.start_tg = gather->start >> tgsz_lg2,
+	};
+	u64 last_tg = gather->end >> tgsz_lg2;
+	u64 num_tg = last_tg - first.start_tg + 1;
+	unsigned int scale_max = cmd.ds ? 39 : 31;
+	struct kunit_armv8_ril_range trail;
+
+	KUNIT_ASSERT_NE(test, num_tg, 0);
+
+	/*
+	 * The spec defines the invalidated range as:
+	 *   Range = ((NUM+1) * 2^SCALE) * Translation_Granule_Size
+	 * NUM is 5 bits, so (NUM+1) covers 1..32 granules. Find the smallest
+	 * SCALE at which a single command could cover num_tg.
+	 *
+	 * Unlike other IOMMUs the spec has no alignment requirement on the
+	 * address beyond alignment to tg (so long as TTL=0).
+	 */
+	first.scale = fls_t(u64, (num_tg - 1) / 32);
+	if (first.scale > scale_max) {
+		/* Range too large for a single command do full invalidation */
+		kunit_iotlb_erase_all(iotlb, &cmd.real_inval);
+		goto out;
+	}
+
+	if (ril_mode == KUNIT_ARMV8_RIL_SINGLE) {
+		/*
+		 * Produce a single invalidation by rounding up and disabling
+		 * the trailer.
+		 */
+		first.num = DIV_ROUND_UP_ULL(num_tg, 1ULL << first.scale);
+		trail = (struct kunit_armv8_ril_range){};
+	} else {
+		/*
+		 * Produce two invalidations by rounding down and adding a
+		 * second trailing RIL anchored at the end.
+		 */
+		first.num = num_tg >> first.scale;
+		trail = armv8_ril_init_end(last_tg,
+					   num_tg - (first.num << first.scale));
+	}
+	armv8_add_ril(test, iotlb, &cmd, &first, ttl, tgsz_lg2);
+
+	if (trail.num) {
+		if (ril_mode == KUNIT_ARMV8_RIL_CONT_ERRATA)
+			armv8_cont_errata(priv, gather, &first, &trail, &cmd,
+					  ttl, tgsz_lg2);
+		armv8_add_ril(test, iotlb, &cmd, &trail, ttl, tgsz_lg2);
+	}
+out:
+	kunit_iotlb_unmap_fixup(priv, &cmd.real_inval, gather);
 }
 
 /* INVALIDATE_IOMMU_PAGES command for AMD IOMMU */
@@ -740,6 +1294,17 @@ static void kunit_iotlb_sync(struct kunit_iommu_priv *priv,
 			iommu_pages_list_empty(&gather->freelist));
 
 	switch (iotlb->model) {
+	case KUNIT_IOMMU_MODEL_ARMV8:
+		if (pt_feature(priv->common, PT_FEAT_ARMV8_DBM))
+			kunit_iotlb_range_gather_armv8(priv, gather,
+						       KUNIT_ARMV8_RIL_SINGLE);
+		else if (pt_feature(priv->common, PT_FEAT_ARMV8_TTBR1))
+			kunit_iotlb_range_gather_armv8(
+				priv, gather, KUNIT_ARMV8_RIL_CONT_ERRATA);
+		else
+			kunit_iotlb_range_gather_armv8(priv, gather,
+						       KUNIT_ARMV8_RIL_NORMAL);
+		break;
 	case KUNIT_IOMMU_MODEL_RISCV:
 		kunit_iotlb_range_gather_riscv(priv, gather);
 		break;
@@ -840,7 +1405,9 @@ static void kunit_iotlb_start(struct kunit *test, struct kunit_iommu_priv *priv)
 	priv->iotlb = kunit_kzalloc(test, sizeof(*priv->iotlb), GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, priv->iotlb);
 
-	if (strstr(format_name, "amd"))
+	if (strstr(format_name, "armv8"))
+		priv->iotlb->model = KUNIT_IOMMU_MODEL_ARMV8;
+	else if (strstr(format_name, "amd"))
 		priv->iotlb->model = KUNIT_IOMMU_MODEL_AMD;
 	else if (strstr(format_name, "vtdss"))
 		priv->iotlb->model = KUNIT_IOMMU_MODEL_VTD;
