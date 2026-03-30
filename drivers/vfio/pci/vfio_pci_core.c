@@ -938,6 +938,10 @@ int vfio_pci_core_register_dev_region(struct vfio_pci_core_device *vdev,
 	vdev->region[vdev->num_regions].size = size;
 	vdev->region[vdev->num_regions].flags = flags;
 	vdev->region[vdev->num_regions].data = data;
+	vdev->region[vdev->num_regions].index =
+		VFIO_PCI_NUM_REGIONS + vdev->num_regions;
+	vdev->region[vdev->num_regions].pgoff_base =
+		VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_NUM_REGIONS + vdev->num_regions);
 
 	vdev->num_regions++;
 

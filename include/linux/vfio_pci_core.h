@@ -55,6 +55,8 @@ struct vfio_pci_region {
 	void				*data;
 	size_t				size;
 	u32				flags;
+	unsigned int			index;
+	u64				pgoff_base;
 };
 
 struct vfio_pci_device_ops {
