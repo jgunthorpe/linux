@@ -1720,10 +1720,11 @@ EXPORT_SYMBOL_GPL(vfio_pci_core_ioctl_feature);
 static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			   size_t count, loff_t *ppos, bool iswrite)
 {
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
+	struct vfio_pci_region *region;
 	int ret;
 
-	if (index >= vfio_pci_num_regions(vdev))
+	region = vfio_pci_find_region(vdev, *ppos, NULL);
+	if (!region)
 		return -EINVAL;
 
 	ret = pm_runtime_resume_and_get(&vdev->pdev->dev);
@@ -1733,37 +1734,7 @@ static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 		return -EIO;
 	}
 
-	switch (index) {
-	case VFIO_PCI_CONFIG_REGION_INDEX:
-		ret = vfio_pci_config_rw(vdev, buf, count, ppos, iswrite);
-		break;
-
-	case VFIO_PCI_ROM_REGION_INDEX:
-		if (iswrite)
-			ret = -EINVAL;
-		else
-			ret = vfio_pci_bar_rw(vdev, buf, count, ppos, false);
-		break;
-
-	case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
-		ret = vfio_pci_bar_rw(vdev, buf, count, ppos, iswrite);
-		break;
-
-	case VFIO_PCI_VGA_REGION_INDEX:
-		ret = vfio_pci_vga_rw(vdev, buf, count, ppos, iswrite);
-		break;
-
-	default: {
-		struct vfio_pci_region *region =
-			xa_load(&vdev->regions, index);
-
-		if (!region)
-			ret = -EINVAL;
-		else
-			ret = region->ops->rw(vdev, buf, count, ppos, iswrite);
-		break;
-	}
-	}
+	ret = region->ops->rw(vdev, buf, count, ppos, iswrite);
 
 	pm_runtime_put(&vdev->pdev->dev);
 	return ret;
