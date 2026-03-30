@@ -65,10 +65,14 @@ static ssize_t vfio_pci_igd_rw(struct vfio_pci_core_device *vdev,
 			       char __user *buf, size_t count, loff_t *ppos,
 			       bool iswrite)
 {
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
-	struct vfio_pci_region *region = xa_load(&vdev->regions, index);
-	struct igd_opregion_vbt *opregionvbt = region->data;
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK, off = 0;
+	struct vfio_pci_region *region;
+	struct igd_opregion_vbt *opregionvbt;
+	loff_t pos, off = 0;
+
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+	opregionvbt = region->data;
 	size_t remaining;
 
 	if (pos >= region->size || iswrite)
@@ -283,12 +287,16 @@ static ssize_t vfio_pci_igd_cfg_rw(struct vfio_pci_core_device *vdev,
 				   char __user *buf, size_t count, loff_t *ppos,
 				   bool iswrite)
 {
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
-	struct vfio_pci_region *region = xa_load(&vdev->regions, index);
-	struct pci_dev *pdev = region->data;
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	struct vfio_pci_region *region;
+	struct pci_dev *pdev;
+	loff_t pos;
 	size_t size;
 	int ret;
+
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+	pdev = region->data;
 
 	if (pos >= region->size || iswrite)
 		return -EINVAL;
