@@ -227,8 +227,14 @@ ssize_t vfio_pci_bar_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			size_t count, loff_t *ppos, bool iswrite)
 {
 	struct pci_dev *pdev = vdev->pdev;
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
-	int bar = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
+	struct vfio_pci_region *region;
+	loff_t pos;
+	int bar;
+
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+	bar = region->index;
 	size_t x_start = 0, x_end = 0;
 	resource_size_t end;
 	void __iomem *io;
@@ -310,11 +316,14 @@ ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			       size_t count, loff_t *ppos, bool iswrite)
 {
 	int ret;
-	loff_t off, pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	loff_t off, pos;
 	void __iomem *iomem = NULL;
 	unsigned int rsrc;
 	bool is_ioport;
 	ssize_t done;
+
+	if (!vfio_pci_find_region(vdev, *ppos, &pos))
+		return -EINVAL;
 
 	if (!vdev->has_vga)
 		return -EINVAL;
@@ -432,9 +441,15 @@ int vfio_pci_ioeventfd(struct vfio_pci_core_device *vdev, loff_t offset,
 		       uint64_t data, int count, int fd)
 {
 	struct pci_dev *pdev = vdev->pdev;
-	loff_t pos = offset & VFIO_PCI_OFFSET_MASK;
-	int ret, bar = VFIO_PCI_OFFSET_TO_INDEX(offset);
+	struct vfio_pci_region *region;
+	loff_t pos;
+	int ret, bar;
 	struct vfio_pci_ioeventfd *ioeventfd;
+
+	region = vfio_pci_find_region(vdev, offset, &pos);
+	if (!region)
+		return -EINVAL;
+	bar = region->index;
 
 	/* Only support ioeventfds into BARs */
 	if (bar > VFIO_PCI_BAR5_REGION_INDEX)

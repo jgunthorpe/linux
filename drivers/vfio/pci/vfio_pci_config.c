@@ -1976,9 +1976,10 @@ ssize_t vfio_pci_config_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 {
 	size_t done = 0;
 	int ret = 0;
-	loff_t pos = *ppos;
+	loff_t pos;
 
-	pos &= VFIO_PCI_OFFSET_MASK;
+	if (!vfio_pci_find_region(vdev, *ppos, &pos))
+		return -EINVAL;
 
 	while (count) {
 		ret = vfio_config_do_rw(vdev, buf, count, &pos, iswrite);
