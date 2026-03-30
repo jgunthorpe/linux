@@ -1335,15 +1335,19 @@ static int hisi_acc_pci_rw_access_check(struct vfio_device *core_vdev,
 					size_t count, loff_t *ppos,
 					size_t *new_count)
 {
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
 	struct vfio_pci_core_device *vdev =
 		container_of(core_vdev, struct vfio_pci_core_device, vdev);
+	struct vfio_pci_region *region;
+	loff_t pos;
 
-	if (index == VFIO_PCI_BAR2_REGION_INDEX) {
-		loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+
+	if (region->index == VFIO_PCI_BAR2_REGION_INDEX) {
 		resource_size_t end;
 
-		end = hisi_acc_get_resource_len(vdev, index);
+		end = hisi_acc_get_resource_len(vdev, region->index);
 		/* Check if access is for migration control region */
 		if (pos >= end)
 			return -EINVAL;
@@ -1359,20 +1363,23 @@ static int hisi_acc_vfio_pci_mmap(struct vfio_device *core_vdev,
 {
 	struct vfio_pci_core_device *vdev =
 		container_of(core_vdev, struct vfio_pci_core_device, vdev);
-	unsigned int index;
+	struct vfio_pci_region *region;
+	loff_t region_offset;
 
-	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
-	if (index == VFIO_PCI_BAR2_REGION_INDEX) {
-		u64 req_len, pgoff, req_start;
+	region = vfio_pci_find_region(vdev,
+				      (u64)vma->vm_pgoff << PAGE_SHIFT,
+				      &region_offset);
+	if (!region)
+		return -EINVAL;
+
+	if (region->index == VFIO_PCI_BAR2_REGION_INDEX) {
+		u64 req_len;
 		resource_size_t end;
 
-		end = hisi_acc_get_resource_len(vdev, index);
+		end = hisi_acc_get_resource_len(vdev, region->index);
 		req_len = vma->vm_end - vma->vm_start;
-		pgoff = vma->vm_pgoff &
-			((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
-		req_start = pgoff << PAGE_SHIFT;
 
-		if (req_start + req_len > end)
+		if (region_offset + req_len > end)
 			return -EINVAL;
 	}
 
@@ -1417,7 +1424,14 @@ static int hisi_acc_vfio_ioctl_get_region(struct vfio_device *core_vdev,
 	if (info->index != VFIO_PCI_BAR2_REGION_INDEX)
 		return vfio_pci_ioctl_get_region_info(core_vdev, info, caps);
 
-	info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
+	{
+		struct vfio_pci_region *region;
+
+		region = xa_load(&vdev->regions, info->index);
+		if (!region)
+			return -EINVAL;
+		info->offset = region->pgoff_base;
+	}
 
 	info->size = hisi_acc_get_resource_len(vdev, info->index);
 
