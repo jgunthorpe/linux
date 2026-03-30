@@ -994,15 +994,32 @@ static int vfio_pci_insert_region(struct vfio_pci_core_device *vdev,
 	if (ret)
 		return ret;
 
-	pgoff_start = region->pgoff_base >> PAGE_SHIFT;
-	pgoff_end = pgoff_start + (1UL << (40 - PAGE_SHIFT)) - 1;
-	ret = mtree_insert_range(&vdev->region_tree, pgoff_start, pgoff_end,
-				 region, GFP_KERNEL_ACCOUNT);
-	if (ret) {
-		xa_erase(&vdev->regions, region->index);
-		return ret;
+	if (region->dynamic_pgoff) {
+		unsigned long alloc_size;
+
+		alloc_size = max(PAGE_ALIGN(region->size), PAGE_SIZE) >>
+			     PAGE_SHIFT;
+		ret = mtree_alloc_range(&vdev->region_tree, &pgoff_start,
+					region, alloc_size, 0, ULONG_MAX,
+					GFP_KERNEL_ACCOUNT);
+		if (ret)
+			goto err_xa;
+		region->pgoff_base = (u64)pgoff_start << PAGE_SHIFT;
+	} else {
+		pgoff_start = region->pgoff_base >> PAGE_SHIFT;
+		pgoff_end = pgoff_start +
+			    (1UL << (40 - PAGE_SHIFT)) - 1;
+		ret = mtree_insert_range(&vdev->region_tree, pgoff_start,
+					 pgoff_end, region,
+					 GFP_KERNEL_ACCOUNT);
+		if (ret)
+			goto err_xa;
 	}
 	return 0;
+
+err_xa:
+	xa_erase(&vdev->regions, region->index);
+	return ret;
 }
 
 static struct vfio_pci_region *
@@ -1124,6 +1141,41 @@ int vfio_pci_core_register_dev_region(struct vfio_pci_core_device *vdev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_register_dev_region);
+
+int vfio_pci_core_register_dev_region_dynamic(struct vfio_pci_core_device *vdev,
+					      unsigned int type,
+					      unsigned int subtype,
+					      const struct vfio_pci_regops *ops,
+					      size_t size, u32 flags, void *data)
+{
+	struct vfio_pci_region *region;
+	unsigned int index;
+	int ret;
+
+	region = kzalloc(sizeof(*region), GFP_KERNEL_ACCOUNT);
+	if (!region)
+		return -ENOMEM;
+
+	index = vfio_pci_num_regions(vdev);
+
+	region->type = type;
+	region->subtype = subtype;
+	region->ops = ops;
+	region->size = size;
+	region->flags = flags;
+	region->data = data;
+	region->index = index;
+	region->dynamic_pgoff = true;
+
+	ret = vfio_pci_insert_region(vdev, region);
+	if (ret) {
+		kfree(region);
+		return ret;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(vfio_pci_core_register_dev_region_dynamic);
 
 static int vfio_pci_info_atomic_cap(struct vfio_pci_core_device *vdev,
 				    struct vfio_info_cap *caps)
