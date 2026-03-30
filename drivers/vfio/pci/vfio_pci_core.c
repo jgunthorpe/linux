@@ -995,7 +995,7 @@ static int vfio_pci_insert_region(struct vfio_pci_core_device *vdev,
 		return ret;
 
 	pgoff_start = region->pgoff_base >> PAGE_SHIFT;
-	pgoff_end = pgoff_start + (1UL << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1;
+	pgoff_end = pgoff_start + (1UL << (40 - PAGE_SHIFT)) - 1;
 	ret = mtree_insert_range(&vdev->region_tree, pgoff_start, pgoff_end,
 				 region, GFP_KERNEL_ACCOUNT);
 	if (ret) {
@@ -1016,7 +1016,7 @@ vfio_pci_alloc_std_region(unsigned int index,
 		return NULL;
 
 	region->index = index;
-	region->pgoff_base = VFIO_PCI_INDEX_TO_OFFSET(index);
+	region->pgoff_base = ((u64)(index) << 40);
 	region->ops = ops;
 	region->flags = flags;
 	return region;
@@ -1113,7 +1113,7 @@ int vfio_pci_core_register_dev_region(struct vfio_pci_core_device *vdev,
 	region->flags = flags;
 	region->data = data;
 	region->index = index;
-	region->pgoff_base = VFIO_PCI_INDEX_TO_OFFSET(index);
+	region->pgoff_base = ((u64)(index) << 40);
 
 	ret = vfio_pci_insert_region(vdev, region);
 	if (ret) {
