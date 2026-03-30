@@ -12,6 +12,7 @@
 #include <linux/pci.h>
 #include <linux/vfio.h>
 #include <linux/irqbypass.h>
+#include <linux/maple_tree.h>
 #include <linux/rcupdate.h>
 #include <linux/types.h>
 #include <linux/uuid.h>
@@ -112,6 +113,7 @@ struct vfio_pci_core_device {
 	struct xarray		ctx;
 	int			irq_type;
 	struct xarray		regions;
+	struct maple_tree	region_tree;
 	u8			msi_qmax;
 	u8			msix_bar;
 	u16			msix_size;
