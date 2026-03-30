@@ -937,8 +937,13 @@ static void vfio_pci_std_region_release(struct vfio_pci_core_device *vdev,
 	/* Standard regions have no additional resources to free */
 }
 
+static int vfio_pci_bar_mmap(struct vfio_pci_core_device *vdev,
+			     struct vfio_pci_region *region,
+			     struct vm_area_struct *vma);
+
 static const struct vfio_pci_regops vfio_pci_bar_regops = {
 	.rw = vfio_pci_bar_rw,
+	.mmap = vfio_pci_bar_mmap,
 	.release = vfio_pci_std_region_release,
 };
 
@@ -1804,13 +1809,15 @@ void vfio_pci_memory_unlock_and_restore(struct vfio_pci_core_device *vdev, u16 c
 static unsigned long vma_to_pfn(struct vm_area_struct *vma)
 {
 	struct vfio_pci_core_device *vdev = vma->vm_private_data;
-	int index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
-	u64 pgoff;
+	struct vfio_pci_region *region;
+	loff_t region_offset;
 
-	pgoff = vma->vm_pgoff &
-		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
+	region = vfio_pci_find_region(vdev,
+				      (u64)vma->vm_pgoff << PAGE_SHIFT,
+				      &region_offset);
 
-	return (pci_resource_start(vdev->pdev, index) >> PAGE_SHIFT) + pgoff;
+	return (pci_resource_start(vdev->pdev, region->index) >> PAGE_SHIFT) +
+	       (region_offset >> PAGE_SHIFT);
 }
 
 vm_fault_t vfio_pci_vmf_insert_pfn(struct vfio_pci_core_device *vdev,
@@ -1856,12 +1863,18 @@ static vm_fault_t vfio_pci_mmap_huge_fault(struct vm_fault *vmf,
 			ret = vfio_pci_vmf_insert_pfn(vdev, vmf, pfn, order);
 	}
 
-	dev_dbg_ratelimited(&vdev->pdev->dev,
-			   "%s(,order = %d) BAR %ld page offset 0x%lx: 0x%x\n",
-			    __func__, order,
-			    vma->vm_pgoff >>
-				(VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT),
-			    pgoff, (unsigned int)ret);
+	{
+		struct vfio_pci_region *region;
+
+		region = vfio_pci_find_region(vdev,
+					      (u64)vma->vm_pgoff << PAGE_SHIFT,
+					      NULL);
+		dev_dbg_ratelimited(&vdev->pdev->dev,
+				    "%s(,order = %d) BAR %d page offset 0x%lx: 0x%x\n",
+				    __func__, order,
+				    region ? region->index : -1,
+				    pgoff, (unsigned int)ret);
+	}
 
 	return ret;
 }
@@ -1878,42 +1891,22 @@ static const struct vm_operations_struct vfio_pci_mmap_ops = {
 #endif
 };
 
-int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma)
+static int vfio_pci_bar_mmap(struct vfio_pci_core_device *vdev,
+			     struct vfio_pci_region *region,
+			     struct vm_area_struct *vma)
 {
-	struct vfio_pci_core_device *vdev =
-		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
-	unsigned int index;
+	unsigned int index = region->index;
 	u64 phys_len, req_len, pgoff, req_start;
 	int ret;
 
-	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
-
-	if (index >= vfio_pci_num_regions(vdev))
-		return -EINVAL;
-	if (vma->vm_end < vma->vm_start)
-		return -EINVAL;
-	if ((vma->vm_flags & VM_SHARED) == 0)
-		return -EINVAL;
-	if (index >= VFIO_PCI_NUM_REGIONS) {
-		struct vfio_pci_region *region =
-			xa_load(&vdev->regions, index);
-
-		if (region && region->ops && region->ops->mmap &&
-		    (region->flags & VFIO_REGION_INFO_FLAG_MMAP))
-			return region->ops->mmap(vdev, region, vma);
-		return -EINVAL;
-	}
-	if (index >= VFIO_PCI_ROM_REGION_INDEX)
-		return -EINVAL;
 	if (!vdev->bar_mmap_supported[index])
 		return -EINVAL;
 
 	phys_len = PAGE_ALIGN(pci_resource_len(pdev, index));
 	req_len = vma->vm_end - vma->vm_start;
-	pgoff = vma->vm_pgoff &
-		((1U << (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT)) - 1);
-	req_start = pgoff << PAGE_SHIFT;
+	pgoff = ((u64)vma->vm_pgoff << PAGE_SHIFT) - region->pgoff_base;
+	req_start = pgoff;
 
 	if (req_start + req_len > phys_len)
 		return -EINVAL;
@@ -1956,6 +1949,26 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	vma->vm_ops = &vfio_pci_mmap_ops;
 
 	return 0;
+}
+
+int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma)
+{
+	struct vfio_pci_core_device *vdev =
+		container_of(core_vdev, struct vfio_pci_core_device, vdev);
+	struct vfio_pci_region *region;
+
+	region = vfio_pci_find_region(vdev,
+				      (u64)vma->vm_pgoff << PAGE_SHIFT, NULL);
+	if (!region)
+		return -EINVAL;
+	if (vma->vm_end < vma->vm_start)
+		return -EINVAL;
+	if ((vma->vm_flags & VM_SHARED) == 0)
+		return -EINVAL;
+	if (!region->ops->mmap)
+		return -EINVAL;
+
+	return region->ops->mmap(vdev, region, vma);
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_mmap);
 
