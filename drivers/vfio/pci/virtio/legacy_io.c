@@ -127,14 +127,17 @@ static ssize_t virtiovf_pci_read_config(struct vfio_device *core_vdev,
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
 	size_t register_offset;
 	loff_t copy_offset;
 	size_t copy_count;
 	__le32 val32;
 	__le16 val16;
+	loff_t pos;
 	u8 val8;
 	int ret;
+
+	if (!vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos))
+		return -EINVAL;
 
 	ret = vfio_pci_core_read(core_vdev, buf, count, ppos);
 	if (ret < 0)
@@ -211,16 +214,20 @@ ssize_t virtiovf_pci_core_read(struct vfio_device *core_vdev, char __user *buf,
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	struct vfio_pci_region *region;
+	loff_t pos;
 
 	if (!count)
 		return 0;
 
-	if (index == VFIO_PCI_CONFIG_REGION_INDEX)
+	region = vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+
+	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
 		return virtiovf_pci_read_config(core_vdev, buf, count, ppos);
 
-	if (index == VFIO_PCI_BAR0_REGION_INDEX)
+	if (region->index == VFIO_PCI_BAR0_REGION_INDEX)
 		return virtiovf_pci_bar0_rw(virtvdev, pos, buf, count, true);
 
 	return vfio_pci_core_read(core_vdev, buf, count, ppos);
@@ -232,7 +239,10 @@ static ssize_t virtiovf_pci_write_config(struct vfio_device *core_vdev,
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	loff_t pos;
+
+	if (!vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos))
+		return -EINVAL;
 	size_t register_offset;
 	loff_t copy_offset;
 	size_t copy_count;
@@ -265,16 +275,20 @@ ssize_t virtiovf_pci_core_write(struct vfio_device *core_vdev, const char __user
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
-	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
-	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+	struct vfio_pci_region *region;
+	loff_t pos;
 
 	if (!count)
 		return 0;
 
-	if (index == VFIO_PCI_CONFIG_REGION_INDEX)
+	region = vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos);
+	if (!region)
+		return -EINVAL;
+
+	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
 		return virtiovf_pci_write_config(core_vdev, buf, count, ppos);
 
-	if (index == VFIO_PCI_BAR0_REGION_INDEX)
+	if (region->index == VFIO_PCI_BAR0_REGION_INDEX)
 		return virtiovf_pci_bar0_rw(virtvdev, pos, (char __user *)buf, count, false);
 
 	return vfio_pci_core_write(core_vdev, buf, count, ppos);
@@ -290,7 +304,14 @@ int virtiovf_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 	if (info->index != VFIO_PCI_BAR0_REGION_INDEX)
 		return vfio_pci_ioctl_get_region_info(core_vdev, info, caps);
 
-	info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
+	{
+		struct vfio_pci_region *region;
+
+		region = xa_load(&virtvdev->core_device.regions, info->index);
+		if (!region)
+			return -EINVAL;
+		info->offset = region->pgoff_base;
+	}
 	info->size = virtvdev->bar0_virtual_buf_size;
 	info->flags = VFIO_REGION_INFO_FLAG_READ | VFIO_REGION_INFO_FLAG_WRITE;
 	return 0;
