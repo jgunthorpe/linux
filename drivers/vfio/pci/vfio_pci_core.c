@@ -1222,82 +1222,9 @@ int vfio_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 	struct pci_dev *pdev = vdev->pdev;
 	int ret;
 
-	switch (info->index) {
-	case VFIO_PCI_CONFIG_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = pdev->cfg_size;
-		info->flags = VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-		break;
-	case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = pci_resource_len(pdev, info->index);
-		if (!info->size) {
-			info->flags = 0;
-			break;
-		}
-
-		info->flags = VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-		if (vdev->bar_mmap_supported[info->index]) {
-			info->flags |= VFIO_REGION_INFO_FLAG_MMAP;
-			if (info->index == vdev->msix_bar) {
-				ret = msix_mmappable_cap(vdev, caps);
-				if (ret)
-					return ret;
-			}
-		}
-
-		break;
-	case VFIO_PCI_ROM_REGION_INDEX: {
-		void __iomem *io;
-		size_t size;
-		u16 cmd;
-
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->flags = 0;
-		info->size = 0;
-
-		if (pci_resource_start(pdev, PCI_ROM_RESOURCE)) {
-			/*
-			 * Check ROM content is valid. Need to enable memory
-			 * decode for ROM access in pci_map_rom().
-			 */
-			cmd = vfio_pci_memory_lock_and_enable(vdev);
-			io = pci_map_rom(pdev, &size);
-			if (io) {
-				info->flags = VFIO_REGION_INFO_FLAG_READ;
-				/* Report the BAR size, not the ROM size. */
-				info->size = pci_resource_len(pdev,
-							      PCI_ROM_RESOURCE);
-				pci_unmap_rom(pdev, io);
-			}
-			vfio_pci_memory_unlock_and_restore(vdev, cmd);
-		} else if (pdev->rom && pdev->romlen) {
-			info->flags = VFIO_REGION_INFO_FLAG_READ;
-			/* Report BAR size as power of two. */
-			info->size = roundup_pow_of_two(pdev->romlen);
-		}
-
-		break;
-	}
-	case VFIO_PCI_VGA_REGION_INDEX:
-		if (!vdev->has_vga)
-			return -EINVAL;
-
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = 0xc0000;
-		info->flags = VFIO_REGION_INFO_FLAG_READ |
-			      VFIO_REGION_INFO_FLAG_WRITE;
-
-		break;
-	default: {
-		struct vfio_region_info_cap_type cap_type = {
-			.header.id = VFIO_REGION_INFO_CAP_TYPE,
-			.header.version = 1
-		};
-		unsigned int num_regions = vfio_pci_num_regions(vdev);
+	{
 		struct vfio_pci_region *region;
+		unsigned int num_regions = vfio_pci_num_regions(vdev);
 
 		if (info->index >= num_regions)
 			return -EINVAL;
@@ -1307,24 +1234,92 @@ int vfio_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 		if (!region)
 			return -EINVAL;
 
-		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = region->size;
-		info->flags = region->flags;
+		info->offset = region->pgoff_base;
 
-		cap_type.type = region->type;
-		cap_type.subtype = region->subtype;
+		switch (info->index) {
+		case VFIO_PCI_CONFIG_REGION_INDEX:
+			info->size = pdev->cfg_size;
+			info->flags = VFIO_REGION_INFO_FLAG_READ |
+				      VFIO_REGION_INFO_FLAG_WRITE;
+			break;
+		case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
+			info->size = pci_resource_len(pdev, info->index);
+			if (!info->size) {
+				info->flags = 0;
+				break;
+			}
 
-		ret = vfio_info_add_capability(caps, &cap_type.header,
-					       sizeof(cap_type));
-		if (ret)
-			return ret;
+			info->flags = VFIO_REGION_INFO_FLAG_READ |
+				      VFIO_REGION_INFO_FLAG_WRITE;
+			if (vdev->bar_mmap_supported[info->index]) {
+				info->flags |= VFIO_REGION_INFO_FLAG_MMAP;
+				if (info->index == vdev->msix_bar) {
+					ret = msix_mmappable_cap(vdev, caps);
+					if (ret)
+						return ret;
+				}
+			}
 
-		if (region->ops->add_capability) {
-			ret = region->ops->add_capability(vdev, region, caps);
+			break;
+		case VFIO_PCI_ROM_REGION_INDEX: {
+			void __iomem *io;
+			size_t size;
+			u16 cmd;
+
+			info->flags = 0;
+			info->size = 0;
+
+			if (pci_resource_start(pdev, PCI_ROM_RESOURCE)) {
+				cmd = vfio_pci_memory_lock_and_enable(vdev);
+				io = pci_map_rom(pdev, &size);
+				if (io) {
+					info->flags = VFIO_REGION_INFO_FLAG_READ;
+					info->size = pci_resource_len(pdev,
+								      PCI_ROM_RESOURCE);
+					pci_unmap_rom(pdev, io);
+				}
+				vfio_pci_memory_unlock_and_restore(vdev, cmd);
+			} else if (pdev->rom && pdev->romlen) {
+				info->flags = VFIO_REGION_INFO_FLAG_READ;
+				info->size = roundup_pow_of_two(pdev->romlen);
+			}
+
+			break;
+		}
+		case VFIO_PCI_VGA_REGION_INDEX:
+			if (!vdev->has_vga)
+				return -EINVAL;
+
+			info->size = 0xc0000;
+			info->flags = VFIO_REGION_INFO_FLAG_READ |
+				      VFIO_REGION_INFO_FLAG_WRITE;
+
+			break;
+		default: {
+			struct vfio_region_info_cap_type cap_type = {
+				.header.id = VFIO_REGION_INFO_CAP_TYPE,
+				.header.version = 1
+			};
+
+			info->size = region->size;
+			info->flags = region->flags;
+
+			cap_type.type = region->type;
+			cap_type.subtype = region->subtype;
+
+			ret = vfio_info_add_capability(caps, &cap_type.header,
+						       sizeof(cap_type));
 			if (ret)
 				return ret;
+
+			if (region->ops->add_capability) {
+				ret = region->ops->add_capability(vdev, region,
+								  caps);
+				if (ret)
+					return ret;
+			}
 		}
-	}
+		}
 	}
 	return 0;
 }
@@ -1774,11 +1769,16 @@ EXPORT_SYMBOL_GPL(vfio_pci_core_write);
 static void vfio_pci_zap_bars(struct vfio_pci_core_device *vdev)
 {
 	struct vfio_device *core_vdev = &vdev->vdev;
-	loff_t start = VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_BAR0_REGION_INDEX);
-	loff_t end = VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_ROM_REGION_INDEX);
-	loff_t len = end - start;
+	struct vfio_pci_region *region;
+	int i;
 
-	unmap_mapping_range(core_vdev->inode->i_mapping, start, len, true);
+	for (i = VFIO_PCI_BAR0_REGION_INDEX; i <= VFIO_PCI_BAR5_REGION_INDEX; i++) {
+		region = xa_load(&vdev->regions, i);
+		if (region && region->size)
+			unmap_mapping_range(core_vdev->inode->i_mapping,
+					    region->pgoff_base, region->size,
+					    true);
+	}
 }
 
 void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_core_device *vdev)
