@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/uuid.h>
 #include <linux/notifier.h>
+#include <linux/xarray.h>
 
 #ifndef VFIO_PCI_CORE_H
 #define VFIO_PCI_CORE_H
@@ -110,8 +111,7 @@ struct vfio_pci_core_device {
 	struct mutex		igate;
 	struct xarray		ctx;
 	int			irq_type;
-	int			num_regions;
-	struct vfio_pci_region	*region;
+	struct xarray		regions;
 	u8			msi_qmax;
 	u8			msix_bar;
 	u16			msix_size;

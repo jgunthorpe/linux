@@ -637,12 +637,16 @@ void vfio_pci_core_disable(struct vfio_pci_core_device *vdev)
 
 	vdev->virq_disabled = false;
 
-	for (i = 0; i < vdev->num_regions; i++)
-		vdev->region[i].ops->release(vdev, &vdev->region[i]);
+	{
+		unsigned long index;
+		struct vfio_pci_region *region;
 
-	vdev->num_regions = 0;
-	kfree(vdev->region);
-	vdev->region = NULL; /* don't krealloc a freed pointer */
+		xa_for_each(&vdev->regions, index, region) {
+			region->ops->release(vdev, region);
+			xa_erase(&vdev->regions, index);
+			kfree(region);
+		}
+	}
 
 	vfio_config_free(vdev);
 
@@ -918,32 +922,46 @@ static int msix_mmappable_cap(struct vfio_pci_core_device *vdev,
 	return vfio_info_add_capability(caps, &header, sizeof(header));
 }
 
+static unsigned int vfio_pci_num_regions(struct vfio_pci_core_device *vdev)
+{
+	unsigned long index;
+	struct vfio_pci_region *region;
+	unsigned int max_index = VFIO_PCI_NUM_REGIONS;
+
+	xa_for_each(&vdev->regions, index, region)
+		max_index = max(max_index, region->index + 1);
+	return max_index;
+}
+
 int vfio_pci_core_register_dev_region(struct vfio_pci_core_device *vdev,
 				      unsigned int type, unsigned int subtype,
 				      const struct vfio_pci_regops *ops,
 				      size_t size, u32 flags, void *data)
 {
 	struct vfio_pci_region *region;
+	unsigned int index;
+	int ret;
 
-	region = krealloc(vdev->region,
-			  (vdev->num_regions + 1) * sizeof(*region),
-			  GFP_KERNEL_ACCOUNT);
+	region = kzalloc(sizeof(*region), GFP_KERNEL_ACCOUNT);
 	if (!region)
 		return -ENOMEM;
 
-	vdev->region = region;
-	vdev->region[vdev->num_regions].type = type;
-	vdev->region[vdev->num_regions].subtype = subtype;
-	vdev->region[vdev->num_regions].ops = ops;
-	vdev->region[vdev->num_regions].size = size;
-	vdev->region[vdev->num_regions].flags = flags;
-	vdev->region[vdev->num_regions].data = data;
-	vdev->region[vdev->num_regions].index =
-		VFIO_PCI_NUM_REGIONS + vdev->num_regions;
-	vdev->region[vdev->num_regions].pgoff_base =
-		VFIO_PCI_INDEX_TO_OFFSET(VFIO_PCI_NUM_REGIONS + vdev->num_regions);
+	index = vfio_pci_num_regions(vdev);
 
-	vdev->num_regions++;
+	region->type = type;
+	region->subtype = subtype;
+	region->ops = ops;
+	region->size = size;
+	region->flags = flags;
+	region->data = data;
+	region->index = index;
+	region->pgoff_base = VFIO_PCI_INDEX_TO_OFFSET(index);
+
+	ret = xa_insert(&vdev->regions, index, region, GFP_KERNEL_ACCOUNT);
+	if (ret) {
+		kfree(region);
+		return ret;
+	}
 
 	return 0;
 }
@@ -1001,7 +1019,7 @@ static int vfio_pci_ioctl_get_info(struct vfio_pci_core_device *vdev,
 	if (vdev->reset_works)
 		info.flags |= VFIO_DEVICE_FLAGS_RESET;
 
-	info.num_regions = VFIO_PCI_NUM_REGIONS + vdev->num_regions;
+	info.num_regions = vfio_pci_num_regions(vdev);
 	info.num_irqs = VFIO_PCI_NUM_IRQS;
 
 	ret = vfio_pci_info_zdev_add_caps(vdev, &caps);
@@ -1044,7 +1062,7 @@ int vfio_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 	struct vfio_pci_core_device *vdev =
 		container_of(core_vdev, struct vfio_pci_core_device, vdev);
 	struct pci_dev *pdev = vdev->pdev;
-	int i, ret;
+	int ret;
 
 	switch (info->index) {
 	case VFIO_PCI_CONFIG_REGION_INDEX:
@@ -1120,29 +1138,31 @@ int vfio_pci_ioctl_get_region_info(struct vfio_device *core_vdev,
 			.header.id = VFIO_REGION_INFO_CAP_TYPE,
 			.header.version = 1
 		};
+		unsigned int num_regions = vfio_pci_num_regions(vdev);
+		struct vfio_pci_region *region;
 
-		if (info->index >= VFIO_PCI_NUM_REGIONS + vdev->num_regions)
+		if (info->index >= num_regions)
 			return -EINVAL;
-		info->index = array_index_nospec(
-			info->index, VFIO_PCI_NUM_REGIONS + vdev->num_regions);
+		info->index = array_index_nospec(info->index, num_regions);
 
-		i = info->index - VFIO_PCI_NUM_REGIONS;
+		region = xa_load(&vdev->regions, info->index);
+		if (!region)
+			return -EINVAL;
 
 		info->offset = VFIO_PCI_INDEX_TO_OFFSET(info->index);
-		info->size = vdev->region[i].size;
-		info->flags = vdev->region[i].flags;
+		info->size = region->size;
+		info->flags = region->flags;
 
-		cap_type.type = vdev->region[i].type;
-		cap_type.subtype = vdev->region[i].subtype;
+		cap_type.type = region->type;
+		cap_type.subtype = region->subtype;
 
 		ret = vfio_info_add_capability(caps, &cap_type.header,
 					       sizeof(cap_type));
 		if (ret)
 			return ret;
 
-		if (vdev->region[i].ops->add_capability) {
-			ret = vdev->region[i].ops->add_capability(
-				vdev, &vdev->region[i], caps);
+		if (region->ops->add_capability) {
+			ret = region->ops->add_capability(vdev, region, caps);
 			if (ret)
 				return ret;
 		}
@@ -1550,7 +1570,7 @@ static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
 	int ret;
 
-	if (index >= VFIO_PCI_NUM_REGIONS + vdev->num_regions)
+	if (index >= vfio_pci_num_regions(vdev))
 		return -EINVAL;
 
 	ret = pm_runtime_resume_and_get(&vdev->pdev->dev);
@@ -1580,11 +1600,16 @@ static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 		ret = vfio_pci_vga_rw(vdev, buf, count, ppos, iswrite);
 		break;
 
-	default:
-		index -= VFIO_PCI_NUM_REGIONS;
-		ret = vdev->region[index].ops->rw(vdev, buf,
-						   count, ppos, iswrite);
+	default: {
+		struct vfio_pci_region *region =
+			xa_load(&vdev->regions, index);
+
+		if (!region)
+			ret = -EINVAL;
+		else
+			ret = region->ops->rw(vdev, buf, count, ppos, iswrite);
 		break;
+	}
 	}
 
 	pm_runtime_put(&vdev->pdev->dev);
@@ -1740,17 +1765,17 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 
-	if (index >= VFIO_PCI_NUM_REGIONS + vdev->num_regions)
+	if (index >= vfio_pci_num_regions(vdev))
 		return -EINVAL;
 	if (vma->vm_end < vma->vm_start)
 		return -EINVAL;
 	if ((vma->vm_flags & VM_SHARED) == 0)
 		return -EINVAL;
 	if (index >= VFIO_PCI_NUM_REGIONS) {
-		int regnum = index - VFIO_PCI_NUM_REGIONS;
-		struct vfio_pci_region *region = vdev->region + regnum;
+		struct vfio_pci_region *region =
+			xa_load(&vdev->regions, index);
 
-		if (region->ops && region->ops->mmap &&
+		if (region && region->ops && region->ops->mmap &&
 		    (region->flags & VFIO_REGION_INFO_FLAG_MMAP))
 			return region->ops->mmap(vdev, region, vma);
 		return -EINVAL;
@@ -2116,6 +2141,7 @@ int vfio_pci_core_init_dev(struct vfio_device *core_vdev)
 	INIT_LIST_HEAD(&vdev->dmabufs);
 	init_rwsem(&vdev->memory_lock);
 	xa_init(&vdev->ctx);
+	xa_init(&vdev->regions);
 
 	return 0;
 }
@@ -2128,7 +2154,7 @@ void vfio_pci_core_release_dev(struct vfio_device *core_vdev)
 
 	mutex_destroy(&vdev->igate);
 	mutex_destroy(&vdev->ioeventfds_lock);
-	kfree(vdev->region);
+	xa_destroy(&vdev->regions);
 	kfree(vdev->pm_save);
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_release_dev);

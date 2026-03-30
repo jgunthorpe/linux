@@ -65,15 +65,16 @@ static ssize_t vfio_pci_igd_rw(struct vfio_pci_core_device *vdev,
 			       char __user *buf, size_t count, loff_t *ppos,
 			       bool iswrite)
 {
-	unsigned int i = VFIO_PCI_OFFSET_TO_INDEX(*ppos) - VFIO_PCI_NUM_REGIONS;
-	struct igd_opregion_vbt *opregionvbt = vdev->region[i].data;
+	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
+	struct vfio_pci_region *region = xa_load(&vdev->regions, index);
+	struct igd_opregion_vbt *opregionvbt = region->data;
 	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK, off = 0;
 	size_t remaining;
 
-	if (pos >= vdev->region[i].size || iswrite)
+	if (pos >= region->size || iswrite)
 		return -EINVAL;
 
-	count = min_t(size_t, count, vdev->region[i].size - pos);
+	count = min_t(size_t, count, region->size - pos);
 	remaining = count;
 
 	/* Copy until OpRegion version */
@@ -282,16 +283,17 @@ static ssize_t vfio_pci_igd_cfg_rw(struct vfio_pci_core_device *vdev,
 				   char __user *buf, size_t count, loff_t *ppos,
 				   bool iswrite)
 {
-	unsigned int i = VFIO_PCI_OFFSET_TO_INDEX(*ppos) - VFIO_PCI_NUM_REGIONS;
-	struct pci_dev *pdev = vdev->region[i].data;
+	unsigned int index = VFIO_PCI_OFFSET_TO_INDEX(*ppos);
+	struct vfio_pci_region *region = xa_load(&vdev->regions, index);
+	struct pci_dev *pdev = region->data;
 	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
 	size_t size;
 	int ret;
 
-	if (pos >= vdev->region[i].size || iswrite)
+	if (pos >= region->size || iswrite)
 		return -EINVAL;
 
-	size = count = min(count, (size_t)(vdev->region[i].size - pos));
+	size = count = min(count, (size_t)(region->size - pos));
 
 	if ((pos & 1) && size) {
 		u8 val;
