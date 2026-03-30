@@ -966,6 +966,18 @@ static const struct vfio_pci_regops vfio_pci_vga_regops = {
 	.release = vfio_pci_std_region_release,
 };
 
+struct vfio_pci_region *vfio_pci_find_region(struct vfio_pci_core_device *vdev,
+					     loff_t pos, loff_t *region_offset)
+{
+	struct vfio_pci_region *region;
+
+	region = mtree_load(&vdev->region_tree, pos >> PAGE_SHIFT);
+	if (region && region_offset)
+		*region_offset = pos - region->pgoff_base;
+	return region;
+}
+EXPORT_SYMBOL_GPL(vfio_pci_find_region);
+
 static int vfio_pci_insert_region(struct vfio_pci_core_device *vdev,
 				  struct vfio_pci_region *region)
 {
