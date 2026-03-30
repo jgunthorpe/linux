@@ -224,17 +224,11 @@ int vfio_pci_core_setup_barmap(struct vfio_pci_core_device *vdev, int bar)
 EXPORT_SYMBOL_GPL(vfio_pci_core_setup_barmap);
 
 ssize_t vfio_pci_bar_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			size_t count, loff_t *ppos, bool iswrite)
+			size_t count, loff_t *ppos, bool iswrite,
+			struct vfio_pci_region *region, loff_t pos)
 {
 	struct pci_dev *pdev = vdev->pdev;
-	struct vfio_pci_region *region;
-	loff_t pos;
-	int bar;
-
-	region = vfio_pci_find_region(vdev, *ppos, &pos);
-	if (!region)
-		return -EINVAL;
-	bar = region->index;
+	int bar = region->index;
 	size_t x_start = 0, x_end = 0;
 	resource_size_t end;
 	void __iomem *io;
@@ -313,17 +307,15 @@ out:
 
 #ifdef CONFIG_VFIO_PCI_VGA
 ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			       size_t count, loff_t *ppos, bool iswrite)
+			       size_t count, loff_t *ppos, bool iswrite,
+			       struct vfio_pci_region *region, loff_t pos)
 {
 	int ret;
-	loff_t off, pos;
+	loff_t off;
 	void __iomem *iomem = NULL;
 	unsigned int rsrc;
 	bool is_ioport;
 	ssize_t done;
-
-	if (!vfio_pci_find_region(vdev, *ppos, &pos))
-		return -EINVAL;
 
 	if (!vdev->has_vga)
 		return -EINVAL;

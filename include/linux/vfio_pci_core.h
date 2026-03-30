@@ -35,7 +35,8 @@ struct vfio_pci_eventfd {
 
 struct vfio_pci_regops {
 	ssize_t (*rw)(struct vfio_pci_core_device *vdev, char __user *buf,
-		      size_t count, loff_t *ppos, bool iswrite);
+		      size_t count, loff_t *ppos, bool iswrite,
+		      struct vfio_pci_region *region, loff_t pos);
 	void	(*release)(struct vfio_pci_core_device *vdev,
 			   struct vfio_pci_region *region);
 	int	(*mmap)(struct vfio_pci_core_device *vdev,

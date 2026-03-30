@@ -1972,14 +1972,11 @@ static ssize_t vfio_config_do_rw(struct vfio_pci_core_device *vdev, char __user 
 }
 
 ssize_t vfio_pci_config_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			   size_t count, loff_t *ppos, bool iswrite)
+			   size_t count, loff_t *ppos, bool iswrite,
+			   struct vfio_pci_region *region, loff_t pos)
 {
 	size_t done = 0;
 	int ret = 0;
-	loff_t pos;
-
-	if (!vfio_pci_find_region(vdev, *ppos, &pos))
-		return -EINVAL;
 
 	while (count) {
 		ret = vfio_config_do_rw(vdev, buf, count, &pos, iswrite);

@@ -123,7 +123,7 @@ end:
 
 static ssize_t virtiovf_pci_read_config(struct vfio_device *core_vdev,
 					char __user *buf, size_t count,
-					loff_t *ppos)
+					loff_t *ppos, loff_t pos)
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
@@ -132,12 +132,8 @@ static ssize_t virtiovf_pci_read_config(struct vfio_device *core_vdev,
 	size_t copy_count;
 	__le32 val32;
 	__le16 val16;
-	loff_t pos;
 	u8 val8;
 	int ret;
-
-	if (!vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos))
-		return -EINVAL;
 
 	ret = vfio_pci_core_read(core_vdev, buf, count, ppos);
 	if (ret < 0)
@@ -225,7 +221,8 @@ ssize_t virtiovf_pci_core_read(struct vfio_device *core_vdev, char __user *buf,
 		return -EINVAL;
 
 	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
-		return virtiovf_pci_read_config(core_vdev, buf, count, ppos);
+		return virtiovf_pci_read_config(core_vdev, buf, count, ppos,
+						pos);
 
 	if (region->index == VFIO_PCI_BAR0_REGION_INDEX)
 		return virtiovf_pci_bar0_rw(virtvdev, pos, buf, count, true);
@@ -235,14 +232,10 @@ ssize_t virtiovf_pci_core_read(struct vfio_device *core_vdev, char __user *buf,
 
 static ssize_t virtiovf_pci_write_config(struct vfio_device *core_vdev,
 					 const char __user *buf, size_t count,
-					 loff_t *ppos)
+					 loff_t *ppos, loff_t pos)
 {
 	struct virtiovf_pci_core_device *virtvdev = container_of(
 		core_vdev, struct virtiovf_pci_core_device, core_device.vdev);
-	loff_t pos;
-
-	if (!vfio_pci_find_region(&virtvdev->core_device, *ppos, &pos))
-		return -EINVAL;
 	size_t register_offset;
 	loff_t copy_offset;
 	size_t copy_count;
@@ -286,7 +279,8 @@ ssize_t virtiovf_pci_core_write(struct vfio_device *core_vdev, const char __user
 		return -EINVAL;
 
 	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
-		return virtiovf_pci_write_config(core_vdev, buf, count, ppos);
+		return virtiovf_pci_write_config(core_vdev, buf, count, ppos,
+						 pos);
 
 	if (region->index == VFIO_PCI_BAR0_REGION_INDEX)
 		return virtiovf_pci_bar0_rw(virtvdev, pos, (char __user *)buf, count, false);

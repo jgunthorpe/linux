@@ -35,18 +35,23 @@ int vfio_pci_set_irqs_ioctl(struct vfio_pci_core_device *vdev, uint32_t flags,
 			    void *data);
 
 ssize_t vfio_pci_config_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			   size_t count, loff_t *ppos, bool iswrite);
+			   size_t count, loff_t *ppos, bool iswrite,
+			   struct vfio_pci_region *region, loff_t pos);
 
 ssize_t vfio_pci_bar_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			size_t count, loff_t *ppos, bool iswrite);
+			size_t count, loff_t *ppos, bool iswrite,
+			struct vfio_pci_region *region, loff_t pos);
 
 #ifdef CONFIG_VFIO_PCI_VGA
 ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev, char __user *buf,
-			size_t count, loff_t *ppos, bool iswrite);
+			size_t count, loff_t *ppos, bool iswrite,
+			struct vfio_pci_region *region, loff_t pos);
 #else
 static inline ssize_t vfio_pci_vga_rw(struct vfio_pci_core_device *vdev,
 				      char __user *buf, size_t count,
-				      loff_t *ppos, bool iswrite)
+				      loff_t *ppos, bool iswrite,
+				      struct vfio_pci_region *region,
+				      loff_t pos)
 {
 	return -EINVAL;
 }

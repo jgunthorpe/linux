@@ -949,11 +949,12 @@ static const struct vfio_pci_regops vfio_pci_bar_regops = {
 
 static ssize_t vfio_pci_rom_rw(struct vfio_pci_core_device *vdev,
 				char __user *buf, size_t count, loff_t *ppos,
-				bool iswrite)
+				bool iswrite, struct vfio_pci_region *region,
+				loff_t pos)
 {
 	if (iswrite)
 		return -EINVAL;
-	return vfio_pci_bar_rw(vdev, buf, count, ppos, false);
+	return vfio_pci_bar_rw(vdev, buf, count, ppos, false, region, pos);
 }
 
 static const struct vfio_pci_regops vfio_pci_rom_regops = {
@@ -1773,9 +1774,10 @@ static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 			   size_t count, loff_t *ppos, bool iswrite)
 {
 	struct vfio_pci_region *region;
+	loff_t pos;
 	int ret;
 
-	region = vfio_pci_find_region(vdev, *ppos, NULL);
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
 	if (!region)
 		return -EINVAL;
 
@@ -1786,7 +1788,7 @@ static ssize_t vfio_pci_rw(struct vfio_pci_core_device *vdev, char __user *buf,
 		return -EIO;
 	}
 
-	ret = region->ops->rw(vdev, buf, count, ppos, iswrite);
+	ret = region->ops->rw(vdev, buf, count, ppos, iswrite, region, pos);
 
 	pm_runtime_put(&vdev->pdev->dev);
 	return ret;
@@ -1858,16 +1860,10 @@ void vfio_pci_memory_unlock_and_restore(struct vfio_pci_core_device *vdev, u16 c
 	up_write(&vdev->memory_lock);
 }
 
-static unsigned long vma_to_pfn(struct vm_area_struct *vma)
+static unsigned long vma_to_pfn(struct vfio_pci_core_device *vdev,
+				struct vfio_pci_region *region,
+				loff_t region_offset)
 {
-	struct vfio_pci_core_device *vdev = vma->vm_private_data;
-	struct vfio_pci_region *region;
-	loff_t region_offset;
-
-	region = vfio_pci_find_region(vdev,
-				      (u64)vma->vm_pgoff << PAGE_SHIFT,
-				      &region_offset);
-
 	return (pci_resource_start(vdev->pdev, region->index) >> PAGE_SHIFT) +
 	       (region_offset >> PAGE_SHIFT);
 }
@@ -1905,28 +1901,30 @@ static vm_fault_t vfio_pci_mmap_huge_fault(struct vm_fault *vmf,
 {
 	struct vm_area_struct *vma = vmf->vma;
 	struct vfio_pci_core_device *vdev = vma->vm_private_data;
+	struct vfio_pci_region *region;
+	loff_t region_offset;
 	unsigned long addr = vmf->address & ~((PAGE_SIZE << order) - 1);
 	unsigned long pgoff = (addr - vma->vm_start) >> PAGE_SHIFT;
-	unsigned long pfn = vma_to_pfn(vma) + pgoff;
+	unsigned long pfn;
 	vm_fault_t ret = VM_FAULT_FALLBACK;
+
+	region = vfio_pci_find_region(vdev,
+				      (u64)vma->vm_pgoff << PAGE_SHIFT,
+				      &region_offset);
+	if (!region)
+		return VM_FAULT_SIGBUS;
+
+	pfn = vma_to_pfn(vdev, region, region_offset) + pgoff;
 
 	if (is_aligned_for_order(vma, addr, pfn, order)) {
 		scoped_guard(rwsem_read, &vdev->memory_lock)
 			ret = vfio_pci_vmf_insert_pfn(vdev, vmf, pfn, order);
 	}
 
-	{
-		struct vfio_pci_region *region;
-
-		region = vfio_pci_find_region(vdev,
-					      (u64)vma->vm_pgoff << PAGE_SHIFT,
-					      NULL);
-		dev_dbg_ratelimited(&vdev->pdev->dev,
-				    "%s(,order = %d) BAR %d page offset 0x%lx: 0x%x\n",
-				    __func__, order,
-				    region ? region->index : -1,
-				    pgoff, (unsigned int)ret);
-	}
+	dev_dbg_ratelimited(&vdev->pdev->dev,
+			    "%s(,order = %d) BAR %d page offset 0x%lx: 0x%x\n",
+			    __func__, order, region->index,
+			    pgoff, (unsigned int)ret);
 
 	return ret;
 }

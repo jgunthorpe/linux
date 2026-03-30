@@ -63,16 +63,11 @@ static inline unsigned long igd_opregion_shift_copy(char __user *dst,
 
 static ssize_t vfio_pci_igd_rw(struct vfio_pci_core_device *vdev,
 			       char __user *buf, size_t count, loff_t *ppos,
-			       bool iswrite)
+			       bool iswrite, struct vfio_pci_region *region,
+			       loff_t pos)
 {
-	struct vfio_pci_region *region;
-	struct igd_opregion_vbt *opregionvbt;
-	loff_t pos, off = 0;
-
-	region = vfio_pci_find_region(vdev, *ppos, &pos);
-	if (!region)
-		return -EINVAL;
-	opregionvbt = region->data;
+	struct igd_opregion_vbt *opregionvbt = region->data;
+	loff_t off = 0;
 	size_t remaining;
 
 	if (pos >= region->size || iswrite)
@@ -285,18 +280,12 @@ static int vfio_pci_igd_opregion_init(struct vfio_pci_core_device *vdev)
 
 static ssize_t vfio_pci_igd_cfg_rw(struct vfio_pci_core_device *vdev,
 				   char __user *buf, size_t count, loff_t *ppos,
-				   bool iswrite)
+				   bool iswrite, struct vfio_pci_region *region,
+				   loff_t pos)
 {
-	struct vfio_pci_region *region;
-	struct pci_dev *pdev;
-	loff_t pos;
+	struct pci_dev *pdev = region->data;
 	size_t size;
 	int ret;
-
-	region = vfio_pci_find_region(vdev, *ppos, &pos);
-	if (!region)
-		return -EINVAL;
-	pdev = region->data;
 
 	if (pos >= region->size || iswrite)
 		return -EINVAL;

@@ -292,15 +292,8 @@ nvgrace_gpu_check_device_ready(struct nvgrace_gpu_pci_core_device *nvdev)
 
 static unsigned long addr_to_pgoff(struct vm_area_struct *vma,
 				   unsigned long addr,
-				   struct vfio_pci_core_device *vdev)
+				   loff_t region_offset)
 {
-	struct vfio_pci_region *region;
-	loff_t region_offset;
-
-	region = vfio_pci_find_region(vdev,
-				      (u64)vma->vm_pgoff << PAGE_SHIFT,
-				      &region_offset);
-
 	return ((addr - vma->vm_start) >> PAGE_SHIFT) +
 	       (region_offset >> PAGE_SHIFT);
 }
@@ -312,13 +305,14 @@ static vm_fault_t nvgrace_gpu_vfio_pci_huge_fault(struct vm_fault *vmf,
 	struct nvgrace_gpu_pci_core_device *nvdev = vma->vm_private_data;
 	struct vfio_pci_core_device *vdev = &nvdev->core_device;
 	struct vfio_pci_region *vfio_region;
+	loff_t region_offset;
 	vm_fault_t ret = VM_FAULT_FALLBACK;
 	struct mem_region *memregion;
 	unsigned long pfn, addr;
 
 	vfio_region = vfio_pci_find_region(vdev,
 					   (u64)vma->vm_pgoff << PAGE_SHIFT,
-					   NULL);
+					   &region_offset);
 	if (!vfio_region)
 		return VM_FAULT_SIGBUS;
 
@@ -327,7 +321,8 @@ static vm_fault_t nvgrace_gpu_vfio_pci_huge_fault(struct vm_fault *vmf,
 		return VM_FAULT_SIGBUS;
 
 	addr = ALIGN_DOWN(vmf->address, PAGE_SIZE << order);
-	pfn = PHYS_PFN(memregion->memphys) + addr_to_pgoff(vma, addr, vdev);
+	pfn = PHYS_PFN(memregion->memphys) + addr_to_pgoff(vma, addr,
+							    region_offset);
 
 	if (is_aligned_for_order(vma, addr, pfn, order)) {
 		scoped_guard(rwsem_read, &vdev->memory_lock) {
@@ -528,7 +523,8 @@ nvgrace_gpu_get_read_value(size_t bar_size, u64 flags, __le64 val64)
  */
 static ssize_t
 nvgrace_gpu_read_config_emu(struct vfio_device *core_vdev,
-			    char __user *buf, size_t count, loff_t *ppos)
+			    char __user *buf, size_t count, loff_t *ppos,
+			    loff_t pos)
 {
 	struct nvgrace_gpu_pci_core_device *nvdev =
 		container_of(core_vdev, struct nvgrace_gpu_pci_core_device,
@@ -538,11 +534,7 @@ nvgrace_gpu_read_config_emu(struct vfio_device *core_vdev,
 	size_t register_offset;
 	loff_t copy_offset;
 	size_t copy_count;
-	loff_t pos;
 	int ret;
-
-	if (!vfio_pci_find_region(&nvdev->core_device, *ppos, &pos))
-		return -EINVAL;
 
 	ret = vfio_pci_core_read(core_vdev, buf, count, ppos);
 	if (ret < 0)
@@ -582,7 +574,8 @@ nvgrace_gpu_read_config_emu(struct vfio_device *core_vdev,
 
 static ssize_t
 nvgrace_gpu_write_config_emu(struct vfio_device *core_vdev,
-			     const char __user *buf, size_t count, loff_t *ppos)
+			     const char __user *buf, size_t count,
+			     loff_t *ppos, loff_t pos)
 {
 	struct nvgrace_gpu_pci_core_device *nvdev =
 		container_of(core_vdev, struct nvgrace_gpu_pci_core_device,
@@ -591,10 +584,6 @@ nvgrace_gpu_write_config_emu(struct vfio_device *core_vdev,
 	size_t register_offset;
 	loff_t copy_offset;
 	size_t copy_count;
-	loff_t pos;
-
-	if (!vfio_pci_find_region(&nvdev->core_device, *ppos, &pos))
-		return -EINVAL;
 
 	if (vfio_pci_core_range_intersect_range(pos, count, PCI_BASE_ADDRESS_2,
 						sizeof(u64), &copy_offset,
@@ -664,15 +653,10 @@ unlock:
  */
 static int
 nvgrace_gpu_map_and_read(struct nvgrace_gpu_pci_core_device *nvdev,
-			 char __user *buf, size_t mem_count, loff_t *ppos)
+			 char __user *buf, size_t mem_count,
+			 struct vfio_pci_region *region, loff_t offset)
 {
-	struct vfio_pci_region *region;
-	loff_t offset;
 	int ret;
-
-	region = vfio_pci_find_region(&nvdev->core_device, *ppos, &offset);
-	if (!region)
-		return -EINVAL;
 
 	if (!mem_count)
 		return 0;
@@ -719,19 +703,14 @@ nvgrace_gpu_map_and_read(struct nvgrace_gpu_pci_core_device *nvdev,
  */
 static ssize_t
 nvgrace_gpu_read_mem(struct nvgrace_gpu_pci_core_device *nvdev,
-		     char __user *buf, size_t count, loff_t *ppos)
+		     char __user *buf, size_t count, loff_t *ppos,
+		     struct vfio_pci_region *region, loff_t offset)
 {
 	struct vfio_pci_core_device *vdev = &nvdev->core_device;
-	struct vfio_pci_region *region;
 	struct mem_region *memregion;
-	loff_t offset;
 	size_t mem_count, i;
 	u8 val = 0xFF;
 	int ret;
-
-	region = vfio_pci_find_region(vdev, *ppos, &offset);
-	if (!region)
-		return -EINVAL;
 
 	/* No need to do NULL check as caller does. */
 	memregion = nvgrace_gpu_memregion(region->index, nvdev);
@@ -757,7 +736,8 @@ nvgrace_gpu_read_mem(struct nvgrace_gpu_pci_core_device *nvdev,
 		if (ret)
 			return ret;
 
-		ret = nvgrace_gpu_map_and_read(nvdev, buf, mem_count, ppos);
+		ret = nvgrace_gpu_map_and_read(nvdev, buf, mem_count,
+					       region, offset);
 		if (ret)
 			return ret;
 	}
@@ -786,22 +766,25 @@ nvgrace_gpu_read(struct vfio_device *core_vdev,
 			     core_device.vdev);
 	struct vfio_pci_core_device *vdev = &nvdev->core_device;
 	struct vfio_pci_region *region;
+	loff_t pos;
 	int ret;
 
-	region = vfio_pci_find_region(vdev, *ppos, NULL);
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
 	if (!region)
 		return -EINVAL;
 
 	if (nvgrace_gpu_memregion(region->index, nvdev)) {
 		if (pm_runtime_resume_and_get(&vdev->pdev->dev))
 			return -EIO;
-		ret = nvgrace_gpu_read_mem(nvdev, buf, count, ppos);
+		ret = nvgrace_gpu_read_mem(nvdev, buf, count, ppos,
+					   region, pos);
 		pm_runtime_put(&vdev->pdev->dev);
 		return ret;
 	}
 
 	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
-		return nvgrace_gpu_read_config_emu(core_vdev, buf, count, ppos);
+		return nvgrace_gpu_read_config_emu(core_vdev, buf, count,
+						   ppos, pos);
 
 	return vfio_pci_core_read(core_vdev, buf, count, ppos);
 }
@@ -813,15 +796,9 @@ nvgrace_gpu_read(struct vfio_device *core_vdev,
 static int
 nvgrace_gpu_map_and_write(struct nvgrace_gpu_pci_core_device *nvdev,
 			  const char __user *buf, size_t mem_count,
-			  loff_t *ppos)
+			  struct vfio_pci_region *region, loff_t pos)
 {
-	struct vfio_pci_region *region;
-	loff_t pos;
 	int ret;
-
-	region = vfio_pci_find_region(&nvdev->core_device, *ppos, &pos);
-	if (!region)
-		return -EINVAL;
 
 	if (!mem_count)
 		return 0;
@@ -862,18 +839,13 @@ nvgrace_gpu_map_and_write(struct nvgrace_gpu_pci_core_device *nvdev,
  */
 static ssize_t
 nvgrace_gpu_write_mem(struct nvgrace_gpu_pci_core_device *nvdev,
-		      size_t count, loff_t *ppos, const char __user *buf)
+		      size_t count, loff_t *ppos, const char __user *buf,
+		      struct vfio_pci_region *region, loff_t offset)
 {
 	struct vfio_pci_core_device *vdev = &nvdev->core_device;
-	struct vfio_pci_region *region;
 	struct mem_region *memregion;
-	loff_t offset;
 	size_t mem_count;
 	int ret = 0;
-
-	region = vfio_pci_find_region(vdev, *ppos, &offset);
-	if (!region)
-		return -EINVAL;
 
 	/* No need to do NULL check as caller does. */
 	memregion = nvgrace_gpu_memregion(region->index, nvdev);
@@ -903,7 +875,8 @@ nvgrace_gpu_write_mem(struct nvgrace_gpu_pci_core_device *nvdev,
 		if (ret)
 			return ret;
 
-		ret = nvgrace_gpu_map_and_write(nvdev, buf, mem_count, ppos);
+		ret = nvgrace_gpu_map_and_write(nvdev, buf, mem_count,
+					        region, offset);
 		if (ret)
 			return ret;
 	}
@@ -922,22 +895,25 @@ nvgrace_gpu_write(struct vfio_device *core_vdev,
 			     core_device.vdev);
 	struct vfio_pci_core_device *vdev = &nvdev->core_device;
 	struct vfio_pci_region *region;
+	loff_t pos;
 	int ret;
 
-	region = vfio_pci_find_region(vdev, *ppos, NULL);
+	region = vfio_pci_find_region(vdev, *ppos, &pos);
 	if (!region)
 		return -EINVAL;
 
 	if (nvgrace_gpu_memregion(region->index, nvdev)) {
 		if (pm_runtime_resume_and_get(&vdev->pdev->dev))
 			return -EIO;
-		ret = nvgrace_gpu_write_mem(nvdev, count, ppos, buf);
+		ret = nvgrace_gpu_write_mem(nvdev, count, ppos, buf,
+					    region, pos);
 		pm_runtime_put(&vdev->pdev->dev);
 		return ret;
 	}
 
 	if (region->index == VFIO_PCI_CONFIG_REGION_INDEX)
-		return nvgrace_gpu_write_config_emu(core_vdev, buf, count, ppos);
+		return nvgrace_gpu_write_config_emu(core_vdev, buf, count,
+						    ppos, pos);
 
 	return vfio_pci_core_write(core_vdev, buf, count, ppos);
 }
