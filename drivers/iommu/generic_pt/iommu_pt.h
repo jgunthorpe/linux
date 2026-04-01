@@ -1002,6 +1002,15 @@ static int NS(map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
 	/* Bytes successfully mapped */
 	PT_WARN_ON(!ret && map.oa - paddr != len);
 	*mapped += map.oa - paddr;
+
+	/*
+	 * The iotlb kunit needs to flush the mapped portion even on error cases
+	 * to keep in sync. The caller will unmap it and flush it so non-kunit
+	 * cases don't need this.
+	 */
+	if (IS_ENABLED(CONFIG_IOMMU_PT_KUNIT_TEST) && ret)
+		iommu_sync_map(&iommu_table->domain, iova, *mapped);
+
 	return ret;
 }
 
@@ -1351,5 +1360,6 @@ MODULE_DESCRIPTION("IOMMU Page table implementation for " __stringify(PTPFX_RAW)
 MODULE_IMPORT_NS("GENERIC_PT");
 /* For iommu_dirty_bitmap_record() */
 MODULE_IMPORT_NS("IOMMUFD");
+MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");
 
 #endif  /* __GENERIC_PT_IOMMU_PT_H */
