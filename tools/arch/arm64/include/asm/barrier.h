@@ -28,6 +28,20 @@
 #define dma_rmb()	asm volatile("dmb oshld" ::: "memory")
 #define dma_wmb()	asm volatile("dmb oshst" ::: "memory")
 
+/* Match arch/arm64/include/asm/io.h: use osh barriers for device MMIO */
+#define __io_bw()	dma_wmb()
+#define __io_ar(v)							\
+({									\
+	unsigned long tmp;						\
+									\
+	dma_rmb();							\
+									\
+	asm volatile("eor	%0, %1, %1\n"				\
+		     "cbnz	%0, ."					\
+		     : "=r" (tmp) : "r" ((unsigned long)(v))		\
+		     : "memory");					\
+})
+
 #define smp_store_release(p, v)						\
 do {									\
 	union { typeof(*p) __val; char __c[1]; } __u =			\
