@@ -10,6 +10,7 @@
 #include <linux/list.h>
 #include <linux/kref.h>
 #include <linux/types.h>
+#include <linux/container_of.h>
 
 struct cc_inval_params {
 	phys_addr_t addr;
@@ -34,8 +35,8 @@ int cache_coherency_ops_instance_register(struct cache_coherency_ops_inst *cci);
 void cache_coherency_ops_instance_unregister(struct cache_coherency_ops_inst *cci);
 
 struct cache_coherency_ops_inst *
-_cache_coherency_ops_instance_alloc(const struct cache_coherency_ops *ops,
-				    size_t size);
+_cache_coherency_ops_instance_alloc(size_t size,
+				    const struct cache_coherency_ops *ops);
 /**
  * cache_coherency_ops_instance_alloc - Allocate cache coherency ops instance
  * @ops: Cache maintenance operations
@@ -48,14 +49,9 @@ _cache_coherency_ops_instance_alloc(const struct cache_coherency_ops *ops,
  *
  * Returns a &drv_struct * on success, %NULL on error.
  */
-#define cache_coherency_ops_instance_alloc(ops, drv_struct, member)	    \
-	({								    \
-		static_assert(__same_type(struct cache_coherency_ops_inst,  \
-					  ((drv_struct *)NULL)->member));   \
-		static_assert(offsetof(drv_struct, member) == 0);	    \
-		(drv_struct *)_cache_coherency_ops_instance_alloc(ops,	    \
-			sizeof(drv_struct));				    \
-	})
+#define cache_coherency_ops_instance_alloc(ops, drv_struct, member) \
+	alloc_container(drv_struct, member,                         \
+			_cache_coherency_ops_instance_alloc, ops)
 void cache_coherency_ops_instance_put(struct cache_coherency_ops_inst *cci);
 
 #endif

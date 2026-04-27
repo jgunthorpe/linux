@@ -82,8 +82,8 @@ static int cache_invalidate_memregion(phys_addr_t addr, size_t size)
 }
 
 struct cache_coherency_ops_inst *
-_cache_coherency_ops_instance_alloc(const struct cache_coherency_ops *ops,
-				    size_t size)
+_cache_coherency_ops_instance_alloc(size_t size,
+				    const struct cache_coherency_ops *ops)
 {
 	struct cache_coherency_ops_inst *cci;
 
