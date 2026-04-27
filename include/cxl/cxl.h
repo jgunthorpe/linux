@@ -7,6 +7,7 @@
 
 #include <linux/node.h>
 #include <linux/ioport.h>
+#include <linux/container_of.h>
 #include <cxl/mailbox.h>
 
 /**
@@ -193,10 +194,11 @@ struct cxl_dev_state {
 #endif
 };
 
-struct cxl_dev_state *_devm_cxl_dev_state_create(struct device *dev,
+struct cxl_dev_state *_devm_cxl_dev_state_create(size_t size,
+						 struct device *dev,
 						 enum cxl_devtype type,
 						 u64 serial, u16 dvsec,
-						 size_t size, bool has_mbox);
+						 bool has_mbox);
 
 /**
  * cxl_dev_state_create - safely create and cast a cxl dev state embedded in a
@@ -215,12 +217,8 @@ struct cxl_dev_state *_devm_cxl_dev_state_create(struct device *dev,
  *
  * Introduced for Type2 driver support.
  */
-#define devm_cxl_dev_state_create(parent, type, serial, dvsec, drv_struct, member, mbox)	\
-	({										\
-		static_assert(__same_type(struct cxl_dev_state,				\
-			      ((drv_struct *)NULL)->member));				\
-		static_assert(offsetof(drv_struct, member) == 0);			\
-		(drv_struct *)_devm_cxl_dev_state_create(parent, type, serial, dvsec,	\
-						      sizeof(drv_struct), mbox);	\
-	})
+#define devm_cxl_dev_state_create(parent, type, serial, dvsec, drv_struct, \
+				  member, mbox)                            \
+	alloc_container(drv_struct, member, _devm_cxl_dev_state_create,    \
+			parent, type, serial, dvsec, mbox)
 #endif /* __CXL_CXL_H__ */

@@ -659,10 +659,11 @@ static void detach_memdev(struct work_struct *work)
 
 static struct lock_class_key cxl_memdev_key;
 
-struct cxl_dev_state *_devm_cxl_dev_state_create(struct device *dev,
+struct cxl_dev_state *_devm_cxl_dev_state_create(size_t size,
+						 struct device *dev,
 						 enum cxl_devtype type,
 						 u64 serial, u16 dvsec,
-						 size_t size, bool has_mbox)
+						 bool has_mbox)
 {
 	struct cxl_dev_state *cxlds = devm_kzalloc(dev, size, GFP_KERNEL);
 
