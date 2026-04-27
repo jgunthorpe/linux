@@ -10,6 +10,7 @@
 #include <linux/virtio_net.h>
 #include <linux/virtio_blk.h>
 #include <linux/if_ether.h>
+#include <linux/container_of.h>
 
 /**
  * struct vdpa_callback - vDPA callback definition.
@@ -445,12 +446,11 @@ struct vdpa_config_ops {
 	void (*free)(struct vdpa_device *vdev);
 };
 
-struct vdpa_device *__vdpa_alloc_device(struct device *parent,
+struct vdpa_device *__vdpa_alloc_device(size_t size, struct device *parent,
 					const struct vdpa_config_ops *config,
 					const struct virtio_map_ops *map,
 					unsigned int ngroups, unsigned int nas,
-					size_t size, const char *name,
-					bool use_va);
+					const char *name, bool use_va);
 
 /**
  * vdpa_alloc_device - allocate and initilaize a vDPA device
@@ -467,14 +467,10 @@ struct vdpa_device *__vdpa_alloc_device(struct device *parent,
  *
  * Return allocated data structure or ERR_PTR upon error
  */
-#define vdpa_alloc_device(dev_struct, member, parent, config, map, \
-			  ngroups, nas, name, use_va)		   \
-			  container_of((__vdpa_alloc_device( \
-				       parent, config, map, ngroups, nas, \
-				       (sizeof(dev_struct) + \
-				       BUILD_BUG_ON_ZERO(offsetof( \
-				       dev_struct, member))), name, use_va)), \
-				       dev_struct, member)
+#define vdpa_alloc_device(dev_struct, member, parent, config, map, ngroups, \
+			  nas, name, use_va)                                \
+	alloc_container(dev_struct, member, __vdpa_alloc_device, parent,    \
+			config, map, ngroups, nas, name, use_va)
 
 int vdpa_register_device(struct vdpa_device *vdev, u32 nvqs);
 void vdpa_unregister_device(struct vdpa_device *vdev);

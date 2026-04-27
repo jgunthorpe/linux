@@ -102,12 +102,12 @@ static void vdpa_release_dev(struct device *d)
  * __vdpa_alloc_device - allocate and initilaize a vDPA device
  * This allows driver to some prepartion after device is
  * initialized but before registered.
+ * @size: size of the parent structure that contains private data
  * @parent: the parent device
  * @config: the bus operations that is supported by this device
  * @map: the map operations that is supported by this device
  * @ngroups: number of groups supported by this device
  * @nas: number of address spaces supported by this device
- * @size: size of the parent structure that contains private data
  * @name: name of the vdpa device; optional.
  * @use_va: indicate whether virtual address must be used by this device
  *
@@ -117,12 +117,11 @@ static void vdpa_release_dev(struct device *d)
  * Return: Returns an error when parent/config/map is not set or fail to get
  *	   ida.
  */
-struct vdpa_device *__vdpa_alloc_device(struct device *parent,
+struct vdpa_device *__vdpa_alloc_device(size_t size, struct device *parent,
 					const struct vdpa_config_ops *config,
 					const struct virtio_map_ops *map,
 					unsigned int ngroups, unsigned int nas,
-					size_t size, const char *name,
-					bool use_va)
+					const char *name, bool use_va)
 {
 	struct vdpa_device *vdev;
 	int err = -EINVAL;

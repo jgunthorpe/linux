@@ -194,7 +194,6 @@ struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr,
 			       const struct vdpa_dev_set_config *config)
 {
 	const struct vdpa_config_ops *ops;
-	struct vdpa_device *vdpa;
 	struct vdpasim *vdpasim;
 	struct device *dev;
 	int i, ret = -ENOMEM;
@@ -215,16 +214,15 @@ struct vdpasim *vdpasim_create(struct vdpasim_dev_attr *dev_attr,
 	else
 		ops = &vdpasim_config_ops;
 
-	vdpa = __vdpa_alloc_device(NULL, ops, NULL,
-				   dev_attr->ngroups, dev_attr->nas,
-				   dev_attr->alloc_size,
-				   dev_attr->name, use_va);
-	if (IS_ERR(vdpa)) {
-		ret = PTR_ERR(vdpa);
+	vdpasim = alloc_container_sz(struct vdpasim, dev_attr->alloc_size, vdpa,
+				     __vdpa_alloc_device, NULL, ops, NULL,
+				     dev_attr->ngroups, dev_attr->nas,
+				     dev_attr->name, use_va);
+	if (IS_ERR(vdpasim)) {
+		ret = PTR_ERR(vdpasim);
 		goto err_alloc;
 	}
 
-	vdpasim = vdpa_to_sim(vdpa);
 	vdpasim->dev_attr = *dev_attr;
 	dev = &vdpasim->vdpa.dev;
 
