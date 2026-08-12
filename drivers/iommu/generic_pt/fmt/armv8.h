@@ -418,6 +418,9 @@ static inline bool armv8pt_install_table(struct pt_state *pts,
 					    table_pa >> 48);
 	}
 
+	if (pts_feature(pts, PT_FEAT_ARMV8_NS))
+		entry |= ARMV8PT_FMT_NSTABLE;
+
 	return pt_table_install64(pts, entry);
 }
 #define pt_install_table armv8pt_install_table
@@ -663,8 +666,19 @@ static inline int armv8pt_iommu_set_prot(struct pt_common *common,
 			pte |= FIELD_PREP(ARMV8PT_FMT_SH, ARMV8PT_SH_OS);
 	}
 
-	if (iommu_prot & IOMMU_NOEXEC)
+	if (iommu_prot & IOMMU_NOEXEC) {
+		/*
+		 * Assume S2 AArch32 does not have FEAT_XNX. Execute permissions
+		 * are very rarely used by the iommu and it doesn't really have
+		 * ELs to make use of PXN.
+		 */
 		pte |= ARMV8PT_FMT_PXN;
+		if (!pt_feature(common, PT_FEAT_ARMV8_AARCH32) || is_s1)
+			pte |= ARMV8PT_FMT_UXN;
+	}
+
+	if (pt_feature(common, PT_FEAT_ARMV8_NS))
+		pte |= ARMV8PT_FMT_NS;
 
 	pte |= ARMV8PT_FMT_AF;
 
@@ -765,6 +779,20 @@ static inline bool armv8pt_validate_features(const struct pt_common *common,
 	     pt_feature(common, PT_FEAT_ARMV8_S2)))
 		return false;
 
+	/* The NS quirk doesn't apply at stage 2 */
+	if (pt_feature(common, PT_FEAT_ARMV8_NS) &&
+	    pt_feature(common, PT_FEAT_ARMV8_S2))
+		return false;
+
+	/* AARCH32 supports few features */
+	if (pt_feature(common, PT_FEAT_ARMV8_AARCH32) &&
+	    (tgsz_lg2 != SZLG2_4K || pt_feature(common, PT_FEAT_ARMV8_LPA) ||
+	     pt_feature(common, PT_FEAT_ARMV8_LPA2) ||
+	     pt_feature(common, PT_FEAT_ARMV8_LVA) ||
+	     pt_feature(common, PT_FEAT_ARMV8_DBM) ||
+	     pt_feature(common, PT_FEAT_ARMV8_S2FWB)))
+		return false;
+
 	return true;
 }
 
@@ -804,6 +832,25 @@ static inline int armv8pt_iommu_fmt_init(struct pt_iommu_armv8 *iommu_table,
 	if (tgsz_lg2 != SZLG2_4K && tgsz_lg2 != SZLG2_16K &&
 	    tgsz_lg2 != SZLG2_64K)
 		return -EOPNOTSUPP;
+
+	if (pt_feature(&armv8pt->common, PT_FEAT_ARMV8_AARCH32)) {
+		/*
+		 * VMSAv8-32 Long-descriptor format (G5.5):
+		 * Uses the same 64-bit LPAE descriptors as AArch64 but with
+		 * tighter constraints on address ranges and granule size.
+		 * FEAT_BTI (Guard Page) is not supported either.
+		 */
+		if (pt_feature(&armv8pt->common, PT_FEAT_ARMV8_S2)) {
+			if (vasz_lg2 > 40)
+				return -EOPNOTSUPP;
+		} else {
+			if (vasz_lg2 > 32)
+				return -EOPNOTSUPP;
+		}
+
+		if (oasz_lg2 > 40)
+			return -EOPNOTSUPP;
+	}
 
 	armv8pt->tgsz_lg2 = tgsz_lg2;
 	max_top_level =
@@ -891,6 +938,7 @@ armv8pt_iommu_fmt_hw_info(struct pt_iommu_armv8 *table,
 	struct pt_common *common = &table->armpt.common;
 	unsigned int tgsz_lg2 = table->armpt.tgsz_lg2;
 
+	info->aa64 = !pt_feature(common, PT_FEAT_ARMV8_AARCH32);
 #ifdef __BIG_ENDIAN
 	info->endi = 1;
 #else
@@ -1064,13 +1112,27 @@ static const struct pt_iommu_armv8_cfg armv8_kunit_fmt_cfgs[] = {
 		 .common.features = BIT(PT_FEAT_ARMV8_S2),
 		 .common.hw_max_oasz_lg2 = 40,
 		 .common.hw_max_vasz_lg2 = 40 },
+	/* NS cases */
+	[12] = { .tgsz_lg2 = 12,
+		 .common.features = BIT(PT_FEAT_ARMV8_NS),
+		 .common.hw_max_oasz_lg2 = 48,
+		 .common.hw_max_vasz_lg2 = 48 },
+	[13] = { .tgsz_lg2 = 14,
+		 .common.features = BIT(PT_FEAT_ARMV8_NS),
+		 .common.hw_max_oasz_lg2 = 48,
+		 .common.hw_max_vasz_lg2 = 48 },
+	[14] = { .tgsz_lg2 = 16,
+		 .common.features = BIT(PT_FEAT_ARMV8_NS),
+		 .common.hw_max_oasz_lg2 = 48,
+		 .common.hw_max_vasz_lg2 = 48 },
 };
 #define kunit_fmt_cfgs armv8_kunit_fmt_cfgs
 enum {
 	KUNIT_FMT_FEATURES = BIT(PT_FEAT_ARMV8_TTBR1) | BIT(PT_FEAT_ARMV8_S2) |
 			     BIT(PT_FEAT_ARMV8_DBM) | BIT(PT_FEAT_ARMV8_S2FWB) |
-			     BIT(PT_FEAT_DYNAMIC_TOP) | BIT(PT_FEAT_ARMV8_LPA) |
-			     BIT(PT_FEAT_ARMV8_LPA2) | BIT(PT_FEAT_ARMV8_LVA)
+			     BIT(PT_FEAT_ARMV8_NS) | BIT(PT_FEAT_DYNAMIC_TOP) |
+			     BIT(PT_FEAT_ARMV8_LPA) | BIT(PT_FEAT_ARMV8_LPA2) |
+			     BIT(PT_FEAT_ARMV8_LVA) | BIT(PT_FEAT_ARMV8_AARCH32)
 };
 #endif
 #endif

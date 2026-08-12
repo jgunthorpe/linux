@@ -328,6 +328,8 @@ struct pt_iommu_armv8_hw_info {
 	u8 ds;
 	/* endian: endi, s2endi */
 	u8 endi;
+	/* aarch64 mode: aa64, s2aa64 */
+	u8 aa64;
 	/* shareability: sh0, s2sh0 */
 	u8 sh;
 	/* inner cacheability: irgn0, s2ir0 */

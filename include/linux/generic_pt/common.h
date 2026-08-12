@@ -198,6 +198,10 @@ enum {
 	PT_FEAT_ARMV8_DBM,
 	/* For S2 uses the Force Write Back coding of the S2MEMATTR */
 	PT_FEAT_ARMV8_S2FWB,
+	/* Set the NS and NSTable bits in all entries */
+	PT_FEAT_ARMV8_NS,
+	/* Limit to AARCH32 long descriptor format features */
+	PT_FEAT_ARMV8_AARCH32,
 };
 
 struct pt_vtdss {
