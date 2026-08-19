@@ -24,6 +24,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/overflow.h>
 #include <linux/pci.h>
 #include <linux/pci-ats.h>
 #include <linux/platform_device.h>
@@ -2491,9 +2492,24 @@ static u64 arm_smmu_range_inv_calc_num(u64 num_tg, unsigned int scale)
 	return DIV_ROUND_UP_ULL(num_tg, 1ULL << scale);
 }
 
+static u64
+arm_smmu_range_inv_last_tg(const struct arm_smmu_range_inv *range_inv)
+{
+	return range_inv->start_tg + (range_inv->num << range_inv->scale) - 1;
+}
+
+/* Range invalidation A encloses the range covered by range invalidation B */
+static bool arm_smmu_range_inv_encloses(const struct arm_smmu_range_inv *a,
+					const struct arm_smmu_range_inv *b)
+{
+	return a->start_tg <= b->start_tg &&
+	       arm_smmu_range_inv_last_tg(a) >= arm_smmu_range_inv_last_tg(b);
+}
+
 /*
  * Initialize the smallest range invalidation covering num_tg and ending at
- * last_tg.
+ * last_tg. Returns a range invalidation with num == 0 if it cannot be
+ * represented without wrapping.
  */
 static struct arm_smmu_range_inv arm_smmu_range_inv_init_end(u64 last_tg,
 							     u64 num_tg)
@@ -2505,7 +2521,9 @@ static struct arm_smmu_range_inv arm_smmu_range_inv_init_end(u64 last_tg,
 
 	range_inv.scale = arm_smmu_range_inv_calc_scale(num_tg);
 	range_inv.num = arm_smmu_range_inv_calc_num(num_tg, range_inv.scale);
-	range_inv.start_tg = last_tg - ((range_inv.num << range_inv.scale) - 1);
+	if (check_sub_overflow(last_tg, (range_inv.num << range_inv.scale) - 1,
+			       &range_inv.start_tg))
+		range_inv.num = 0;
 	return range_inv;
 }
 
@@ -2614,9 +2632,109 @@ static unsigned int arm_smmu_compute_ttl(u8 leaf_bitmap, u8 table_bitmap,
 	return ttl;
 }
 
+enum arm_smmu_range_inv_mode {
+	ARM_SMMU_RANGE_INV_NORMAL,
+	ARM_SMMU_RANGE_INV_SINGLE,
+	ARM_SMMU_RANGE_INV_CONT_ERRATA,
+};
+
+/* Number of contiguous entries grouped by CONT at an iommupt leaf level. */
+static unsigned int arm_smmu_tlbi_cont_count_lg2(u8 tgsz_lg2,
+						 unsigned int level)
+{
+	if (tgsz_lg2 == 12 && level <= 3)
+		return ilog2(16); /* 64KB, 32MB, 16GB, 8TB */
+	else if (tgsz_lg2 == 14 && level == 1)
+		return ilog2(32); /* 1GB */
+	else if (tgsz_lg2 == 14 && level == 0)
+		return ilog2(128); /* 2M */
+	else if (tgsz_lg2 == 16 && level <= 2)
+		return ilog2(32); /* 2MB, 16GB, 128TB */
+	return 0;
+}
+
 /*
- * Generate up to two range TLBI command payloads covering [start, last]. Sets
- * use_full_inv if the range is too large to represent.
+ * For the ARM_SMMU_OPT_FULL_CONT_RANGE_INV errata any CONT group must be fully
+ * enclosed by a single range invalidation. The algorithm using two range
+ * invalidations in arm_smmu_tlbi_calc_range() does not guarantee this. So if
+ * two range invalidations were produced we may need to extend the trailing
+ * range invalidation or add a third range invalidation to cover a sliced CONT.
+ * Search for the largest CONT that could have been sliced, extend the trailing
+ * range invalidation when that stays inside the gathered range, or queue an
+ * exact third range invalidation.
+ */
+static void arm_smmu_tlbi_cont_errata(struct arm_smmu_tlbi *tlbi,
+				      const struct arm_smmu_range_inv *first,
+				      struct arm_smmu_range_inv *trail,
+				      unsigned int scale_max, u8 ttl, u8 tg_enc)
+{
+	u8 leaf_levels = tlbi->leaf_levels_bitmap;
+	u64 range_start_tg = tlbi->start >> tlbi->tgsz_lg2;
+	u64 range_last_tg = tlbi->last >> tlbi->tgsz_lg2;
+
+	/* Table only invalidation cannot slice a CONT */
+	if (!leaf_levels)
+		return;
+
+	/*
+	 * Iterate through all the leaf levels that were changed, from highest
+	 * to lowest iommupt level. Check if a possible CONT at that level has
+	 * been sliced between the two range invalidations.
+	 */
+	while (leaf_levels) {
+		struct arm_smmu_range_inv cont = { .num = 1 };
+		unsigned int level = fls(leaf_levels) - 1;
+		struct arm_smmu_range_inv new_trail;
+		unsigned int cont_count_lg2;
+		u64 cont_last_tg;
+
+		leaf_levels &= ~BIT(level);
+		cont_count_lg2 =
+			arm_smmu_tlbi_cont_count_lg2(tlbi->tgsz_lg2, level);
+		if (!cont_count_lg2)
+			continue;
+
+		/* A NUM=0 range invalidation with this SCALE covers the entire CONT. */
+		cont.scale = (tlbi->tgsz_lg2 - 3) * level + cont_count_lg2;
+		if (WARN_ON(cont.scale > scale_max)) {
+			tlbi->range.use_full_inv = true;
+			return;
+		}
+
+		/*
+		 * If the CONT is fully covered by the other range
+		 * invalidations, or is outside the gather's range then it has
+		 * not been sliced.
+		 */
+		cont.start_tg =
+			round_down(trail->start_tg - 1, BIT_ULL(cont.scale));
+		cont_last_tg = arm_smmu_range_inv_last_tg(&cont);
+		if (cont.start_tg < range_start_tg ||
+		    cont_last_tg > range_last_tg ||
+		    arm_smmu_range_inv_encloses(first, &cont) ||
+		    arm_smmu_range_inv_encloses(trail, &cont))
+			continue;
+
+		/*
+		 * Extend the trailing range invalidation backwards to cover the
+		 * CONT. Rounding may move its start before the CONT, but it
+		 * must remain inside the gathered range.
+		 */
+		new_trail = arm_smmu_range_inv_init_end(
+			range_last_tg, range_last_tg - cont.start_tg + 1);
+		if (new_trail.num && new_trail.start_tg >= range_start_tg) {
+			*trail = new_trail;
+			return;
+		}
+
+		arm_smmu_tlbi_add_range_cmd(tlbi, &cont, ttl, tg_enc);
+		return;
+	}
+}
+
+/*
+ * Generate up to three range TLBI command payloads covering [start, last].
+ * Sets use_full_inv if the range is too large to represent.
  *
  * Normally the first range invalidation is the largest representable span which
  * does not exceed the requested range. If necessary, the second range
@@ -2627,10 +2745,16 @@ static unsigned int arm_smmu_compute_ttl(u8 leaf_bitmap, u8 table_bitmap,
  * For SVA on an invs containing an SMMU with ARM_SMMU_OPT_FULL_CONT_RANGE_INV,
  * produce only a single range invalidation and overinvalidate so any potential
  * CONT is covered by one command.
+ *
+ * For paging domains affected by ARM_SMMU_OPT_FULL_CONT_RANGE_INV, extend the
+ * normal trailing range invalidation to span a possible CONT group sliced at
+ * the seam. If extending it would invalidate outside the requested range, issue
+ * an exact extra range invalidation.
  */
-static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
-				     bool single_range_inv,
-				     unsigned int scale_max)
+static void
+arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
+			 enum arm_smmu_range_inv_mode range_inv_mode,
+			 unsigned int scale_max)
 {
 	u8 tgsz_lg2 = tlbi->tgsz_lg2;
 	unsigned int ttl = arm_smmu_compute_ttl(
@@ -2658,7 +2782,7 @@ static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
 		return;
 	}
 
-	if (single_range_inv) {
+	if (range_inv_mode == ARM_SMMU_RANGE_INV_SINGLE) {
 		/*
 		 * Produce a single invalidation by rounding up and disabling
 		 * the trailer.
@@ -2676,8 +2800,12 @@ static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
 	}
 	arm_smmu_tlbi_add_range_cmd(tlbi, &first, ttl, tg_enc);
 
-	if (trail.num)
+	if (trail.num) {
+		if (range_inv_mode == ARM_SMMU_RANGE_INV_CONT_ERRATA)
+			arm_smmu_tlbi_cont_errata(tlbi, &first, &trail,
+						  scale_max, ttl, tg_enc);
 		arm_smmu_tlbi_add_range_cmd(tlbi, &trail, ttl, tg_enc);
+	}
 }
 
 /*
@@ -2919,11 +3047,20 @@ void arm_smmu_domain_tlbi(struct arm_smmu_tlbi *tlbi,
 	 */
 	if (invs->range_inv_scale_max) {
 		if (!tlbi->range.use_full_inv) {
-			arm_smmu_tlbi_calc_range(
-				tlbi,
-				smmu_domain->stage == ARM_SMMU_DOMAIN_SVA &&
-					invs->has_full_cont_range_inv,
-				invs->range_inv_scale_max);
+			enum arm_smmu_range_inv_mode range_inv_mode =
+				ARM_SMMU_RANGE_INV_NORMAL;
+
+			if (invs->has_full_cont_range_inv) {
+				if (smmu_domain->stage == ARM_SMMU_DOMAIN_SVA)
+					range_inv_mode =
+						ARM_SMMU_RANGE_INV_SINGLE;
+				else
+					range_inv_mode =
+						ARM_SMMU_RANGE_INV_CONT_ERRATA;
+			}
+
+			arm_smmu_tlbi_calc_range(tlbi, range_inv_mode,
+						 invs->range_inv_scale_max);
 		}
 	}
 
