@@ -860,7 +860,7 @@ struct arm_smmu_tlbi {
 	struct {
 		bool use_full_inv;
 		u8 num_cmds;
-		struct arm_smmu_cmd cmds[2];
+		struct arm_smmu_cmd cmds[3];
 	} range;
 };
 
