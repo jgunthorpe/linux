@@ -24,6 +24,7 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/overflow.h>
 #include <linux/pci.h>
 #include <linux/pci-ats.h>
 #include <linux/platform_device.h>
@@ -2482,8 +2483,22 @@ struct arm_smmu_ril_range {
 	unsigned int scale;
 };
 
+static u64 arm_smmu_ril_last_tg(const struct arm_smmu_ril_range *ril)
+{
+	return ril->start_tg + (ril->num << ril->scale) - 1;
+}
+
+/* RIL a encloses the range covered by RIL b */
+static bool arm_smmu_ril_encloses(const struct arm_smmu_ril_range *a,
+				  const struct arm_smmu_ril_range *b)
+{
+	return a->start_tg <= b->start_tg &&
+	       arm_smmu_ril_last_tg(a) >= arm_smmu_ril_last_tg(b);
+}
+
 /*
  * Initialize the smallest RIL covering num_tg and ending at last_tg.
+ * Returns a RIL with num == 0 if it cannot be represented without wrapping.
  */
 static struct arm_smmu_ril_range arm_smmu_ril_init_end(u64 last_tg, u64 num_tg)
 {
@@ -2494,7 +2509,9 @@ static struct arm_smmu_ril_range arm_smmu_ril_init_end(u64 last_tg, u64 num_tg)
 
 	ril.scale = fls64((num_tg - 1) / 32);
 	ril.num = DIV_ROUND_UP_ULL(num_tg, 1ULL << ril.scale);
-	ril.start_tg = last_tg - ((ril.num << ril.scale) - 1);
+	if (check_sub_overflow(last_tg, (ril.num << ril.scale) - 1,
+			       &ril.start_tg))
+		ril.num = 0;
 	return ril;
 }
 
@@ -2602,9 +2619,107 @@ static unsigned int arm_smmu_compute_ttl(u8 leaf_bitmap, u8 table_bitmap,
 	return ttl;
 }
 
+enum arm_smmu_ril_mode {
+	ARM_SMMU_RIL_NORMAL,
+	ARM_SMMU_RIL_SINGLE,
+	ARM_SMMU_RIL_CONT_ERRATA,
+};
+
+/* Number of contiguous entries grouped by CONT at an iommupt leaf level. */
+static unsigned int arm_smmu_tlbi_cont_count_lg2(u8 tgsz_lg2,
+						 unsigned int level)
+{
+	if (tgsz_lg2 == 12 && level <= 3)
+		return ilog2(16); /* 64KB, 32MB, 16GB, 8TB */
+	else if (tgsz_lg2 == 14 && level == 1)
+		return ilog2(32); /* 1GB */
+	else if (tgsz_lg2 == 14 && level == 0)
+		return ilog2(128); /* 2M */
+	else if (tgsz_lg2 == 16 && level <= 2)
+		return ilog2(32); /* 2MB, 16GB, 128TB */
+	return 0;
+}
+
 /*
- * Generate up to two range TLBI command payloads covering [start, last]. Sets
- * use_full_inv if the range is too large to represent.
+ * For the ARM_SMMU_OPT_FULL_CONT_RIL errata any CONT group must be fully
+ * enclosed by a single RIL. The double RIL algorithm in
+ * arm_smmu_tlbi_calc_range() does not guarantee this. So if two RILs were
+ * produced we may need to extend the trailing RIL or add a third RIL to cover
+ * a sliced CONT. Search for the largest CONT that could have been sliced,
+ * extend the trailing RIL when that stays inside the gathered range, or queue
+ * an exact third RIL.
+ */
+static void arm_smmu_tlbi_cont_errata(struct arm_smmu_tlbi *tlbi,
+				      const struct arm_smmu_ril_range *first,
+				      struct arm_smmu_ril_range *trail,
+				      unsigned int scale_max, u8 ttl, u8 tg_enc)
+{
+	u8 leaf_levels = tlbi->leaf_levels_bitmap;
+	u64 range_start_tg = tlbi->start >> tlbi->tgsz_lg2;
+	u64 range_last_tg = tlbi->last >> tlbi->tgsz_lg2;
+
+	/* Table only invalidation cannot slice a CONT */
+	if (!leaf_levels)
+		return;
+
+	/*
+	 * Iterate through all the leaf levels that were changed, from highest
+	 * to lowest iommupt level. Check if a possible CONT at that level has
+	 * been sliced by the double RIL.
+	 */
+	while (leaf_levels) {
+		struct arm_smmu_ril_range cont = { .num = 1 };
+		unsigned int level = fls(leaf_levels) - 1;
+		struct arm_smmu_ril_range new_trail;
+		unsigned int cont_count_lg2;
+		u64 cont_last_tg;
+
+		leaf_levels &= ~BIT(level);
+		cont_count_lg2 =
+			arm_smmu_tlbi_cont_count_lg2(tlbi->tgsz_lg2, level);
+		if (!cont_count_lg2)
+			continue;
+
+		/* A NUM=0 RIL with this SCALE covers the entire CONT. */
+		cont.scale = (tlbi->tgsz_lg2 - 3) * level + cont_count_lg2;
+		if (WARN_ON(cont.scale > scale_max)) {
+			tlbi->range.use_full_inv = true;
+			return;
+		}
+
+		/*
+		 * If the CONT is fully covered by the other RILs, or is outside
+		 * the gather's range then it has not been sliced.
+		 */
+		cont.start_tg =
+			round_down(trail->start_tg - 1, BIT_ULL(cont.scale));
+		cont_last_tg = arm_smmu_ril_last_tg(&cont);
+		if (cont.start_tg < range_start_tg ||
+		    cont_last_tg > range_last_tg ||
+		    arm_smmu_ril_encloses(first, &cont) ||
+		    arm_smmu_ril_encloses(trail, &cont))
+			continue;
+
+		/*
+		 * Extend the trailing RIL backwards to cover the CONT. Rounding
+		 * may move its start before the CONT, but it must remain inside
+		 * the gathered range.
+		 */
+		new_trail = arm_smmu_ril_init_end(range_last_tg,
+						  range_last_tg - cont.start_tg + 1);
+		if (new_trail.num && new_trail.start_tg >= range_start_tg) {
+			*trail = new_trail;
+			return;
+		}
+
+		arm_smmu_tlbi_add_range_cmd(tlbi, &cont, ttl, tg_enc);
+		return;
+	}
+}
+
+/*
+ * Generate up to three range TLBI command payloads covering [start, last].
+ * Sets use_full_inv if the range is too large to represent.
  *
  * Normally the first RIL is the largest representable span which does not
  * exceed the requested range. If necessary, the second RIL is the smallest
@@ -2615,9 +2730,13 @@ static unsigned int arm_smmu_compute_ttl(u8 leaf_bitmap, u8 table_bitmap,
  * For SVA on an invs containing an SMMU with ARM_SMMU_OPT_FULL_CONT_RIL,
  * produce only a single RIL and overinvalidate so any potential CONT is
  * covered by one command.
+ *
+ * For paging domains affected by ARM_SMMU_OPT_FULL_CONT_RIL, extend the normal
+ * trailing RIL to span a possible CONT group sliced at the seam. If extending
+ * it would invalidate outside the requested range, issue an exact extra RIL.
  */
 static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
-				     bool single_ril,
+				     enum arm_smmu_ril_mode ril_mode,
 				     unsigned int scale_max)
 {
 	u8 tgsz_lg2 = tlbi->tgsz_lg2;
@@ -2646,7 +2765,7 @@ static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
 		return;
 	}
 
-	if (single_ril) {
+	if (ril_mode == ARM_SMMU_RIL_SINGLE) {
 		/*
 		 * Produce a single invalidation by rounding up and disabling
 		 * the trailer.
@@ -2664,8 +2783,12 @@ static void arm_smmu_tlbi_calc_range(struct arm_smmu_tlbi *tlbi,
 	}
 	arm_smmu_tlbi_add_range_cmd(tlbi, &first, ttl, tg_enc);
 
-	if (trail.num)
+	if (trail.num) {
+		if (ril_mode == ARM_SMMU_RIL_CONT_ERRATA)
+			arm_smmu_tlbi_cont_errata(tlbi, &first, &trail,
+						  scale_max, ttl, tg_enc);
 		arm_smmu_tlbi_add_range_cmd(tlbi, &trail, ttl, tg_enc);
+	}
 }
 
 /*
@@ -2907,11 +3030,17 @@ void arm_smmu_domain_tlbi(struct arm_smmu_tlbi *tlbi,
 	 */
 	if (invs->has_range_inv) {
 		if (!tlbi->range.use_full_inv) {
-			arm_smmu_tlbi_calc_range(
-				tlbi,
-				smmu_domain->stage == ARM_SMMU_DOMAIN_SVA &&
-					invs->has_full_cont_ril,
-				invs->range_inv_scale_max);
+			enum arm_smmu_ril_mode ril_mode = ARM_SMMU_RIL_NORMAL;
+
+			if (invs->has_full_cont_ril) {
+				if (smmu_domain->stage == ARM_SMMU_DOMAIN_SVA)
+					ril_mode = ARM_SMMU_RIL_SINGLE;
+				else
+					ril_mode = ARM_SMMU_RIL_CONT_ERRATA;
+			}
+
+			arm_smmu_tlbi_calc_range(tlbi, ril_mode,
+						 invs->range_inv_scale_max);
 		}
 	}
 
