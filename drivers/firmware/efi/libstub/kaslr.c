@@ -80,7 +80,44 @@ static bool check_image_region(u64 base, u64 size)
 	return false;
 }
 
+/*
+ * The PE loader owns only kernel_memsize of the image.  Try to own the
+ * requested tail separately at the exact adjacent address instead of
+ * relocating the complete region.
+ */
+static efi_status_t allocate_image_tail(unsigned long image_addr,
+					unsigned long kernel_memsize,
+					unsigned long extra_size,
+					unsigned long *free_addr,
+					unsigned long *free_size)
+{
+	efi_physical_addr_t tail_addr;
+	efi_status_t status;
+
+	/*
+	 * Since we intend to use efi_free() for reserve_addr it should be
+	 * aligned to the higher alignment since efi_free() includes rounding.
+	 * For ARM64 the kernel image is already aligned up to EFI_ALLOC_ALIGN
+	 * by the linker.
+	 */
+	tail_addr = image_addr + kernel_memsize;
+	if (!IS_ALIGNED(tail_addr, EFI_ALLOC_ALIGN))
+		return EFI_OUT_OF_RESOURCES;
+
+	extra_size = round_up(extra_size, EFI_ALLOC_ALIGN);
+	status = efi_bs_call(allocate_pages, EFI_ALLOCATE_ADDRESS,
+			     EFI_LOADER_CODE, extra_size / EFI_PAGE_SIZE,
+			     &tail_addr);
+	if (status != EFI_SUCCESS)
+		return status;
+
+	*free_addr = tail_addr;
+	*free_size = extra_size;
+	return EFI_SUCCESS;
+}
+
 static void efi_kaslr_copy_kernel(unsigned long image_addr,
+				  unsigned long kernel_allocsize,
 				  unsigned long *free_addr,
 				  unsigned long *free_size,
 				  const struct efi_image_info **image_info)
@@ -88,14 +125,13 @@ static void efi_kaslr_copy_kernel(unsigned long image_addr,
 	unsigned long kernel_base	= efistub_kernel_base(*image_info);
 	unsigned long kernel_size	= efistub_kernel_size(*image_info);
 	unsigned long kernel_codesize	= efistub_kernel_codesize(*image_info);
-	unsigned long kernel_memsize	= efistub_kernel_memsize(*image_info);
 
 	memcpy((void *)image_addr, (void *)kernel_base, kernel_size);
 	*free_addr = image_addr;
-	*free_size = kernel_memsize;
+	*free_size = kernel_allocsize;
 
 	efi_icache_sync(image_addr, image_addr + kernel_codesize);
-	efi_remap_image(image_addr, kernel_memsize, kernel_codesize);
+	efi_remap_image(image_addr, kernel_allocsize, kernel_codesize);
 
 	*(unsigned long *)image_info += image_addr - kernel_base;
 }
@@ -119,7 +155,9 @@ efi_status_t efi_kaslr_relocate_kernel(unsigned long *free_addr,
 				       u32 phys_seed)
 {
 	unsigned long kernel_base	= efistub_kernel_base(*image_info);
-	unsigned long kernel_memsize	= efistub_kernel_memsize(*image_info);
+	unsigned long extra_size	= efi_drtm_get_extra_size();
+	unsigned long kernel_allocsize	= efistub_kernel_memsize(*image_info) +
+					  extra_size;
 	u64 min_kimg_align		= efi_get_kimg_min_align();
 	unsigned long image_addr;
 	efi_status_t status;
@@ -129,30 +167,36 @@ efi_status_t efi_kaslr_relocate_kernel(unsigned long *free_addr,
 		 * If KASLR is enabled, and we have some randomness available,
 		 * locate the kernel at a randomized offset in physical memory.
 		 */
-		status = efi_random_alloc(kernel_memsize, min_kimg_align,
+		status = efi_random_alloc(kernel_allocsize, min_kimg_align,
 					  &image_addr, phys_seed,
 					  EFI_LOADER_CODE, 0, EFI_ALLOC_LIMIT);
 		if (status == EFI_SUCCESS) {
-			efi_kaslr_copy_kernel(image_addr, free_addr, free_size,
-					      image_info);
+			efi_kaslr_copy_kernel(image_addr, kernel_allocsize,
+					      free_addr, free_size, image_info);
 			return EFI_SUCCESS;
 		}
 		efi_warn("efi_random_alloc() failed: 0x%lx\n", status);
 	}
 
 	/* Try to use the image in place */
-	if (!check_image_region(kernel_base, kernel_memsize)) {
+	if (!check_image_region(kernel_base, kernel_allocsize)) {
 		efi_err("FIRMWARE BUG: Image BSS overlaps adjacent EFI memory region\n");
 	} else if (IS_ALIGNED(kernel_base, min_kimg_align) &&
-		   (kernel_base + kernel_memsize) < EFI_ALLOC_LIMIT) {
-		/*
-		 * Just execute from wherever we were loaded by the UEFI PE/COFF
-		 * loader if the placement is suitable.
-		 */
-		return EFI_SUCCESS;
+		   (kernel_base + kernel_allocsize) < EFI_ALLOC_LIMIT) {
+		if (!extra_size) {
+			/*
+			 * Just execute from wherever we were loaded by the UEFI
+			 * PE/COFF loader if the placement is suitable.
+			 */
+			return EFI_SUCCESS;
+		}
+		status = allocate_image_tail(kernel_base, kernel_allocsize,
+					     extra_size, free_addr, free_size);
+		if (status == EFI_SUCCESS)
+			return EFI_SUCCESS;
 	}
 
-	status = efi_allocate_pages_aligned(kernel_memsize, &image_addr,
+	status = efi_allocate_pages_aligned(kernel_allocsize, &image_addr,
 					    ULONG_MAX, min_kimg_align,
 					    EFI_LOADER_CODE);
 	if (status != EFI_SUCCESS) {
@@ -160,6 +204,7 @@ efi_status_t efi_kaslr_relocate_kernel(unsigned long *free_addr,
 		return status;
 	}
 
-	efi_kaslr_copy_kernel(image_addr, free_addr, free_size, image_info);
+	efi_kaslr_copy_kernel(image_addr, kernel_allocsize, free_addr,
+			      free_size, image_info);
 	return EFI_SUCCESS;
 }
