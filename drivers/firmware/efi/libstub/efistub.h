@@ -1179,6 +1179,10 @@ struct efi_image_info {
 	s32	_end_offset;
 	s32	entry_offset;
 	s32	sysfb_primary_display_offset;
+#ifdef CONFIG_ARM64_DRTM
+	s32	__drtm_measured_start_offset;
+	s32	__drtm_measured_end_offset;
+#endif
 };
 
 /*
@@ -1222,6 +1226,22 @@ void *efistub_kernel_entry(const struct efi_image_info *image_info)
 {
 	return offset_to_ptr(&image_info->entry_offset);
 }
+
+#ifdef CONFIG_EFI_STUB_DRTM
+static inline unsigned long
+efistub_drtm_measured_offset(const struct efi_image_info *image_info)
+{
+	return image_info->__drtm_measured_start_offset -
+	       image_info->_text_offset;
+}
+
+static inline unsigned long
+efistub_drtm_measured_size(const struct efi_image_info *image_info)
+{
+	return image_info->__drtm_measured_end_offset -
+	       image_info->__drtm_measured_start_offset;
+}
+#endif
 
 efi_status_t efi_boot_kernel(void *handle, efi_loaded_image_t *image,
 			     const struct efi_image_info *image_info,

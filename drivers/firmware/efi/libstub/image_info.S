@@ -17,3 +17,8 @@ __efistub_efistub_image_info:
 #else
 	.long	0
 #endif
+
+#ifdef CONFIG_EFI_STUB_DRTM
+	.long	__drtm_measured_start - 0b
+	.long	__drtm_measured_end - 0b
+#endif
