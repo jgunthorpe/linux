@@ -1182,6 +1182,8 @@ struct efi_image_info {
 #ifdef CONFIG_ARM64_DRTM
 	s32	__drtm_measured_start_offset;
 	s32	__drtm_measured_end_offset;
+	s32	drtm_entry_offset;
+	s32	drtm_handoff_offset;
 #endif
 };
 
@@ -1240,6 +1242,18 @@ efistub_drtm_measured_size(const struct efi_image_info *image_info)
 {
 	return image_info->__drtm_measured_end_offset -
 	       image_info->__drtm_measured_start_offset;
+}
+
+static inline unsigned long
+efistub_drtm_entry_offset(const struct efi_image_info *image_info)
+{
+	return image_info->drtm_entry_offset - image_info->_text_offset;
+}
+
+static inline void *
+efistub_drtm_handoff(const struct efi_image_info *image_info)
+{
+	return offset_to_ptr(&image_info->drtm_handoff_offset);
 }
 #endif
 

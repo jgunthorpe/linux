@@ -30,6 +30,7 @@ obj-y				+= arm_rmm/
 obj-y				+= arm_scmi/
 obj-y				+= broadcom/
 obj-y				+= cirrus/
+obj-y				+= drtm/
 obj-y				+= meson/
 obj-y				+= microchip/
 obj-$(CONFIG_COREBOOT_FIRMWARE)	+= coreboot/

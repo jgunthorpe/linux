@@ -21,4 +21,6 @@ __efistub_efistub_image_info:
 #ifdef CONFIG_EFI_STUB_DRTM
 	.long	__drtm_measured_start - 0b
 	.long	__drtm_measured_end - 0b
+	.long	drtm_entry - 0b
+	.long	drtm_handoff - .
 #endif
