@@ -27788,7 +27788,8 @@ S:	Maintained
 F:	Documentation/devicetree/bindings/trigger-source/*
 
 TRUSTED EXECUTION ENVIRONMENT SECURITY MANAGER (TSM)
-M:	Dan Williams <djbw@kernel.org>
+M:	Aneesh Kumar K.V <aneesh.kumar@kernel.org>
+M:	Jason Gunthorpe <jgg@nvidia.com>
 L:	linux-coco@lists.linux.dev
 S:	Maintained
 F:	Documentation/ABI/testing/configfs-tsm-report
