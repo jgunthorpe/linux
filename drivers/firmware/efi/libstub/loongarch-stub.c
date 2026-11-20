@@ -89,8 +89,8 @@ efi_status_t efi_relocate_kernel(unsigned long *image_addr,
 	return status;
 }
 
-efi_status_t handle_kernel_image(unsigned long *image_addr,
-				 unsigned long *image_size,
+efi_status_t handle_kernel_image(unsigned long *free_addr,
+				 unsigned long *free_size,
 				 efi_loaded_image_t *image,
 				 efi_handle_t image_handle,
 				 const struct efi_image_info **image_info)
@@ -105,9 +105,9 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
 	status = efi_relocate_kernel(&kernel_addr, kernel_fsize, kernel_asize,
 		     EFI_KIMG_PREFERRED_ADDRESS, efi_get_kimg_min_align(), 0x0);
 
-	*image_addr = kernel_addr;
-	*image_size = kernel_asize;
+	*free_addr = kernel_addr;
+	*free_size = kernel_asize;
 
-	*(unsigned long *)image_info += *image_addr - (unsigned long)image->image_base;
+	*(unsigned long *)image_info += kernel_addr - (unsigned long)image->image_base;
 	return status;
 }

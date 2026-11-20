@@ -13,8 +13,8 @@
 
 #include "efistub.h"
 
-efi_status_t handle_kernel_image(unsigned long *image_addr,
-				 unsigned long *image_size,
+efi_status_t handle_kernel_image(unsigned long *free_addr,
+				 unsigned long *free_size,
 				 efi_loaded_image_t *image,
 				 efi_handle_t image_handle,
 				 const struct efi_image_info **image_info)
@@ -30,7 +30,7 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
 		efi_err("FIRMWARE BUG: kernel image not aligned on %dk boundary\n",
 			SEGMENT_ALIGN >> 10);
 
-	return efi_kaslr_relocate_kernel(image_addr, image_size, image_info,
+	return efi_kaslr_relocate_kernel(free_addr, free_size, image_info,
 					 efi_kaslr_get_phys_seed(image_handle));
 }
 

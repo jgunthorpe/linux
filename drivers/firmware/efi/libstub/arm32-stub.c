@@ -125,8 +125,8 @@ extern u32 zimage_magic_table[] asm("_table_start");
 
 struct efi_image_info efistub_image_info = {};
 
-efi_status_t handle_kernel_image(unsigned long *image_addr,
-				 unsigned long *image_size,
+efi_status_t handle_kernel_image(unsigned long *free_addr,
+				 unsigned long *free_size,
 				 efi_loaded_image_t *image,
 				 efi_handle_t image_handle,
 				 const struct efi_image_info **image_info)
@@ -173,8 +173,8 @@ efi_status_t handle_kernel_image(unsigned long *image_addr,
 	efi_free(kernel_base - alloc_base, alloc_base);	/* no-op if 0 */
 	efi_free(alloc_base + margin - kernel_base, kernel_base + alloc_size);
 
-	*image_addr = kernel_base;
-	*image_size = alloc_size;
+	*free_addr = kernel_base;
+	*free_size = alloc_size;
 
 	return EFI_SUCCESS;
 }

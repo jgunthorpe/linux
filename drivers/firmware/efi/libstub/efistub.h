@@ -1187,8 +1187,8 @@ struct efi_image_info {
  * must be reserved. On failure it is required to free all
  * all allocations it has made.
  */
-efi_status_t handle_kernel_image(unsigned long *image_addr,
-				 unsigned long *image_size,
+efi_status_t handle_kernel_image(unsigned long *free_addr,
+				 unsigned long *free_size,
 				 efi_loaded_image_t *image,
 				 efi_handle_t image_handle,
 				 const struct efi_image_info **image_info);
@@ -1331,8 +1331,8 @@ const u8 *__efi_get_smbios_string(const struct efi_smbios_record *record,
 
 efi_status_t efi_remap_image(unsigned long image_base, unsigned alloc_size,
 			     unsigned long code_size);
-efi_status_t efi_kaslr_relocate_kernel(unsigned long *image_addr,
-				       unsigned long *alloc_size,
+efi_status_t efi_kaslr_relocate_kernel(unsigned long *free_addr,
+				       unsigned long *free_size,
 				       const struct efi_image_info **image_info,
 				       u32 phys_seed);
 u32 efi_kaslr_get_phys_seed(efi_handle_t image_handle);

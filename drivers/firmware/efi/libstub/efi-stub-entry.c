@@ -21,8 +21,8 @@ efi_status_t __efiapi efi_pe_entry(efi_handle_t handle,
 	const struct efi_image_info *image_info = &efistub_image_info;
 	efi_loaded_image_t *image;
 	efi_status_t status;
-	unsigned long image_addr;
-	unsigned long image_size = 0;
+	unsigned long free_addr;
+	unsigned long free_size = 0;
 
 	WRITE_ONCE(efi_system_table, systab);
 
@@ -53,7 +53,7 @@ efi_status_t __efiapi efi_pe_entry(efi_handle_t handle,
 
 	efi_info("Booting Linux Kernel...\n");
 
-	status = handle_kernel_image(&image_addr, &image_size,
+	status = handle_kernel_image(&free_addr, &free_size,
 				     image, handle, &image_info);
 	if (status != EFI_SUCCESS) {
 		efi_err("Failed to relocate kernel\n");
@@ -62,7 +62,7 @@ efi_status_t __efiapi efi_pe_entry(efi_handle_t handle,
 
 	status = efi_stub_common(handle, image, image_info, cmdline_ptr);
 
-	efi_free(image_size, image_addr);
+	efi_free(free_size, free_addr);
 
 	return status;
 }
